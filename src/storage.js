@@ -54,6 +54,11 @@ function getDb() {
       id   TEXT PRIMARY KEY,
       data TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS gamesnapshots (
+      roomId TEXT PRIMARY KEY,
+      data   TEXT NOT NULL,
+      savedAt INTEGER
+    );
   `);
   migrateLegacyJson();
   return db;
@@ -172,6 +177,26 @@ function listSessions() {
   return rows.map((r) => JSON.parse(r.data));
 }
 
+// ---------------- gamesnapshots：进行中对局快照（重启恢复） ----------------
+function putGameSnapshot(roomId, data) {
+  getDb().prepare('INSERT OR REPLACE INTO gamesnapshots (roomId, data, savedAt) VALUES (?, ?, ?)')
+    .run(roomId, JSON.stringify(data), Date.now());
+}
+
+function getGameSnapshot(roomId) {
+  const row = getDb().prepare('SELECT data FROM gamesnapshots WHERE roomId = ?').get(roomId);
+  return row ? JSON.parse(row.data) : null;
+}
+
+function listGameSnapshots() {
+  const rows = getDb().prepare('SELECT roomId, data FROM gamesnapshots').all();
+  return rows.map((r) => ({ roomId: r.roomId, data: JSON.parse(r.data) }));
+}
+
+function deleteGameSnapshot(roomId) {
+  getDb().prepare('DELETE FROM gamesnapshots WHERE roomId = ?').run(roomId);
+}
+
 // ---------------- 兼容旧导出（供仍引用 RECORDS_DIR 的代码） ----------------
 function ensureDataDirs() {
   ensureDir(DATA_DIR);
@@ -200,6 +225,11 @@ module.exports = {
   getSessionById,
   putSession,
   listSessions,
+  // gamesnapshots
+  putGameSnapshot,
+  getGameSnapshot,
+  listGameSnapshots,
+  deleteGameSnapshot,
   // 仅供测试/工具
   _getDb: getDb,
 };

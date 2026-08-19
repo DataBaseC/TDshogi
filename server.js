@@ -234,4 +234,7 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, () => {
   console.log(`TDShogi server running at http://localhost:${PORT}`);
   console.log(`WebSocket listening on ws://localhost:${PORT}/ws`);
+  // 恢复上次运行未结束的对局（快照重启恢复）
+  const restored = protocol.rooms.restoreSnapshots();
+  if (restored > 0) console.log(`[rooms] 已恢复 ${restored} 场未完成对局`);
 });

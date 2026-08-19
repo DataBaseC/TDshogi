@@ -22,6 +22,7 @@ const tournaments = require('./tournaments');
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混淆字符
 const RECONNECT_GRACE_MS = 60 * 1000; // 断线 60 秒重连期
 const TICK_MS = 1000;                   // 棋钟 tick
+const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS || '30000', 10) || 30000; // 进行中对局快照间隔（可配，默认 30s）
 
 // 时间控制预设（房间 / 快速匹配可选）
 //  - main: 本时（每方思考时间，ms）
@@ -63,6 +64,8 @@ class RoomManager {
     this.spectatorsByRoom = new Map();// roomId -> Set<clientId>
     this._clockTimers = new Map();  // roomId -> interval
     this._disconnectTimers = new Map(); // roomId -> Map<seat, timer>（断线宽限期）
+    // 对局快照定时器（进行中对局定期落盘，重启可恢复）
+    this._snapshotTimer = setInterval(() => this._snapshotAll(), SNAPSHOT_INTERVAL_MS);
     // 赛事建房工厂：供 tournaments 层推进对阵表时创建对局
     tournaments.setMatchFactory((tournamentId, playerIds) =>
       this.createTournamentMatch(tournamentId, playerIds));
@@ -476,12 +479,13 @@ class RoomManager {
     room.result = game.result;
     room.resultDetail = game.resultDetail;
     this._stopClock(room);
-    // 对局结束：清理断线宽限计时器
+    // 对局结束：清理断线宽限计时器 + 清除快照（对局已落盘 records，无需恢复）
     const timers = this._disconnectTimers.get(room.id);
     if (timers) {
       for (const t of timers.values()) clearTimeout(t);
       this._disconnectTimers.delete(room.id);
     }
+    this._clearSnapshot(room.id);
     this._finalize(room);
   }
 
@@ -882,6 +886,143 @@ class RoomManager {
     state.seat = info ? info.seat : null;
     state.isPlayer = !!info;
     return state;
+  }
+
+  // ==================================================================
+  // 对局快照 / 重启恢复
+  // ==================================================================
+
+  /**
+   * 序列化房间为可恢复的快照（不包含连接态：clientId/spectators 等运行时信息）。
+   */
+  _serializeRoom(room) {
+    const game = room.game;
+    return {
+      id: room.id,
+      code: room.code,
+      status: room.status,
+      type: room.type,
+      creatorId: room.creatorId,
+      createdAt: room.createdAt,
+      timeControl: room.timeControl,
+      clock: { ...room.clock },
+      byoyomi: room.byoyomi,
+      curByoyomi: room.curByoyomi ? { ...room.curByoyomi } : null,
+      inByoyomi: room.inByoyomi ? { ...room.inByoyomi } : null,
+      rated: room.rated,
+      tournamentId: room.tournamentId,
+      // 对局数据：startSfen + moves 可完整重放恢复 Game
+      startSfen: game.startSfen,
+      moves: [...game.moves],
+      result: game.result,
+      resultDetail: game.resultDetail,
+      // 玩家（仅持久身份，不存 clientId）
+      players: {
+        b: room.players.b ? { playerId: room.players.b.playerId, name: room.players.b.name } : null,
+        w: room.players.w ? { playerId: room.players.w.playerId, name: room.players.w.name } : null,
+      },
+    };
+  }
+
+  /** 保存单个房间快照（仅 PLAYING 与 WAITING） */
+  _snapshotRoom(room) {
+    if (!room || (room.status !== 'PLAYING' && room.status !== 'WAITING')) return;
+    try {
+      require('./storage').putGameSnapshot(room.id, this._serializeRoom(room));
+    } catch (err) {
+      console.error('[rooms] 快照失败:', err.message);
+    }
+  }
+
+  /** 定期快照所有进行中的对局 */
+  _snapshotAll() {
+    for (const room of this.rooms.values()) {
+      this._snapshotRoom(room);
+    }
+  }
+
+  /** 对局结束/删除时清除快照 */
+  _clearSnapshot(roomId) {
+    try { require('./storage').deleteGameSnapshot(roomId); } catch (_) {}
+  }
+
+  /**
+   * 启动时恢复全部快照（服务器重启后续局）。
+   * 玩家重连时由 protocol.reconnect 找到恢复的房间。
+   * @returns {number} 恢复的房间数
+   */
+  restoreSnapshots() {
+    let restored = 0;
+    let snapshots = [];
+    try { snapshots = require('./storage').listGameSnapshots(); } catch (_) { return 0; }
+    for (const { roomId, data } of snapshots) {
+      try {
+        const room = this._restoreRoom(data);
+        if (!room) { this._clearSnapshot(roomId); continue; }
+        this.rooms.set(room.id, room);
+        this.byCode.set(room.code, room.id);
+        // 重新绑定玩家（若在线）
+        for (const seat of ['b', 'w']) {
+          const p = room.players[seat];
+          if (p && p.playerId) {
+            const clientId = this.playerToClient.get(p.playerId);
+            if (clientId) {
+              p.clientId = clientId;
+              p.connected = true;
+              this._bindClient(clientId, room.id, seat);
+            } else {
+              p.clientId = null;
+              p.connected = false;
+            }
+          }
+        }
+        if (room.status === 'PLAYING') this._startClock(room);
+        restored++;
+      } catch (err) {
+        console.error('[rooms] 恢复房间失败:', err.message, roomId);
+        this._clearSnapshot(roomId);
+      }
+    }
+    return restored;
+  }
+
+  /** 从快照重建房间对象（Game 用 startSfen+moves 重放） */
+  _restoreRoom(snap) {
+    if (!snap || !snap.id) return null;
+    const game = newGame(snap.startSfen || STARTING_SFEN, [
+      snap.players && snap.players.b ? snap.players.b.name : '先手',
+      snap.players && snap.players.w ? snap.players.w.name : '後手',
+    ]);
+    // 重放走法
+    for (const usi of snap.moves || []) {
+      const r = game.applyMove(usi);
+      if (!r.ok) return null; // 走法无法重放 → 快照无效
+    }
+    const room = {
+      id: snap.id,
+      code: snap.code,
+      game,
+      players: {
+        b: snap.players && snap.players.b ? { clientId: null, playerId: snap.players.b.playerId, name: snap.players.b.name, connected: false } : null,
+        w: snap.players && snap.players.w ? { clientId: null, playerId: snap.players.w.playerId, name: snap.players.w.name, connected: false } : null,
+      },
+      status: snap.status || 'FINISHED',
+      type: snap.type || 'room',
+      creatorId: snap.creatorId || null,
+      createdAt: snap.createdAt || Date.now(),
+      timeControl: snap.timeControl || DEFAULT_TIME_CONTROL,
+      clock: snap.clock ? { ...snap.clock } : { b: 0, w: 0 },
+      byoyomi: snap.byoyomi || 0,
+      curByoyomi: snap.curByoyomi ? { ...snap.curByoyomi } : { b: 0, w: 0 },
+      inByoyomi: snap.inByoyomi ? { ...snap.inByoyomi } : { b: false, w: false },
+      lastMoveTs: Date.now(),
+      lastActiveAt: Date.now(),
+      result: snap.result || null,
+      resultDetail: snap.resultDetail || null,
+      rated: snap.rated !== false,
+      tournamentId: snap.tournamentId || null,
+    };
+    return room;
   }
 
   stats() {
