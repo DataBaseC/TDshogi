@@ -1,0 +1,211 @@
+/**
+ * accounts.js — 账号系统（用户名 + 密码 + scrypt 哈希）
+ *
+ * 数据落盘 data/accounts.json：
+ *   { [accountId]: { id, username, passHash, salt, createdAt, updatedAt } }
+ *
+ * 设计要点：
+ *  - 密码使用 Node 内置 crypto.scrypt 加盐哈希，不存明文；零新增依赖。
+ *  - 游客升级：注册时可选传 guestId，账号建立后把游客的
+ *    对局/评级/会话数据迁移到 accountId，保证数据不丢失。
+ *  - 登录成功后返回不透明会话令牌（HMAC 签名，带过期时间），
+ *    前端存 localStorage，后续请求带 ?guest=<token> 即可识别为账号。
+ *
+ * 注册流程（REST）：POST /api/register {username, password, guestId?}
+ * 登录流程（REST）：POST /api/login {username, password}
+ */
+'use strict';
+
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { DATA_DIR, readJson, writeJson } = require('./storage');
+const auth = require('./auth');
+
+const ACCOUNTS_FILE = 'accounts.json';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'tdshogi_session_secret_change_me';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
+const MAX_USERNAME = 16;
+const MIN_PASSWORD = 4;
+
+const accountsPath = () => path.join(DATA_DIR, ACCOUNTS_FILE);
+
+let cache = null;
+function getCache() {
+  if (!cache) cache = readJson(ACCOUNTS_FILE, {}) || {};
+  return cache;
+}
+function persist() {
+  writeJson(ACCOUNTS_FILE, getCache());
+}
+
+/**
+ * 密码哈希：scrypt + 随机盐（每用户独立盐）。
+ */
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  const { hash } = hashPassword(password, salt);
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'));
+}
+
+/**
+ * 注册新账号。
+ * @param {string} username
+ * @param {string} password
+ * @param {string|null} guestId 游客 id（升级用，可选）
+ * @returns {{ok:true, account:object}|{ok:false, error:string}}
+ */
+const USERNAME_RE = new RegExp(`^[\\w\\u4e00-\\u9fa5-]{2,${MAX_USERNAME}}$`);
+function register(username, password, guestId = null) {
+  const name = String(username || '').trim();
+  const pass = String(password || '');
+  if (!USERNAME_RE.test(name)) {
+    return { ok: false, error: `用户名需为 2-${MAX_USERNAME} 个字符（中文/字母/数字/下划线/横线）` };
+  }
+  if (pass.length < MIN_PASSWORD) {
+    return { ok: false, error: `密码至少 ${MIN_PASSWORD} 位` };
+  }
+  const accounts = getCache();
+  if (Object.values(accounts).some((a) => a.username === name)) {
+    return { ok: false, error: '用户名已被占用' };
+  }
+  const id = auth.genId();
+  const { salt, hash } = hashPassword(pass);
+  const account = {
+    id,
+    username: name,
+    salt,
+    passHash: hash,
+    guestId: guestId || null, // 升级来源游客 id（迁移后仍保留用于追溯）
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  accounts[id] = account;
+  persist();
+  // 游客数据迁移（对局/评级/会话 → accountId）
+  if (guestId) migrateGuestData(guestId, id);
+  // 写会话（名字=用户名，供 WS/REST 显示）
+  auth.upsertSession(id, name);
+  return { ok: true, account: publicInfo(account) };
+}
+
+/**
+ * 登录：校验用户名 + 密码，成功返回账号 + 会话令牌。
+ */
+function login(username, password) {
+  const name = String(username || '').trim();
+  const accounts = getCache();
+  const account = Object.values(accounts).find((a) => a.username === name);
+  if (!account) return { ok: false, error: '用户名或密码错误' };
+  if (!verifyPassword(String(password || ''), account.salt, account.passHash)) {
+    return { ok: false, error: '用户名或密码错误' };
+  }
+  // 刷新会话（名字=用户名）
+  auth.upsertSession(account.id, account.username);
+  return { ok: true, token: issueToken(account.id), account: publicInfo(account) };
+}
+
+/**
+ * 签发会话令牌：payload=账号 id，HMAC-SHA256 签名，带过期时间。
+ */
+function issueToken(accountId) {
+  const payload = `${accountId}.${Date.now()}`;
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+  return `${payload}.${sig}`;
+}
+
+/**
+ * 校验会话令牌，返回账号 id（有效）或 null。
+ */
+function verifyToken(token) {
+  if (!token) return null;
+  const parts = String(token).split('.');
+  if (parts.length !== 3) return null;
+  const [accountId, ts, sig] = parts;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(`${accountId}.${ts}`).digest('hex');
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return null;
+  }
+  if (Date.now() - Number(ts) > SESSION_TTL_MS) return null;
+  return getCache()[accountId] ? accountId : null;
+}
+
+/**
+ * 账号公开信息（不含密码字段）。
+ */
+function publicInfo(account) {
+  return {
+    id: account.id,
+    username: account.username,
+    createdAt: account.createdAt,
+  };
+}
+
+function getAccount(accountId) {
+  const a = getCache()[accountId];
+  return a ? publicInfo(a) : null;
+}
+
+function listAccounts() {
+  return Object.values(getCache()).map(publicInfo);
+}
+
+/**
+ * 游客数据迁移到账号：重写该游客的
+ *  - 对局记录（records/*.json 的 playerIds / winnerId）
+ *  - ELO 评级表（ratings.json 的 key）
+ *  - 游客会话（sessions/<guestId>.json → 重命名为账号 id）
+ */
+function migrateGuestData(guestId, accountId) {
+  if (!guestId || guestId === accountId) return;
+  try {
+    // 1. 评级表
+    const ratings = readJson('ratings.json', {}) || {};
+    if (ratings[guestId]) {
+      ratings[accountId] = ratings[guestId];
+      delete ratings[guestId];
+      writeJson('ratings.json', ratings);
+    }
+    // 2. 对局记录（playerIds / winnerId 替换）
+    const recordsDir = path.join(DATA_DIR, 'records');
+    if (fs.existsSync(recordsDir)) {
+      for (const f of fs.readdirSync(recordsDir)) {
+        if (!f.endsWith('.json')) continue;
+        const file = path.join(recordsDir, f);
+        try {
+          const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+          let changed = false;
+          if (rec.playerIds && rec.playerIds.b === guestId) { rec.playerIds.b = accountId; changed = true; }
+          if (rec.playerIds && rec.playerIds.w === guestId) { rec.playerIds.w = accountId; changed = true; }
+          if (rec.winnerId === guestId) { rec.winnerId = accountId; changed = true; }
+          if (changed) fs.writeFileSync(file, JSON.stringify(rec, null, 2), 'utf8');
+        } catch (_) {}
+      }
+    }
+    // 3. 游客会话文件重命名（保留名字/创建时间）
+    const sessionFile = path.join(DATA_DIR, 'sessions', `${guestId}.json`);
+    if (fs.existsSync(sessionFile)) {
+      const newFile = path.join(DATA_DIR, 'sessions', `${accountId}.json`);
+      if (!fs.existsSync(newFile)) fs.renameSync(sessionFile, newFile);
+    }
+    // 4. 在缓存中使 rating 缓存失效（下轮自动重读）
+    // ratings.js 的 cache 是模块级变量，无法直接清；通过 nextTick 强制刷新
+    try { require('./ratings').refreshCache(); } catch (_) {}
+  } catch (err) {
+    console.error('[accounts] 游客数据迁移失败:', err.message);
+  }
+}
+
+module.exports = {
+  register,
+  login,
+  verifyToken,
+  issueToken,
+  getAccount,
+  listAccounts,
+  publicInfo,
+};

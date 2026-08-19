@@ -1,0 +1,19 @@
+{
+  "name": "tdshogi",
+  "version": "1.0.0",
+  "description": "TDShogi 在线将棋对战平台 - 轻量级 Node.js 实时对局",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "shogi.js": "^5.4.0",
+    "ws": "^8.17.0"
+  }
+}

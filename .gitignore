@@ -1,0 +1,20 @@
+# 依赖
+node_modules/
+
+# 运行时数据（棋谱/会话/评级/账号）— 服务器运行自动生成
+data/
+!data/.gitkeep
+
+# 测试与工具残留
+.playwright-cli/
+.codebuddy/
+*.log
+.pack-tmp/
+.verify-tmp/
+
+# 部署产物（有独立归档，不入库）
+tdshogi-deploy-*.zip
+
+# 系统文件
+.DS_Store
+Thumbs.db

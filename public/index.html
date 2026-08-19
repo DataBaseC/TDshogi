@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <title>TDShogi · 在线将棋对战平台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="nav"></header>
+
+  <main class="container">
+    <!-- Hero 区 -->
+    <section class="hero">
+      <h1 class="hero-title">TDShogi 将棋道場</h1>
+      <p class="hero-sub">日本将棋 · 在线实时对战 · 免注册即刻对局</p>
+      <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">
+        <a class="btn btn-primary btn-lg" href="lobby.html">⚔️ 开始对局</a>
+        <button class="btn btn-ghost btn-lg" id="btnRandomWatch">🎲 随机观战</button>
+      </div>
+    </section>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:32px;">
+      <!-- 系统公告 -->
+      <section class="card" style="padding:22px;">
+        <div class="section-title">系统公告</div>
+        <div id="announcements"></div>
+      </section>
+
+      <!-- ELO 排行榜 -->
+      <section class="card" style="padding:22px;">
+        <div class="section-title">ELO 排行榜</div>
+        <div id="leaderboard"></div>
+      </section>
+    </div>
+
+    <!-- 快捷入口 -->
+    <section style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px;">
+      <a class="card card-hover" href="lobby.html" style="padding:26px;text-align:center;display:block;">
+        <div style="font-size:34px;margin-bottom:10px;">⚔️</div>
+        <div style="font-weight:700;font-size:17px;">快速对战</div>
+        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">匹配或建房，与好友实时对局</div>
+      </a>
+      <a class="card card-hover" href="history.html" style="padding:26px;text-align:center;display:block;">
+        <div style="font-size:34px;margin-bottom:10px;">📜</div>
+        <div style="font-weight:700;font-size:17px;">棋谱回放</div>
+        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">回顾历史对局，导出 KIF/CSA</div>
+      </a>
+      <a class="card card-hover" href="tournaments.html" style="padding:26px;text-align:center;display:block;">
+        <div style="font-size:34px;margin-bottom:10px;">🏆</div>
+        <div style="font-weight:700;font-size:17px;">棋手赛事</div>
+        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">参与单败淘汰赛，争夺桂冠</div>
+      </a>
+    </section>
+
+    <!-- 进行中对局（观战） -->
+    <section class="card" style="padding:22px;">
+      <div class="section-title">正在进行的对局</div>
+      <div id="activeGames"></div>
+    </section>
+  </main>
+
+  <footer class="footer">TDShogi · 用 Web 技术致敬日本将棋文化</footer>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="js/nav.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/home.js"></script>
+</body>
+</html>

@@ -1,0 +1,700 @@
+/* ============================================================
+   TDShogi 全局样式 — 和风传统 × 现代深色
+   深墨蓝黑底衬托桧木暖色棋盘，金色点缀，卡片式圆角微动效
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+:root {
+  /* 背景 */
+  --bg: #14161a;
+  --bg-2: #1e2128;
+  --bg-3: #262a33;
+  --bg-hover: #2f343f;
+  /* 棋盘/暖色 */
+  --wood: #d8b98a;
+  --wood-dark: #b58863;
+  --wood-light: #e8cf9f;
+  /* 金色点缀 */
+  --gold: #c9a227;
+  --gold-light: #e8c46a;
+  /* 文字 */
+  --text: #f2ebd9;
+  --text-dim: #8a8f98;
+  --text-dark: #2c2c2c;
+  /* 功能色 */
+  --red: #b03a2e;
+  --red-light: #e05a47;
+  --green: #4caf50;
+  --orange: #e8a33d;
+  /* 布局 */
+  --radius: 14px;
+  --radius-sm: 8px;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  --nav-h: 60px;
+  --cell-size: 64px;
+  /* 系统字体栈优先：Windows 雅黑 / macOS 苹方 / Linux Noto */
+  --font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'SimSun', 'Songti SC', 'PingFang SC', 'Microsoft YaHei', serif;
+  --font-sans: 'Noto Sans SC', 'Source Han Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif;
+}
+
+/* ============ 亮色主题（覆盖 :root 变量） ============ */
+.theme-light {
+  --bg: #f4f1ea;
+  --bg-2: #ffffff;
+  --bg-3: #ece8df;
+  --bg-hover: #e2dccf;
+  /* 棋盘/暖色 */
+  --wood: #e2c99a;
+  --wood-dark: #c9a76f;
+  --wood-light: #f0ddb8;
+  /* 金色点缀 */
+  --gold: #b8860b;
+  --gold-light: #a9791a;
+  /* 文字 */
+  --text: #2c2c2c;
+  --text-dim: #6b7078;
+  --text-dark: #1a1a1a;
+  /* 功能色 */
+  --red: #b03a2e;
+  --red-light: #c94a3a;
+  --green: #2e8b57;
+  --orange: #d18a1a;
+  /* 布局 */
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.10);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 80% -10%, rgba(201, 162, 39, 0.10), transparent 60%),
+    radial-gradient(900px 400px at 10% 110%, rgba(176, 58, 46, 0.08), transparent 55%),
+    var(--bg);
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ============ 顶部导航 ============ */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid color-mix(in srgb, var(--gold) 20%, transparent);
+}
+
+/* ============ 主题切换按钮 ============ */
+.theme-toggle {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--gold) 30%, transparent);
+  background: var(--bg-2);
+  color: var(--gold-light);
+  font-size: 17px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.25s ease;
+}
+.theme-toggle:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 15%, transparent);
+  transform: translateY(-1px);
+}
+
+/* 管理员入口 */
+.admin-entry {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--gold) 30%, transparent);
+  background: var(--bg-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  opacity: 0.75;
+  transition: all 0.25s ease;
+}
+.admin-entry:hover {
+  border-color: var(--gold);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-serif);
+}
+.brand-logo {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  background: linear-gradient(135deg, var(--gold-light), var(--gold) 60%, var(--wood));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.brand-stamp {
+  font-size: 11px;
+  color: var(--red-light);
+  border: 1.5px solid var(--red);
+  border-radius: 5px;
+  padding: 1px 5px;
+  transform: rotate(-4deg);
+  opacity: 0.9;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+.nav-links a {
+  position: relative;
+  padding: 8px 16px;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  transition: color 0.2s;
+}
+.nav-links a:hover { color: var(--text); }
+.nav-links a::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--gold), transparent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.25s ease;
+}
+.nav-links a:hover::after { transform: scaleX(1); }
+.nav-links a.active {
+  color: var(--gold-light);
+}
+.nav-links a.active::after { transform: scaleX(1); }
+
+.nav-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.nav-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--bg-3), var(--wood-dark));
+  border: 1px solid var(--gold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ============ 通用容器 ============ */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 28px 60px;
+}
+
+.card {
+  background: linear-gradient(180deg, var(--bg-2), color-mix(in srgb, var(--bg-3) 60%, transparent));
+  border: 1px solid color-mix(in srgb, var(--text-dim) 18%, transparent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.section-title::before {
+  content: '';
+  width: 4px;
+  height: 20px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--gold), var(--gold-light));
+}
+
+/* ============ 按钮 ============ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold-light), var(--gold));
+  color: #1e2128;
+  box-shadow: 0 4px 16px rgba(201, 162, 39, 0.3);
+}
+.btn-primary:hover { box-shadow: 0 6px 24px rgba(201, 162, 39, 0.45); transform: translateY(-1px); }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(242, 235, 217, 0.2);
+  color: var(--text);
+}
+.btn-ghost:hover { border-color: var(--gold); color: var(--gold-light); background: rgba(201, 162, 39, 0.06); }
+.btn-danger { background: linear-gradient(135deg, var(--red-light), var(--red)); color: #fff; }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
+.btn-lg { padding: 14px 34px; font-size: 16px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 对手请求再来一局：按钮呼吸提示 */
+.btn.pulse {
+  animation: pulseGlow 1s ease-in-out infinite;
+  border: 2px solid var(--gold);
+}
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 162, 39, 0.45); }
+  50% { box-shadow: 0 0 0 8px rgba(201, 162, 39, 0); }
+}
+
+/* ============ 表单 ============ */
+.input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14px;
+  font-family: var(--font-sans);
+  transition: border-color 0.2s;
+}
+.input:focus { outline: none; border-color: var(--gold); }
+.input::placeholder { color: var(--text-dim); }
+
+.select {
+  padding: 10px 14px;
+  background: var(--bg-3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ============ 首页 hero ============ */
+.hero {
+  position: relative;
+  padding: 56px 0 48px;
+  text-align: center;
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(800px 300px at 50% 0%, rgba(201, 162, 39, 0.18), transparent 65%),
+    linear-gradient(180deg, var(--bg-2), var(--bg));
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  margin-bottom: 32px;
+}
+.hero-title {
+  font-family: var(--font-serif);
+  font-size: 44px;
+  font-weight: 900;
+  background: linear-gradient(120deg, var(--text), var(--gold-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-bottom: 12px;
+}
+.hero-sub { color: var(--text-dim); font-size: 16px; margin-bottom: 28px; }
+
+/* ============ 公告栏 ============ */
+.announce-card {
+  padding: 16px 20px;
+  border-left: 4px solid var(--gold);
+  margin-bottom: 12px;
+}
+.announce-title { font-weight: 700; font-size: 15px; color: var(--gold-light); }
+.announce-content { color: var(--text-dim); font-size: 13px; margin-top: 4px; line-height: 1.6; }
+.announce-date { font-size: 11px; color: var(--text-dim); opacity: 0.7; margin-top: 4px; }
+
+/* ============ 排行榜 ============ */
+.rank-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  transition: background 0.2s;
+}
+.rank-row:hover { background: var(--bg-hover); }
+.rank-row.self { background: rgba(201, 162, 39, 0.10); border: 1px solid rgba(201, 162, 39, 0.25); }
+.rank-no {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  background: var(--bg-3);
+  color: var(--text-dim);
+}
+.rank-no.top1 { background: linear-gradient(135deg, #ffd76a, var(--gold)); color: #1e2128; }
+.rank-no.top2 { background: linear-gradient(135deg, #c0c8d6, #8a94a8); color: #1e2128; }
+.rank-no.top3 { background: linear-gradient(135deg, #e2a86e, #b5733a); color: #1e2128; }
+.rank-name { flex: 1; font-weight: 600; }
+.rank-rating { font-weight: 800; color: var(--gold-light); font-size: 17px; }
+
+/* ============ 进行中对局列表 ============ */
+.game-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  margin-bottom: 12px;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.game-card:hover { border-color: var(--gold); transform: translateX(3px); }
+.game-card .players { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.game-card .vs { color: var(--text-dim); font-size: 12px; }
+.game-card .meta { color: var(--text-dim); font-size: 12px; }
+
+/* ============ 页脚 ============ */
+.footer {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 32px 0 40px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* ============ 对战页 ============ */
+.lobby-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 32px;
+}
+.lobby-card { padding: 28px; }
+.lobby-card h3 { font-family: var(--font-serif); font-size: 20px; margin-bottom: 18px; }
+.lobby-card p { color: var(--text-dim); font-size: 13px; margin-bottom: 16px; }
+
+/* 匹配等待动画 */
+.match-wait {
+  display: none;
+  text-align: center;
+  padding: 30px 0;
+}
+.match-wait.show { display: block; }
+.spinner {
+  width: 44px;
+  height: 44px;
+  border: 4px solid rgba(201, 162, 39, 0.2);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============ 对局页 ============ */
+.play-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 24px;
+}
+.play-main { display: flex; flex-direction: column; align-items: center; }
+
+/* 玩家栏 */
+.player-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 660px;
+  padding: 14px 20px;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s;
+}
+.player-bar.active {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.2);
+}
+.player-bar .name { font-weight: 700; font-size: 16px; }
+.player-bar .rating { color: var(--text-dim); font-size: 12px; }
+.player-clock {
+  margin-left: auto;
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  min-width: 90px;
+  text-align: right;
+}
+.player-clock.low { color: var(--red-light); animation: blink 0.8s step-start infinite; }
+@keyframes blink { 50% { opacity: 0.3; } }
+
+/* 棋盘容器 */
+.board-wrap { position: relative; margin: 18px 0; }
+.board-wrap canvas, .board-wrap svg { display: block; }
+
+/* 棋盘区：左=对手持驹，中=棋盘，右=自己持驹（水平三列） */
+.board-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.board-area .board-wrap { margin: 18px 0; flex: 0 0 auto; }
+.board-area .hand-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  width: 64px;
+}
+.board-area .hand-label { width: auto; margin-bottom: 8px; }
+.board-area .hand-pieces { display: flex; flex-direction: column; gap: 6px; }
+
+/* 持驹区 */
+.hand-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 52px;
+  padding: 8px 12px;
+  width: 100%;
+  max-width: 660px;
+  background: rgba(30, 33, 40, 0.6);
+  border-radius: var(--radius-sm);
+  margin: 6px 0;
+}
+.hand-label { color: var(--text-dim); font-size: 12px; width: 40px; }
+.hand-piece { position: relative; cursor: pointer; }
+.hand-piece .count {
+  position: absolute;
+  right: -4px;
+  top: -4px;
+  background: var(--gold);
+  color: #1e2128;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 右侧面板 */
+.play-side { display: flex; flex-direction: column; gap: 16px; }
+.panel { background: var(--bg-2); border: 1px solid color-mix(in srgb, var(--text-dim) 18%, transparent); border-radius: var(--radius); padding: 18px; }
+.panel h3 { font-size: 15px; margin-bottom: 12px; color: var(--gold-light); }
+
+.move-list {
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.move-row { display: flex; gap: 8px; padding: 4px 8px; border-radius: 4px; }
+.move-row:nth-child(even) { background: color-mix(in srgb, var(--text-dim) 6%, transparent); }
+.move-row .no { color: var(--text-dim); width: 28px; }
+.move-row.hl { background: rgba(201,162,39,0.15); }
+
+/* 升变弹层 */
+.promote-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.promote-overlay.show { display: flex; }
+.promote-box {
+  background: var(--bg-2);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  padding: 24px 32px;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+.promote-box h3 { margin-bottom: 18px; color: var(--gold-light); }
+.promote-actions { display: flex; gap: 12px; }
+
+/* 胜负横幅 */
+.banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg-2);
+  border: 2px solid var(--gold);
+  border-radius: 18px;
+  padding: 32px 48px;
+  text-align: center;
+  z-index: 150;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  display: none;
+}
+.banner.show { display: block; animation: popIn 0.3s ease; }
+@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.8); opacity: 0; } }
+
+/* ============ 棋谱页 / 回放 ============ */
+.replay-layout { display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 24px; }
+.record-item {
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid rgba(255,255,255,0.05);
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.record-item:hover { border-color: var(--gold); }
+.record-item .r-result { font-size: 13px; font-weight: 700; }
+.result-win { color: var(--gold-light); }
+.result-lose { color: var(--red-light); }
+.result-draw { color: var(--text-dim); }
+
+/* ============ 赛事页 ============ */
+.tournament-card { padding: 20px; margin-bottom: 16px; }
+.bracket {
+  display: flex;
+  gap: 40px;
+  overflow-x: auto;
+  padding: 20px;
+}
+.bracket-col { display: flex; flex-direction: column; justify-content: space-around; gap: 16px; min-width: 200px; }
+.bracket-match {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid rgba(255,255,255,0.08);
+  text-align: center;
+}
+.bracket-match .p { font-size: 13px; padding: 3px 0; }
+.bracket-match .winner { color: var(--gold-light); font-weight: 700; }
+
+/* ============ 个人页 ============ */
+.profile-head { display: flex; align-items: center; gap: 24px; padding: 28px; margin-bottom: 24px; }
+.profile-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold-light), var(--wood-dark));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 900;
+  color: #1e2128;
+}
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.stat-card { padding: 20px; text-align: center; }
+.stat-card .num { font-size: 30px; font-weight: 800; color: var(--gold-light); font-family: var(--font-serif); }
+.stat-card .label { color: var(--text-dim); font-size: 13px; margin-top: 6px; }
+
+/* ============ Toast 提示 ============ */
+.toast {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-3);
+  border: 1px solid var(--gold);
+  color: var(--text);
+  padding: 12px 24px;
+  border-radius: 10px;
+  font-size: 14px;
+  z-index: 300;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(4px); }
+
+/* 管理后台：标签与弹层 */
+.tab-btn.active { opacity: 1; }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 250;
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 900px) {
+  .play-layout, .replay-layout { grid-template-columns: 1fr; }
+  .lobby-grid { grid-template-columns: 1fr; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .hero-title { font-size: 32px; }
+  /* 窄屏棋盘缩小 */
+  :root { --cell-size: 48px; }
+  .play-side { order: -1; }  /* 对局页侧栏移到棋盘上方 */
+}
+
+@media (max-width: 640px) {
+  :root { --cell-size: 38px; }
+  .container { padding: 16px 12px 48px; }
+  .nav { padding: 0 14px; }
+  .nav-links a { padding: 8px 10px; font-size: 13px; }
+  .board-area .hand-row { width: 44px; }
+  .board-area .hand-row .hand-pieces { gap: 4px; }
+  .play-main .player-bar { max-width: none; }
+  .hero { padding: 36px 0 32px; }
+  .hero-title { font-size: 26px; }
+  .hero-sub { font-size: 14px; }
+}
