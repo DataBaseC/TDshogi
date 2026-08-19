@@ -60,3 +60,9 @@
 - 结果：从底往上完成四层——SQLite 存储（storage.js 改 better-sqlite3，兼容接口 + 旧 JSON 自动迁移）、对局快照重启恢复（gamesnapshots 表 + restoreSnapshots，杀进程重启双方可续局）、棋谱检索（SQLite JSON 函数组合条件 + 前端检索栏）、观战聊天（房间广播 + 节流）。全量回归 81 项通过（44+15+13+9），另 chat 7/7。
 - 原因：用户明确"从底层往上层做"——先存储（一切数据能力的地基）→ 再恢复（对局可靠性）→ 检索（依赖 SQLite 查询）→ 聊天（纯增量）。SQLite 选 better-sqlite3 而非 node:sqlite（后者实验性有警告）；兼容层设计让业务模块近乎零改动。
 - 对策：每个提交独立（store/recovery/search/chat 4 个 commit），回归资产新增 e2e-snapshot.js（9 项）+ e2e-chat.js（7 项）；教训——e2e-snapshot 首次"假失败"根因是残留 node 服务器进程污染快照表（playing=3 而非 1），排查顺序应是"先查有没有多余进程"再怀疑功能；timecontrol 偶发 8/10 是服务器被前序测试拖慢的 tick 波动，单独跑即 10/10。
+
+## 2026-08 观战身份隔离回归修复（round 10，用户报障）
+
+- 结果：修复「对战后一方空棋盘无法操作」+「观战者加入后选手 ID 变观战者」：handleConnection 不再自动 reconnect（改 findPendingGame 仅探测报告，绑定延后到 request_state），前端处理 replaced。全量回归 94 项通过（新增 e2e-spectator-identity 6/6）。
+- 原因：同浏览器多窗口共享 localStorage guestId——观战窗口连接时 handleConnection 的自动 reconnect() 按 playerId 匹配座位，把观战窗口误绑为玩家座位，顶掉原玩家绑定 → 玩家空棋盘、观战者变"选手"。
+- 对策：重连意图由 request_state（玩家明确请求）区分，观战走 spectate 永不触发；hello 保留 reconnect 探测结果供前端提示；前端 replaced 提示 + 禁用操作；教训——主 e2e 曾"卡死"是测试脚本缺 process.exit（失败时 ws 保持事件循环挂起），补 process.exit 后恢复；临时二分文件 e2e-test-noc.js 误提交已移除，git 保持干净。
