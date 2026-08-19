@@ -11,9 +11,7 @@
 'use strict';
 
 const { randomBytes } = require('crypto');
-const { SESSIONS_DIR, readJson, writeJson } = require('./storage');
-const fs = require('fs');
-const path = require('path');
+const { readJson, writeJson, listSessions: dbListSessions } = require('./storage');
 
 const DEFAULT_NAMES = [
   '无名棋士', '一歩名人', '飛車使い', '銀将', '桂馬',
@@ -24,10 +22,6 @@ function genId() {
   return randomBytes(12).toString('hex');
 }
 
-function sessionFile(id) {
-  return path.join(SESSIONS_DIR, `${id}.json`);
-}
-
 /**
  * 解析 / 校验游客身份，返回会话对象（不存在则创建）。
  * @param {string|null} guestId 客户端携带的游客 id
@@ -35,13 +29,10 @@ function sessionFile(id) {
  */
 function identify(guestId) {
   let id = guestId && /^[0-9a-f]{24}$/.test(guestId) ? guestId : genId();
-  const file = sessionFile(id);
   const relPath = `sessions/${id}.json`;
   let session;
   try {
-    if (fs.existsSync(file)) {
-      session = readJson(relPath, null);
-    }
+    session = readJson(relPath, null);
   } catch (_) {
     session = null;
   }
@@ -71,8 +62,6 @@ function identify(guestId) {
  */
 function load(guestId) {
   if (!guestId || !/^[0-9a-f]{24}$/.test(guestId)) return null;
-  const file = sessionFile(guestId);
-  if (!fs.existsSync(file)) return null;
   return readJson(`sessions/${guestId}.json`, null);
 }
 
@@ -120,17 +109,7 @@ function upsertSession(id, name) {
  */
 function listSessions() {
   try {
-    if (!fs.existsSync(SESSIONS_DIR)) return [];
-    return fs.readdirSync(SESSIONS_DIR)
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => {
-        try {
-          return readJson(`sessions/${f}`, null);
-        } catch (_) {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    return dbListSessions();
   } catch (_) {
     return [];
   }

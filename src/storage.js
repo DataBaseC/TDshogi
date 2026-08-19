@@ -1,44 +1,117 @@
 /**
- * storage.js — 轻量 JSON 文件存储工具
+ * storage.js — SQLite 存储层（better-sqlite3）
  *
- * 平台不依赖数据库，所有持久化数据以 JSON 文件落盘到 data/ 目录。
- * 本模块提供统一的读取 / 写入 / 原子保存能力，并对读取失败做优雅降级
- * （返回默认值而不是抛异常），确保服务端健壮、易测试。
+ * 将原先的 JSON 文件存储迁移到单一 SQLite 数据库（data/tdshogi.db），
+ * 对外保持与旧版兼容的接口，各业务模块无需改动：
+ *
+ *  - readJson(name, fallback) / writeJson(name, data)
+ *    通用键值存储（ratings/tournaments/accounts/announcements/admin）
+ *  - records 表：棋谱（id 主键 + 数据 JSON + createdAt 索引）
+ *  - sessions 表：游客/账号会话（id 主键 + 数据 JSON）
+ *
+ * 首次启动自动把旧 data/*.json 与 data/records/*.json 迁移进库。
+ * 依赖：better-sqlite3（node_modules 预编译，无需构建工具）。
  */
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const Database = require('better-sqlite3');
 
 // 运行时数据根目录（可用环境变量 DATA_DIR 覆盖，便于部署到持久目录）
-// 默认相对项目根目录 data/
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, '..', 'data');
-const RECORDS_DIR = path.join(DATA_DIR, 'records');
+const DB_PATH = path.join(DATA_DIR, 'tdshogi.db');
+const RECORDS_DIR = path.join(DATA_DIR, 'records'); // 保留（旧数据迁移源 + 兼容）
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function ensureDataDirs() {
+// ---------------- 数据库初始化 ----------------
+let db = null;
+
+function getDb() {
+  if (db) return db;
   ensureDir(DATA_DIR);
-  ensureDir(RECORDS_DIR);
-  ensureDir(SESSIONS_DIR);
+  db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');      // 读写并发友好
+  db.pragma('synchronous = NORMAL');    // 性能与安全平衡
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS records (
+      id        TEXT PRIMARY KEY,
+      data      TEXT NOT NULL,
+      createdAt INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_records_createdAt ON records(createdAt);
+    CREATE TABLE IF NOT EXISTS sessions (
+      id   TEXT PRIMARY KEY,
+      data TEXT NOT NULL
+    );
+  `);
+  migrateLegacyJson();
+  return db;
 }
 
+// ---------------- 旧 JSON 数据一次性迁移 ----------------
+function migrateLegacyJson() {
+  // 通用 kv 文件（ratings/tournaments/accounts/announcements/admin）
+  for (const name of ['ratings.json', 'tournaments.json', 'accounts.json', 'announcements.json', 'admin.json']) {
+    const file = path.join(DATA_DIR, name);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (data && typeof data === 'object') {
+        const stmt = db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)');
+        stmt.run(name, JSON.stringify(data));
+        // 迁移后改名备份，避免重复迁移
+        fs.renameSync(file, `${file}.bak`);
+      }
+    } catch (_) { /* 忽略损坏文件 */ }
+  }
+  // records/*.json
+  if (fs.existsSync(RECORDS_DIR)) {
+    const insert = db.prepare('INSERT OR REPLACE INTO records (id, data, createdAt) VALUES (?, ?, ?)');
+    const files = fs.readdirSync(RECORDS_DIR).filter((f) => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(RECORDS_DIR, f), 'utf8'));
+        if (rec && rec.id) insert.run(rec.id, JSON.stringify(rec), rec.createdAt || Date.now());
+      } catch (_) {}
+    }
+    // 迁移后目录改名（保留备份）
+    if (files.length) fs.renameSync(RECORDS_DIR, `${RECORDS_DIR}.bak`);
+  }
+  // sessions/*.json
+  if (fs.existsSync(SESSIONS_DIR)) {
+    const insert = db.prepare('INSERT OR REPLACE INTO sessions (id, data) VALUES (?, ?)');
+    const files = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, f), 'utf8'));
+        if (s && s.id) insert.run(s.id, JSON.stringify(s));
+      } catch (_) {}
+    }
+    if (files.length) fs.renameSync(SESSIONS_DIR, `${SESSIONS_DIR}.bak`);
+  }
+}
+
+// ---------------- 兼容接口：通用 kv ----------------
 /**
- * 读取 JSON 文件，文件不存在或解析失败时返回 fallback。
- * @param {string} name 文件名（相对 data/）
- * @param {*} fallback 默认值
- * @returns {*}
+ * 读取 JSON（key 形式：'ratings.json' 等）。兼容旧接口。
  */
 function readJson(name, fallback = null) {
-  const file = path.join(DATA_DIR, name);
+  const d = getDb();
   try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    const row = d.prepare('SELECT value FROM kv WHERE key = ?').get(String(name));
+    if (!row) return fallback;
+    return JSON.parse(row.value);
   } catch (err) {
     console.error(`[storage] 读取 ${name} 失败: ${err.message}`);
     return fallback;
@@ -46,33 +119,68 @@ function readJson(name, fallback = null) {
 }
 
 /**
- * 原子写入 JSON 文件（先写临时文件再 rename，避免半写损坏）。
- * @param {string} name 文件名（相对 data/）
- * @param {*} data 任意可 JSON 序列化的数据
+ * 写入 JSON（key 形式）。兼容旧接口。
  */
 function writeJson(name, data) {
-  ensureDataDirs();
-  const file = path.join(DATA_DIR, name);
-  const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-  fs.renameSync(tmp, file);
+  const d = getDb();
+  try {
+    d.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)')
+      .run(String(name), JSON.stringify(data));
+  } catch (err) {
+    console.error(`[storage] 写入 ${name} 失败: ${err.message}`);
+  }
 }
 
-/**
- * 读取记录文件列表（records/ 目录），返回文件绝对路径数组。
- * @param {string[]} [exts] 允许的扩展名，缺省为 .json
- */
+// ---------------- records / sessions 表接口 ----------------
+function recordExists(id) {
+  return !!getDb().prepare('SELECT 1 FROM records WHERE id = ?').get(id);
+}
+
+function getRecordById(id) {
+  const row = getDb().prepare('SELECT data FROM records WHERE id = ?').get(id);
+  return row ? JSON.parse(row.data) : null;
+}
+
+function putRecord(rec) {
+  getDb().prepare('INSERT OR REPLACE INTO records (id, data, createdAt) VALUES (?, ?, ?)')
+    .run(rec.id, JSON.stringify(rec), rec.createdAt || Date.now());
+}
+
+function listRecords(limit = 500) {
+  const rows = getDb()
+    .prepare('SELECT data FROM records ORDER BY createdAt DESC, id DESC LIMIT ?')
+    .all(limit);
+  return rows.map((r) => JSON.parse(r.data));
+}
+
+function sessionExists(id) {
+  return !!getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
+}
+
+function getSessionById(id) {
+  const row = getDb().prepare('SELECT data FROM sessions WHERE id = ?').get(id);
+  return row ? JSON.parse(row.data) : null;
+}
+
+function putSession(session) {
+  getDb().prepare('INSERT OR REPLACE INTO sessions (id, data) VALUES (?, ?)')
+    .run(session.id, JSON.stringify(session));
+}
+
+function listSessions() {
+  const rows = getDb().prepare('SELECT data FROM sessions').all();
+  return rows.map((r) => JSON.parse(r.data));
+}
+
+// ---------------- 兼容旧导出（供仍引用 RECORDS_DIR 的代码） ----------------
+function ensureDataDirs() {
+  ensureDir(DATA_DIR);
+  getDb(); // 初始化库（含迁移）
+}
+
 function listRecordFiles(exts = ['.json']) {
-  try {
-    if (!fs.existsSync(RECORDS_DIR)) return [];
-    return fs.readdirSync(RECORDS_DIR)
-      .filter((f) => exts.some((e) => f.toLowerCase().endsWith(e)))
-      .map((f) => path.join(RECORDS_DIR, f))
-      .sort();
-  } catch (err) {
-    console.error(`[storage] 读取 records 目录失败: ${err.message}`);
-    return [];
-  }
+  // 旧接口返回文件路径数组；SQLite 下返回空（业务已改用表接口）
+  return [];
 }
 
 module.exports = {
@@ -83,4 +191,15 @@ module.exports = {
   readJson,
   writeJson,
   listRecordFiles,
+  // 表级接口
+  recordExists,
+  getRecordById,
+  putRecord,
+  listRecords,
+  sessionExists,
+  getSessionById,
+  putSession,
+  listSessions,
+  // 仅供测试/工具
+  _getDb: getDb,
 };

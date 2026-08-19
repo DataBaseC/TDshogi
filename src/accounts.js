@@ -17,9 +17,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const { DATA_DIR, readJson, writeJson } = require('./storage');
+const { readJson, writeJson } = require('./storage');
 const auth = require('./auth');
 
 const ACCOUNTS_FILE = 'accounts.json';
@@ -27,8 +25,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'tdshogi_session_secret_cha
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
 const MAX_USERNAME = 16;
 const MIN_PASSWORD = 4;
-
-const accountsPath = () => path.join(DATA_DIR, ACCOUNTS_FILE);
 
 let cache = null;
 function getCache() {
@@ -170,30 +166,22 @@ function migrateGuestData(guestId, accountId) {
       delete ratings[guestId];
       writeJson('ratings.json', ratings);
     }
-    // 2. 对局记录（playerIds / winnerId 替换）
-    const recordsDir = path.join(DATA_DIR, 'records');
-    if (fs.existsSync(recordsDir)) {
-      for (const f of fs.readdirSync(recordsDir)) {
-        if (!f.endsWith('.json')) continue;
-        const file = path.join(recordsDir, f);
-        try {
-          const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-          let changed = false;
-          if (rec.playerIds && rec.playerIds.b === guestId) { rec.playerIds.b = accountId; changed = true; }
-          if (rec.playerIds && rec.playerIds.w === guestId) { rec.playerIds.w = accountId; changed = true; }
-          if (rec.winnerId === guestId) { rec.winnerId = accountId; changed = true; }
-          if (changed) fs.writeFileSync(file, JSON.stringify(rec, null, 2), 'utf8');
-        } catch (_) {}
-      }
+    // 2. 对局记录（playerIds / winnerId 替换）—— 遍历 SQLite records 表
+    const { listRecords: dbList, putRecord } = require('./storage');
+    for (const rec of dbList(100000)) {
+      let changed = false;
+      if (rec.playerIds && rec.playerIds.b === guestId) { rec.playerIds.b = accountId; changed = true; }
+      if (rec.playerIds && rec.playerIds.w === guestId) { rec.playerIds.w = accountId; changed = true; }
+      if (rec.winnerId === guestId) { rec.winnerId = accountId; changed = true; }
+      if (changed) putRecord(rec);
     }
-    // 3. 游客会话文件重命名（保留名字/创建时间）
-    const sessionFile = path.join(DATA_DIR, 'sessions', `${guestId}.json`);
-    if (fs.existsSync(sessionFile)) {
-      const newFile = path.join(DATA_DIR, 'sessions', `${accountId}.json`);
-      if (!fs.existsSync(newFile)) fs.renameSync(sessionFile, newFile);
+    // 3. 游客会话 → 账号会话（保留名字/创建时间）
+    const s = require('./storage').getSessionById(guestId);
+    if (s && !require('./storage').getSessionById(accountId)) {
+      s.id = accountId;
+      require('./storage').putSession(s);
     }
     // 4. 在缓存中使 rating 缓存失效（下轮自动重读）
-    // ratings.js 的 cache 是模块级变量，无法直接清；通过 nextTick 强制刷新
     try { require('./ratings').refreshCache(); } catch (_) {}
   } catch (err) {
     console.error('[accounts] 游客数据迁移失败:', err.message);

@@ -12,6 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "express": "^4.19.0",
     "shogi.js": "^5.4.0",
     "ws": "^8.17.0"

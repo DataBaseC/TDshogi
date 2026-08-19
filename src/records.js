@@ -10,10 +10,8 @@
  */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { Shogi, Color } = require('shogi.js');
-const { RECORDS_DIR } = require('./storage');
+const { putRecord, getRecordById, listRecords: dbListRecords } = require('./storage');
 const { parseUsiMove, usiSquareToXY } = require('./coords');
 const { KIND_NAME } = require('./game');
 
@@ -108,7 +106,6 @@ let recordSeq = 0;
  * 保存一局棋谱（JSON），返回记录对象。
  */
 function saveRecord(data) {
-  fs.mkdirSync(RECORDS_DIR, { recursive: true });
   recordSeq += 1;
   const now = Date.now();
   const id = `${now.toString(36)}${recordSeq.toString(36)}`;
@@ -126,31 +123,21 @@ function saveRecord(data) {
     createdAt: data.createdAt || now,
     durationSec: data.durationSec || null,
   };
-  fs.writeFileSync(path.join(RECORDS_DIR, `${id}.json`), JSON.stringify(record, null, 2), 'utf8');
+  putRecord(record);
   return record;
 }
 
 function listRecords(limit = 200) {
   try {
-    if (!fs.existsSync(RECORDS_DIR)) return [];
-    const files = fs.readdirSync(RECORDS_DIR).filter((f) => f.endsWith('.json')).sort().reverse().slice(0, limit);
-    const out = [];
-    for (const f of files) {
-      try {
-        out.push(JSON.parse(fs.readFileSync(path.join(RECORDS_DIR, f), 'utf8')));
-      } catch (_) {}
-    }
-    return out;
+    return dbListRecords(limit);
   } catch (_) {
     return [];
   }
 }
 
 function getRecord(id) {
-  const file = path.join(RECORDS_DIR, `${id}.json`);
   try {
-    if (!fs.existsSync(file)) return null;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    return getRecordById(id);
   } catch (_) {
     return null;
   }
@@ -379,9 +366,7 @@ function isOwner(rec, playerId) {
 }
 
 function writeRecord(record) {
-  fs.mkdirSync(RECORDS_DIR, { recursive: true });
-  const file = path.join(RECORDS_DIR, `${record.id}.json`);
-  fs.writeFileSync(file, JSON.stringify(record, null, 2));
+  putRecord(record);
 }
 
 module.exports = {
