@@ -66,3 +66,9 @@
 - 结果：修复「对战后一方空棋盘无法操作」+「观战者加入后选手 ID 变观战者」：handleConnection 不再自动 reconnect（改 findPendingGame 仅探测报告，绑定延后到 request_state），前端处理 replaced。全量回归 94 项通过（新增 e2e-spectator-identity 6/6）。
 - 原因：同浏览器多窗口共享 localStorage guestId——观战窗口连接时 handleConnection 的自动 reconnect() 按 playerId 匹配座位，把观战窗口误绑为玩家座位，顶掉原玩家绑定 → 玩家空棋盘、观战者变"选手"。
 - 对策：重连意图由 request_state（玩家明确请求）区分，观战走 spectate 永不触发；hello 保留 reconnect 探测结果供前端提示；前端 replaced 提示 + 禁用操作；教训——主 e2e 曾"卡死"是测试脚本缺 process.exit（失败时 ws 保持事件循环挂起），补 process.exit 后恢复；临时二分文件 e2e-test-noc.js 误提交已移除，git 保持干净。
+
+## 2026-08 同 guestId 多窗口互顶（round 11，用户复报）
+
+- 结果：修复「同浏览器多窗口（建房+加入+观战共享 guestId）」导致全部窗口收到 replaced 被顶替信号、前端禁用棋盘（表现为对局状态出错/无法操作/ID 错乱）：protocol 层 guestToClient 单值映射改 playerToClients 多值集合，移除连接时 replaced 通知。真实浏览器三窗口验证通过，全量回归 94 项。
+- 原因：guestToClient（playerId→单 clientId）+ 每次连接即发 replaced 的设计，把"同身份多连接"（同浏览器多标签的合法场景）误判为"账号被顶替"。前一轮修的是"观战不抢座位"，但没处理"多窗口互相收 replaced"这条更普遍的路径。
+- 对策：架构文档先行（docs/ARCHITECTURE.md 第 6 章连接绑定专章），按文档的映射表逐一核对才发现 guestToClient 单值是根源；playerToClients 多值映射 + _sendToPlayer 广播全部连接；rooms 层座位绑定不受影响；教训——用户说"没修复"时不要重复旧假设，应回到架构文档用真实操作链（同浏览器多窗口）重新复现，而非仅验证独立身份场景。
