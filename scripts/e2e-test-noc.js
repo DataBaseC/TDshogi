@@ -316,13 +316,9 @@ async function main() {
   if (failures.length) {
     console.log('失败项：');
     failures.forEach((f) => console.log(`  - ${f}`));
+    process.exitCode = 1;
   }
-  // 关闭所有连接并退出（避免 ws 保持事件循环导致进程挂起）
-  [A, B, C, C2, C3, A2, A3, D, E, F].forEach((c) => c && c.close && c.close());
-  process.exit(fail ? 1 : 0);
+  [A, B, C, A2, D, E].forEach((c) => c.close());
 }
 
-main().catch((e) => {
-  console.error('测试异常:', e && e.message);
-  process.exit(1);
-});
+main().catch((e) => { console.error('测试异常:', e); process.exitCode = 1; });

@@ -434,6 +434,11 @@
   api.on('error', (data) => {
     if (data && data.message) toast(data.message);
   });
+  // 同身份在别处登录：本页被顶替，提示并停止操作
+  api.on('replaced', () => {
+    toast('此身份已在其他窗口登录，本页已断开');
+    board.setInteractive(false);
+  });
 
   // ==================================================================
   // 聊天

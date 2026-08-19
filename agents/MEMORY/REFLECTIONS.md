@@ -54,3 +54,9 @@
 
 
 
+
+## 2026-08 底层架构四层（round 9，用户指定 6→5→10→4）
+
+- 结果：从底往上完成四层——SQLite 存储（storage.js 改 better-sqlite3，兼容接口 + 旧 JSON 自动迁移）、对局快照重启恢复（gamesnapshots 表 + restoreSnapshots，杀进程重启双方可续局）、棋谱检索（SQLite JSON 函数组合条件 + 前端检索栏）、观战聊天（房间广播 + 节流）。全量回归 81 项通过（44+15+13+9），另 chat 7/7。
+- 原因：用户明确"从底层往上层做"——先存储（一切数据能力的地基）→ 再恢复（对局可靠性）→ 检索（依赖 SQLite 查询）→ 聊天（纯增量）。SQLite 选 better-sqlite3 而非 node:sqlite（后者实验性有警告）；兼容层设计让业务模块近乎零改动。
+- 对策：每个提交独立（store/recovery/search/chat 4 个 commit），回归资产新增 e2e-snapshot.js（9 项）+ e2e-chat.js（7 项）；教训——e2e-snapshot 首次"假失败"根因是残留 node 服务器进程污染快照表（playing=3 而非 1），排查顺序应是"先查有没有多余进程"再怀疑功能；timecontrol 偶发 8/10 是服务器被前序测试拖慢的 tick 波动，单独跑即 10/10。

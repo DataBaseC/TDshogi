@@ -78,8 +78,9 @@ class Protocol {
     }
     this.guestToClient.set(session.id, clientId);
 
-    // 尝试断线重连（如果该玩家有一局未结束的对局）
-    const reconnect = this.rooms.reconnect(clientId, session.id);
+    // 探测是否存在未结束对局（仅报告，不绑定——绑定由 request_state 完成，
+    // 避免观战窗口同 guestId 连接时误绑玩家座位）
+    const pending = this.rooms.findPendingGame(session.id);
 
     // 发送欢迎消息 + 初始状态
     ws.send(JSON.stringify({
@@ -88,15 +89,10 @@ class Protocol {
         clientId,
         playerId: session.id,
         name: session.name,
-        reconnect: reconnect.ok ? reconnect : null,
+        reconnect: pending ? { ok: true, ...pending } : null,
         stats: this.rooms.stats(),
       },
     }));
-
-    if (reconnect.ok) {
-      const state = this.rooms.getRoomStateForClient(clientId);
-      ws.send(JSON.stringify({ type: 'state', data: state }));
-    }
 
     this._sendToPlayer(session.id, { type: 'player_updated', data: { id: session.id, name: session.name } });
 
@@ -233,11 +229,17 @@ class Protocol {
       }
       case 'request_state': {
         let state = r.getRoomStateForClient(clientId);
-        // 页面跳转竞态兜底：新连接先于旧连接 close 到达时无绑定，
-        // 按 playerId 强制绑回进行中的对局，避免页面空棋盘/时钟不动
         if (!state) {
-          const bound = r.bindToActiveGame(clientId, player.playerId);
-          if (bound && bound.ok) state = r.getRoomStateForClient(clientId);
+          // 断线重连：玩家明确请求状态（request_state）时才尝试恢复对局，
+          // 避免观战窗口（同 guestId）误绑玩家座位
+          const rec = r.reconnect(clientId, player.playerId);
+          if (rec.ok) {
+            state = r.getRoomStateForClient(clientId);
+          } else {
+            // 页面跳转竞态兜底：新连接先于旧连接 close 到达时无绑定
+            const bound = r.bindToActiveGame(clientId, player.playerId);
+            if (bound && bound.ok) state = r.getRoomStateForClient(clientId);
+          }
         }
         if (state) this._send(clientId, { type: 'state', data: state });
         break;

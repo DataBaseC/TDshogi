@@ -840,6 +840,25 @@ class RoomManager {
   // ==================================================================
   // 断线重连
   // ==================================================================
+
+  /**
+   * 探测玩家是否有未结束的对局（不绑定，仅报告；绑定由 request_state 完成，
+   * 避免同 guestId 的观战窗口连接时误绑玩家座位）。
+   * @returns {{roomId:string, seat:string}|null}
+   */
+  findPendingGame(playerId) {
+    for (const room of this.rooms.values()) {
+      if (room.status !== 'PLAYING') continue;
+      for (const seat of ['b', 'w']) {
+        const p = room.players[seat];
+        if (p && p.playerId === playerId) {
+          return { roomId: room.id, seat };
+        }
+      }
+    }
+    return null;
+  }
+
   reconnect(clientId, playerId) {
     // 根据 playerId 找到其所在房间（可能断线）
     for (const room of this.rooms.values()) {
