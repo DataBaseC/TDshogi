@@ -33,8 +33,8 @@ class Protocol {
     this.clients = new Map();
     // clientId -> { playerId, name, guestId }
     this.playerRegistry = new Map();
-    // guestId -> clientId
-    this.guestToClient = new Map();
+    // playerId -> Set<clientId>（同一身份可有多窗口连接，全部保留）
+    this.playerToClients = new Map();
 
     this.rooms = new RoomManager((clientId, payload) => {
       const ws = this.clients.get(clientId);
@@ -68,15 +68,9 @@ class Protocol {
       name: session.name,
       guestId: session.id,
     });
-    if (this.guestToClient.has(session.id)) {
-      // 旧连接被新连接顶替（重连），通知旧连接下线
-      const oldClient = this.guestToClient.get(session.id);
-      const oldWs = this.clients.get(oldClient);
-      if (oldWs && oldWs !== ws) {
-        try { oldWs.send(JSON.stringify({ type: 'replaced' })); } catch (_) {}
-      }
-    }
-    this.guestToClient.set(session.id, clientId);
+    // 同一身份可多窗口并存（同浏览器多标签），全部登记，不互相顶替
+    if (!this.playerToClients.has(session.id)) this.playerToClients.set(session.id, new Set());
+    this.playerToClients.get(session.id).add(clientId);
 
     // 探测是否存在未结束对局（仅报告，不绑定——绑定由 request_state 完成，
     // 避免观战窗口同 guestId 连接时误绑玩家座位）
@@ -105,8 +99,12 @@ class Protocol {
 
   _onClose(clientId) {
     const info = this.playerRegistry.get(clientId);
-    if (info && this.guestToClient.get(info.guestId) === clientId) {
-      this.guestToClient.delete(info.guestId);
+    if (info) {
+      const set = this.playerToClients.get(info.guestId);
+      if (set) {
+        set.delete(clientId);
+        if (set.size === 0) this.playerToClients.delete(info.guestId);
+      }
     }
     this.clients.delete(clientId);
     this.playerRegistry.delete(clientId);
@@ -381,8 +379,11 @@ class Protocol {
   }
 
   _sendToPlayer(playerId, payload) {
-    const clientId = this.guestToClient.get(playerId);
-    if (clientId) this._send(clientId, payload);
+    // 发给该身份的所有活跃连接（同浏览器多窗口都能收到）
+    const set = this.playerToClients.get(playerId);
+    if (set) {
+      for (const clientId of set) this._send(clientId, payload);
+    }
   }
 
   _broadcastToRoomState(roomId) {

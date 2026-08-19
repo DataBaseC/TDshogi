@@ -1,0 +1,11 @@
+﻿fix(identity): 同 guestId 多窗口互不顶替
+
+问题：同浏览器开多窗口（建房+加入+观战）共享 localStorage guestId，
+旧逻辑 guestToClient 单值映射 + replaced 通知，导致所有窗口收到
+被顶替信号，前端禁用棋盘 -> 表现为对局状态出错/无法操作
+
+修复：
+- protocol 层改用 playerToClients（playerId 到 Set<clientId>）多值映射
+- 移除连接时的 replaced 顶替通知（同身份多连接合法，不再互斥）
+- _sendToPlayer 广播给该身份所有活跃连接
+- rooms 层座位绑定（clientToPlayer）保持独立，不受影响
