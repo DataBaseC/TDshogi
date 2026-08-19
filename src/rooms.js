@@ -471,6 +471,34 @@ class RoomManager {
     return { ok: true };
   }
 
+  /**
+   * 房间聊天：玩家或观战者发言，广播给房间内所有人（含观战者）。
+   * 防刷屏：单客户端 2 秒内最多 1 条。
+   */
+  chat(clientId, text) {
+    const msg = String(text || '').trim().slice(0, 200);
+    if (!msg) return { ok: false, error: '消息为空' };
+    const roomId = this.clientToRoom.get(clientId);
+    if (!roomId) return { ok: false, error: '你不在任何房间中' };
+    const room = this._room(roomId);
+    if (!room) return { ok: false, error: '房间不存在' };
+    // 节流
+    const now = Date.now();
+    if (this._lastChatTs && this._lastChatTs[clientId] && now - this._lastChatTs[clientId] < 2000) {
+      return { ok: false, error: '发言太频繁，请稍候' };
+    }
+    this._lastChatTs = this._lastChatTs || {};
+    this._lastChatTs[clientId] = now;
+    // 发言者名字
+    const seat = this.clientToPlayer.get(clientId);
+    const name = seat && room.players[seat.seat] ? room.players[seat.seat].name : '观众';
+    this._broadcast(roomId, {
+      type: 'chat',
+      data: { name, text: msg, ts: now },
+    });
+    return { ok: true };
+  }
+
   _checkGameOver(room) {
     const game = room.game;
     if (!game.isGameOver()) return;

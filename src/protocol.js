@@ -242,6 +242,12 @@ class Protocol {
         if (state) this._send(clientId, { type: 'state', data: state });
         break;
       }
+      case 'chat': {
+        // 房间聊天（玩家/观战者）
+        const res = r.chat(clientId, data && data.text);
+        if (!res.ok) this._error(clientId, res.error);
+        break;
+      }
       case 'admin_login': {
         const res = admin.login(data && data.password);
         if (res.ok) {

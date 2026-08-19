@@ -435,6 +435,43 @@
     if (data && data.message) toast(data.message);
   });
 
+  // ==================================================================
+  // 聊天
+  // ==================================================================
+  const chatBox = $('chatBox');
+  const chatInput = $('chatInput');
+  function appendChat(msg) {
+    if (!chatBox) return;
+    const row = document.createElement('div');
+    row.className = 'chat-msg' + (msg.sys ? ' sys' : '');
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = msg.name || '';
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = msg.text;
+    row.appendChild(who);
+    row.appendChild(text);
+    chatBox.appendChild(row);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    while (chatBox.children.length > 100) chatBox.removeChild(chatBox.firstChild);
+  }
+  function sendChat() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    api.send({ type: 'chat', data: { text } });
+    chatInput.value = '';
+  }
+  if ($('btnChatSend')) $('btnChatSend').addEventListener('click', sendChat);
+  if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+  api.on('chat', (data) => {
+    if (data) appendChat({ name: data.name, text: data.text });
+  });
+  // 观战者进入时系统提示
+  api.on('spectating', () => {
+    appendChat({ name: '系统', text: '你已进入观战，欢迎交流！', sys: true });
+  });
+
   // 仅当显式带 spectate=1 参数时才进入观战（来自观战列表/随机观战入口）
   // 玩家（建房/加入/匹配/重连）跳转不带 spectate，走 request_state，由服务端按连接身份返回对应状态
   const params = new URLSearchParams(location.search);
