@@ -158,6 +158,59 @@ function listRecords(limit = 500) {
   return rows.map((r) => JSON.parse(r.data));
 }
 
+/**
+ * 检索棋谱（条件可组合，全部可选）：
+ * @param {object} q
+ *  - playerId: 按玩家过滤（先手或后手）
+ *  - movesMin / movesMax: 手数范围
+ *  - result: 'b' | 'w' | '-' | null
+ *  - opening: 开局特征（前 N 手 USI 序列，如 '7g7f,3c3d'）
+ *  - query: 关键词（选手名 / 走法片段）
+ *  - limit
+ */
+function searchRecords(q = {}) {
+  const conds = [];
+  const params = [];
+  if (q.playerId) {
+    conds.push("(json_extract(data, '$.playerIds.b') = ? OR json_extract(data, '$.playerIds.w') = ?)");
+    params.push(q.playerId, q.playerId);
+  }
+  if (Number.isFinite(q.movesMin)) {
+    conds.push('json_array_length(json_extract(data, \'$.moves\')) >= ?');
+    params.push(q.movesMin);
+  }
+  if (Number.isFinite(q.movesMax)) {
+    conds.push('json_array_length(json_extract(data, \'$.moves\')) <= ?');
+    params.push(q.movesMax);
+  }
+  if (q.result) {
+    conds.push("json_extract(data, '$.result') = ?");
+    params.push(q.result);
+  }
+  if (q.opening) {
+    // 开局特征：前 N 手完全匹配（USI 序列）
+    const seq = String(q.opening).split(',').map((s) => s.trim()).filter(Boolean);
+    if (seq.length) {
+      // 用 SQL 判断 moves 数组前 N 个元素
+      const n = seq.length;
+      const checks = seq.map((_, i) => `json_extract(data, '$.moves[' || ${i} || ']') = ?`).join(' AND ');
+      conds.push(`json_array_length(json_extract(data, '$.moves')) >= ? AND (${checks})`);
+      params.push(n, ...seq);
+    }
+  }
+  if (q.query) {
+    const kw = `%${String(q.query)}%`;
+    conds.push("(json_extract(data, '$.names[0]') LIKE ? OR json_extract(data, '$.names[1]') LIKE ? OR data LIKE ?)");
+    params.push(kw, kw, kw);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const limit = Math.min(q.limit || 100, 500);
+  const rows = getDb()
+    .prepare(`SELECT data FROM records ${where} ORDER BY createdAt DESC, id DESC LIMIT ${limit}`)
+    .all(...params);
+  return rows.map((r) => JSON.parse(r.data));
+}
+
 function sessionExists(id) {
   return !!getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
 }
@@ -221,6 +274,7 @@ module.exports = {
   getRecordById,
   putRecord,
   listRecords,
+  searchRecords,
   sessionExists,
   getSessionById,
   putSession,

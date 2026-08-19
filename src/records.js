@@ -11,7 +11,7 @@
 'use strict';
 
 const { Shogi, Color } = require('shogi.js');
-const { putRecord, getRecordById, listRecords: dbListRecords } = require('./storage');
+const { putRecord, getRecordById, listRecords: dbListRecords, searchRecords: dbSearch } = require('./storage');
 const { parseUsiMove, usiSquareToXY } = require('./coords');
 const { KIND_NAME } = require('./game');
 
@@ -147,6 +147,23 @@ function listPlayerRecords(playerId, limit = 50) {
   return listRecords(500)
     .filter((r) => r.playerIds && (r.playerIds.b === playerId || r.playerIds.w === playerId))
     .slice(0, limit);
+}
+
+/**
+ * 棋谱检索（SQL 层过滤）。
+ * @param {object} q 见 storage.searchRecords
+ * @returns {Array} 匹配的棋谱（附带 opening 开局特征）
+ */
+function searchRecords(q = {}) {
+  const rows = dbSearch(q);
+  return rows.map((r) => ({ ...r, opening: openingName(r) }));
+}
+
+/** 开局特征：前 4 手 USI 序列（作定式指纹展示） */
+function openingName(rec) {
+  const moves = rec.moves || [];
+  if (!moves.length) return '';
+  return moves.slice(0, Math.min(4, moves.length)).join(',');
 }
 
 // ======================================================================
@@ -374,6 +391,7 @@ module.exports = {
   listRecords,
   getRecord,
   listPlayerRecords,
+  searchRecords,
   exportKif,
   exportCsa,
   exportRecord,

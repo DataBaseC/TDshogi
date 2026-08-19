@@ -17,8 +17,27 @@
     <div class="replay-layout">
       <div>
         <div class="card" style="padding:18px;">
-          <div class="section-title">对局记录（仅自己的）</div>
-          <div id="recordList" style="max-height:78vh;overflow-y:auto;"></div>
+          <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;">
+            <span>对局记录（仅自己的）</span>
+            <span style="font-size:12px;color:var(--text-dim);font-weight:400;" id="recordCount"></span>
+          </div>
+          <!-- 检索栏 -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;" class="search-grid">
+            <input class="input" id="searchQuery" placeholder="关键词（选手名）" style="padding:7px 10px;font-size:13px;">
+            <input class="input" id="searchOpening" placeholder="开局（如 7g7f,3c3d）" style="padding:7px 10px;font-size:13px;">
+            <input class="input" id="searchMoves" placeholder="手数范围（如 20-80）" style="padding:7px 10px;font-size:13px;">
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+            <select class="select" id="searchResult" style="padding:7px 10px;font-size:13px;">
+              <option value="">全部结果</option>
+              <option value="b">先手胜</option>
+              <option value="w">后手胜</option>
+              <option value="-">和棋</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="btnSearch">检索</button>
+            <button class="btn btn-ghost btn-sm" id="btnResetSearch">重置</button>
+          </div>
+          <div id="recordList" style="max-height:65vh;overflow-y:auto;"></div>
         </div>
         <div style="font-size:12px;color:var(--text-dim);margin-top:8px;">
           点击任意棋谱进入「复盘器」，可前进/后退、加书签、写评论、保存变着，并导出 KIF/CSA。

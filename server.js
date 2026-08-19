@@ -191,6 +191,27 @@ app.get('/api/profile', (req, res) => {
   res.json(protocol.profileData(playerId));
 });
 
+// 棋谱检索：?query=关键词&player=&movesMin=&movesMax=&result=&opening=前N手(逗号分隔)&limit=
+// 权限：管理员可检索全部；普通用户仅检索自己的棋谱
+app.get('/api/records/search', (req, res) => {
+  const token = req.query.token || req.headers['x-admin-token'] || null;
+  const player = req.query.player || null;
+  const isAdmin = admin.verify(token);
+  const q = {
+    playerId: isAdmin ? (req.query.player || null) : player,
+    movesMin: req.query.movesMin != null ? parseInt(req.query.movesMin, 10) : undefined,
+    movesMax: req.query.movesMax != null ? parseInt(req.query.movesMax, 10) : undefined,
+    result: req.query.result || undefined,
+    opening: req.query.opening || undefined,
+    query: req.query.query || undefined,
+    limit: req.query.limit != null ? parseInt(req.query.limit, 10) : 100,
+  };
+  if (!isAdmin && !player) {
+    return res.status(403).json({ error: '请先登录或指定玩家' });
+  }
+  res.json({ records: require('./src/records').searchRecords(q), isAdmin });
+});
+
 // ==================================================================
 // 账号系统 REST
 // ==================================================================
