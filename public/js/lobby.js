@@ -37,6 +37,10 @@
     if (!/^[A-Z0-9]{6}$/.test(code)) return toast('请输入 6 位有效房间码');
     api.send({ type: 'join_room', data: { code } });
   });
+  // 回车直接加入
+  document.getElementById('joinCode').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btnJoinRoom').click();
+  });
 
   // ---- WS 事件 ----
   api.on('room_created', (data) => {
@@ -82,16 +86,30 @@
       el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">当前没有进行中的对局</div>';
       return;
     }
-    el.innerHTML = games.map((g) => `
-      <div class="game-card" onclick="location.href='play.html?room=${g.roomId}&spectate=1'">
+    // 显示房间码 + 对局类型 + 走子数，便于区分重名玩家；名字带悬停信息卡
+    el.innerHTML = games.map((g) => {
+      const typeName = g.type === 'reviewing' ? '🎤 复盘中' : g.type === 'quick' ? '快速匹配' : g.type === 'tournament' ? '赛事' : '房间对局';
+      const pid = g.playerIds || {};
+      return `
+      <div class="game-card" data-room="${esc(g.roomId)}">
         <div class="players">
-          <span>${esc(g.players.b || '先手')}</span>
+          <span data-player-id="${esc(pid.b || '')}">${esc(g.players.b || '先手')}</span>
           <span class="vs">vs</span>
-          <span>${esc(g.players.w || '後手')}</span>
+          <span data-player-id="${esc(pid.w || '')}">${esc(g.players.w || '後手')}</span>
         </div>
-        <div class="meta">${g.moveCount} 手 · ${g.type === 'quick' ? '快速匹配' : '房间对局'} · 观战</div>
+        <div class="meta">房间 ${esc(g.code)} · ${typeName} · ${g.moveCount} 手 · 观战</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+    // 点击卡片进入对局：自己是该局选手 → 不带 spectate（走 request_state 由服务端按
+    // playerId 回位到选手座位）；否则才以观战身份进入。playerId 在 hello 时由服务端下发。
+    el.querySelectorAll('.game-card').forEach((card, i) => {
+      const g = games[i];
+      card.addEventListener('click', () => {
+        const mine = api.playerId && g.playerIds && (g.playerIds.b === api.playerId || g.playerIds.w === api.playerId);
+        location.href = `play.html?room=${encodeURIComponent(g.roomId)}${mine ? '' : '&spectate=1'}`;
+      });
+    });
   }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

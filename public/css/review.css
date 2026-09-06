@@ -18,9 +18,9 @@
 }
 .rv-move-row {
   display: grid;
-  grid-template-columns: 30px 1fr 1fr;
+  grid-template-columns: 34px 1fr; /* 一编号一手棋（同 KIF 顺序） */
   align-items: center;
-  padding: 6px 8px;
+  padding: 5px 8px;
   border-radius: 6px;
   gap: 6px;
 }

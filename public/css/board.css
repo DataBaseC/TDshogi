@@ -113,3 +113,11 @@
   z-index: 2;
 }
 .hand-label { color: var(--text-dim); font-size: 12px; width: 40px; flex-shrink: 0; }
+
+/* ---- 移动端（PLAN §N）：棋盘 padding 收窄、持驹棋子缩小 ---- */
+@media (max-width: 640px) {
+  .shogi-board { padding: 6px; border-radius: 8px; }
+  .hand-row { min-height: 44px; padding: 5px 8px; }
+  .hand-piece { width: 36px; height: 36px; }
+  .hand-label { width: 30px; font-size: 11px; }
+}

@@ -69,8 +69,10 @@ function isMoveLegal(shi, mv) {
   } catch (err) {
     return false;
   }
-  // 己方王是否被将（走完后轮到对手，但王还是自己的颜色）
-  return !clone.isCheck(mv.type === 'drop' ? clone.turn : oppositeColor(clone.turn));
+  // 走子/打子后 clone.turn 均已切换到对手 → 走子方自己的王 = oppositeColor(clone.turn)。
+  // 修复：原打子分支误查 clone.turn（对手的王），导致「打入对方王周围构成打将」的
+  // 合法着法（如金打王侧）被误判非法。打将是否成立由对方应对，不在此过滤。
+  return !clone.isCheck(oppositeColor(clone.turn));
 }
 
 function oppositeColor(color) {

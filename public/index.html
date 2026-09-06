@@ -13,11 +13,45 @@
   <main class="container">
     <!-- Hero 区 -->
     <section class="hero">
-      <h1 class="hero-title">TDShogi 将棋道場</h1>
+      <h1 class="hero-title">天锻将棋 道场</h1>
       <p class="hero-sub">日本将棋 · 在线实时对战 · 免注册即刻对局</p>
       <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">
         <a class="btn btn-primary btn-lg" href="lobby.html">⚔️ 开始对局</a>
         <button class="btn btn-ghost btn-lg" id="btnRandomWatch">🎲 随机观战</button>
+      </div>
+    </section>
+
+    <!-- 平台数据条 -->
+    <section class="live-strip" id="statStrip" aria-label="平台实时数据">
+      <div class="live-pill"><span class="dot"></span>在线<span class="num" id="statOnline">–</span></div>
+      <div class="live-pill">⚔️ 对局中<span class="num" id="statPlaying">–</span></div>
+      <div class="live-pill">🕐 等待对局<span class="num" id="statWaiting">–</span></div>
+      <div class="live-pill">🎤 复盘中<span class="num" id="statReviewing">–</span></div>
+      <div class="live-pill">📜 累计棋谱<span class="num" id="statRecords">–</span></div>
+    </section>
+
+    <!-- 新手三步引导 -->
+    <section style="margin-bottom:32px;" aria-label="三步开始">
+      <div class="section-title">三步开始你的将棋之旅</div>
+      <div class="steps-grid">
+        <a class="card step-card" href="lobby.html">
+          <span class="step-no">STEP 1</span>
+          <div class="step-emoji">⚔️</div>
+          <div class="step-title">立即开局</div>
+          <div class="step-desc">无需注册，打开就能玩。快速匹配在线对手，或生成房间码邀请好友来一局。</div>
+        </a>
+        <a class="card step-card" href="profile.html">
+          <span class="step-no">STEP 2</span>
+          <div class="step-emoji">🔐</div>
+          <div class="step-title">登记账号</div>
+          <div class="step-desc">注册正式账号，ELO 评级、胜绩与全部棋谱永久保存，游客数据可一键升级迁移。</div>
+        </a>
+        <a class="card step-card" href="history.html">
+          <span class="step-no">STEP 3</span>
+          <div class="step-emoji">📈</div>
+          <div class="step-title">复盘精进</div>
+          <div class="step-desc">每局自动存为标准 KIF/CSA 棋谱，复盘器支持书签、评论与变着研究。</div>
+        </a>
       </div>
     </section>
 
@@ -35,38 +69,44 @@
       </section>
     </div>
 
-    <!-- 快捷入口 -->
-    <section style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px;">
-      <a class="card card-hover" href="lobby.html" style="padding:26px;text-align:center;display:block;">
-        <div style="font-size:34px;margin-bottom:10px;">⚔️</div>
-        <div style="font-weight:700;font-size:17px;">快速对战</div>
-        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">匹配或建房，与好友实时对局</div>
-      </a>
-      <a class="card card-hover" href="history.html" style="padding:26px;text-align:center;display:block;">
-        <div style="font-size:34px;margin-bottom:10px;">📜</div>
-        <div style="font-weight:700;font-size:17px;">棋谱回放</div>
-        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">回顾历史对局，导出 KIF/CSA</div>
-      </a>
-      <a class="card card-hover" href="tournaments.html" style="padding:26px;text-align:center;display:block;">
-        <div style="font-size:34px;margin-bottom:10px;">🏆</div>
-        <div style="font-weight:700;font-size:17px;">棋手赛事</div>
-        <div style="color:var(--text-dim);font-size:13px;margin-top:6px;">参与单败淘汰赛，争夺桂冠</div>
-      </a>
+    <!-- 最新对局战报 -->
+    <section class="card" style="padding:22px;margin-bottom:32px;">
+      <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>最新对局战报</span>
+        <a href="history.html" style="font-size:12px;color:var(--gold-light);">查看我的棋谱 →</a>
+      </div>
+      <div id="recentBattles"></div>
     </section>
 
-    <!-- 进行中对局（观战） -->
-    <section class="card" style="padding:22px;">
-      <div class="section-title">正在进行的对局</div>
-      <div id="activeGames"></div>
+    <!-- 将棋规则速查 -->
+    <section class="card rule-card" style="padding:22px;">
+      <div class="section-title">将棋规则速查</div>
+      <details>
+        <summary>🎯 目标：将死对方的王（玉将）</summary>
+        <div class="rule-body">轮流走子，攻击对方的王使其无路可逃即为「詰み」（将死）获胜。被将军时必须应将；本平台服务端自动判定王手与将死。</div>
+      </details>
+      <details>
+        <summary>⬆️ 升变：进入敌阵可强化棋子</summary>
+        <div class="rule-body">棋子进入、离开或在对方三段阵地内移动时可以选择升变（翻面）：飞车→龙王、角行→龙马、银将/桂马/香车/步兵均获得金将走法。玉与金不能升变。</div>
+      </details>
+      <details>
+        <summary>🖐️ 打入：吃掉的棋子归你使用</summary>
+        <div class="rule-body">吃掉的对方棋子放入自己的驹台，之后可在任意空格「打入」重新上战场——这是将棋最独特的规则（二步、打步詰等禁手已由服务端校验）。</div>
+      </details>
+      <details>
+        <summary>⏱ 持钟：包干与本手持读秒</summary>
+        <div class="rule-body">常规时制为每方「10+0」包干用时；快棋采用「0+10」形式——不设总时长，每手棋 10 秒读秒，超时即负。时间耗尽前留意读秒提示音。</div>
+      </details>
     </section>
   </main>
 
-  <footer class="footer">TDShogi · 用 Web 技术致敬日本将棋文化</footer>
+  <footer class="footer">TDShogi · 猹狸的将棋道场</footer>
 
   <div class="toast" id="toast"></div>
 
   <script src="js/nav.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/hovercard.js"></script>
   <script src="js/home.js"></script>
 </body>
 </html>

@@ -7,7 +7,7 @@
  * 管理密码来源（优先级从高到低）：
  *   1. 环境变量 ADMIN_PASSWORD
  *   2. data/admin.json 的 password 字段
- *   3. 默认 'admin123'（仅供本地/开发，生产务必修改）
+ *   3. 内置密码 'Cplusplus123'（可直接用；生产建议仍用环境变量覆盖为更强密码）
  *
  * 普通用户（未登录管理员）只能访问自己的数据。
  */
@@ -16,16 +16,21 @@
 const crypto = require('crypto');
 const { readJson } = require('./storage');
 
-const SECRET = process.env.ADMIN_SECRET || 'tdshogi_admin_secret_change_me';
 const TOKEN_TTL = 12 * 60 * 60 * 1000; // 12 小时
 
 function getPassword() {
   if (process.env.ADMIN_PASSWORD) return process.env.ADMIN_PASSWORD;
   const cfg = readJson('admin.json', null);
   if (cfg && cfg.password) return cfg.password;
-  // 兜底密码仅用于本地开发；生产务必通过 ADMIN_PASSWORD 环境变量配置
-  console.warn('[admin] ⚠️ 未配置 ADMIN_PASSWORD 环境变量，使用默认密码 admin123（仅限本地/开发）');
-  return 'admin123';
+  return 'Cplusplus123';
+}
+
+/**
+ * token 签名密钥：优先环境变量；未配置时从管理密码派生。
+ * 不能用源码里的固定默认值——否则任何拿到源码的人都能伪造管理员 token。
+ */
+function secret() {
+  return process.env.ADMIN_SECRET || `tdshogi_admin_secret:${getPassword()}`;
 }
 
 /**
@@ -44,7 +49,7 @@ function login(password) {
 }
 
 function sign(payload) {
-  return crypto.createHmac('sha256', SECRET).update(payload).digest('hex');
+  return crypto.createHmac('sha256', secret()).update(payload).digest('hex');
 }
 
 /**

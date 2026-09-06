@@ -26,7 +26,13 @@
   function cellSize() {
     const v = getComputedStyle(document.documentElement).getPropertyValue('--cell-size');
     const n = parseInt(v, 10);
-    return Number.isFinite(n) && n > 0 ? n : 64;
+    if (Number.isFinite(n) && n > 0 && /^\s*[\d.]+px/.test(v)) return n;
+    // 移动端自适应（PLAN §N）：--cell-size 为 'auto' 时按视口宽度推导。
+    // 注意：CSS 自定义属性不解析 vw/min()（getComputedStyle 拿到的是原始 token），
+    // 因此手机端媒体查询里 --cell-size 设为 auto，由这里按视口算出像素值。
+    const vw = Math.min(window.innerWidth, 640);
+    const byViewport = Math.floor((vw - 70) / 9); // 70 ≈ 棋盘 padding + 页面留白
+    return Math.max(28, Math.min(48, byViewport));
   }
 
   /**
@@ -133,7 +139,9 @@
           const dr = flipRow ? (8 - r) : r;  // 行：后手镜像
           const cell = this.cells[dr][c];
           cell.innerHTML = '';
-          cell.classList.remove('sel', 'target', 'check', 'last');
+          // 必须包含 has-piece：否则吃子目标（方块）的类残留到空格格子上，
+          // 导致「合法目标空格」被污染成绿色方块而非绿点
+          cell.classList.remove('sel', 'target', 'check', 'last', 'has-piece');
           const col = colFrom(c);
           const piece = board[r][col];
           if (piece && piece.piece) {
@@ -158,9 +166,12 @@
     }
 
     applyHighlights(extra) {
-      // 上一步
+      // 上一步（USI 如 '7g7f' 或打子 'P*5e' → 只需高亮落点 '7f'/'5e'）
+      // 修复：原直接传完整 USI 给 highlightSq，_findCell 永远匹配不到（格子 sq 是单格），
+      //       导致「上一步」橙色高亮从不显示
       if (extra.lastMove) {
-        this.highlightSq(extra.lastMove, 'last');
+        const lastTo = extra.lastMove.length >= 4 ? extra.lastMove.slice(2) : extra.lastMove;
+        this.highlightSq(lastTo, 'last');
       }
       // 王手红格
       (extra.check || []).forEach((sq) => this.highlightSq(sq, 'check'));

@@ -127,7 +127,11 @@ function verifyToken(token) {
     return null;
   }
   if (Date.now() - Number(ts) > SESSION_TTL_MS) return null;
-  return getCache()[accountId] ? accountId : null;
+  const acct = getCache()[accountId];
+  if (!acct) return null;
+  // §K3：管理员重置密码后使旧令牌全部失效（签发时间早于重置时刻的令牌不再有效）
+  if (acct.tokenInvalidBefore && Number(ts) < acct.tokenInvalidBefore) return null;
+  return accountId;
 }
 
 /**
@@ -148,6 +152,64 @@ function getAccount(accountId) {
 
 function listAccounts() {
   return Object.values(getCache()).map(publicInfo);
+}
+
+// ---------------- 个人资料（PLAN §F）----------------
+
+// 棋风预设（公开字段）
+const STYLE_OPTIONS = ['不设定', '居飞车·急战', '居飞车·持久战', '振飞车', '力战型', '奇袭型', '接受型'];
+
+/**
+ * 本人视角资料（含手机号私密字段）。
+ * 手机号只在两处返回：本人（携有效令牌调 getOwnProfile/updateProfile）与管理员
+ * （adminUserData），其余公开接口一律剔除。
+ */
+function getOwnProfile(accountId) {
+  const a = getCache()[accountId];
+  if (!a) return null;
+  return {
+    id: a.id,
+    username: a.username,
+    createdAt: a.createdAt,
+    profile: {
+      phone: (a.profile && a.profile.phone) || '',
+      style: (a.profile && a.profile.style) || '不设定',
+    },
+  };
+}
+
+/**
+ * 更新资料。phone 未传不动；传空串=清除。style 未传不动。
+ */
+function updateProfile(accountId, { phone, style } = {}) {
+  const a = getCache()[accountId];
+  if (!a) return { ok: false, error: '账号不存在' };
+  if (phone !== undefined) {
+    const p = String(phone || '').trim();
+    if (p && !/^1\d{10}$/.test(p)) return { ok: false, error: '手机号格式不正确（11 位数字）' };
+    a.profile = { ...(a.profile || {}), phone: p };
+  }
+  if (style !== undefined) {
+    if (!STYLE_OPTIONS.includes(style)) return { ok: false, error: '棋风选项无效' };
+    a.profile = { ...(a.profile || {}), style };
+  }
+  a.updatedAt = Date.now();
+  persist();
+  return { ok: true, profile: { phone: a.profile.phone || '', style: a.profile.style || '不设定' } };
+}
+
+/**
+ * 公开资料卡字段（玩家信息悬停小窗用）。绝不包含手机号。
+ */
+function getPublicCard(accountId) {
+  const a = getCache()[accountId];
+  if (!a) return null;
+  return {
+    isAccount: true,
+    username: a.username,
+    createdAt: a.createdAt,
+    style: (a.profile && a.profile.style) || '不设定',
+  };
 }
 
 /**
@@ -188,6 +250,63 @@ function migrateGuestData(guestId, accountId) {
   }
 }
 
+// ---------------- 管理员账号操作（PLAN §K3，调用方须先过 admin.verify 并写审计）----------------
+
+/**
+ * 管理员更新账号资料（手机号/棋风；备注存会话，见 auth.adminSetNote）。
+ * phone 传空串 = 清除；style 需在预设枚举内。
+ */
+function adminUpdateProfile(accountId, { phone, style } = {}) {
+  const a = getCache()[accountId];
+  if (!a) return { ok: false, error: '账号不存在' };
+  if (phone !== undefined) {
+    const p = String(phone || '').trim();
+    if (p && !/^1\d{10}$/.test(p)) return { ok: false, error: '手机号格式不正确（11 位数字）' };
+    a.profile = { ...(a.profile || {}), phone: p };
+  }
+  if (style !== undefined) {
+    if (!STYLE_OPTIONS.includes(style)) return { ok: false, error: '棋风选项无效' };
+    a.profile = { ...(a.profile || {}), style };
+  }
+  a.updatedAt = Date.now();
+  persist();
+  return { ok: true };
+}
+
+/**
+ * 管理员重置密码：不传 newPassword 则生成随机 10 位。
+ * 同时使该账号全部旧会话令牌失效（tokenInvalidBefore，PLAN §K3）。
+ * @returns {{ok, password?}} 明文密码仅此一次返回（前端展示给管理员转交用户）
+ */
+function adminResetPassword(accountId, newPassword = '') {
+  const a = getCache()[accountId];
+  if (!a) return { ok: false, error: '账号不存在' };
+  let pass = String(newPassword || '');
+  if (!pass) pass = crypto.randomBytes(8).toString('base64url').replace(/[-_]/g, '').slice(0, 10);
+  if (pass.length < MIN_PASSWORD) return { ok: false, error: `密码至少 ${MIN_PASSWORD} 位` };
+  const { salt, hash } = hashPassword(pass);
+  a.salt = salt;
+  a.passHash = hash;
+  a.tokenInvalidBefore = Date.now();
+  a.updatedAt = Date.now();
+  persist();
+  return { ok: true, password: pass };
+}
+
+/**
+ * 删除账号：删除账号记录 + 会话 + 评级战绩；棋谱保留但 playerIds 悬空（不可逆操作）。
+ */
+function deleteAccount(accountId) {
+  const a = getCache()[accountId];
+  if (!a) return { ok: false, error: '账号不存在' };
+  const username = a.username;
+  delete getCache()[accountId];
+  persist();
+  try { auth.adminDeleteSession(accountId); } catch (_) {}
+  try { require('./ratings').removePlayer(accountId); } catch (_) {}
+  return { ok: true, username };
+}
+
 module.exports = {
   register,
   login,
@@ -196,4 +315,11 @@ module.exports = {
   getAccount,
   listAccounts,
   publicInfo,
+  getOwnProfile,
+  updateProfile,
+  getPublicCard,
+  adminUpdateProfile,
+  adminResetPassword,
+  deleteAccount,
+  STYLE_OPTIONS,
 };

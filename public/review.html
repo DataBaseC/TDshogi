@@ -106,6 +106,8 @@
               <button class="btn btn-ghost btn-sm" id="btnPrev">◀ 上一手</button>
               <button class="btn btn-ghost btn-sm" id="btnNext">下一手 ▶</button>
               <button class="btn btn-ghost btn-sm" id="btnLast">末手 ⏭</button>
+              <button class="btn btn-ghost btn-sm" id="btnFreePlace" title="在当前局面上自由摆放棋子（草稿，不入谱）">✋ 自由摆放</button>
+              <button class="btn btn-ghost btn-sm" id="btnUndoFree" style="display:none;">↩️ 撤销摆放</button>
             </div>
             <div id="rvMoveList" class="rv-move-list"></div>
             <div style="font-size:12px;color:var(--text-dim);margin-top:8px;text-align:right;" id="rvCursor">0 / 0</div>
@@ -149,6 +151,7 @@
   <script src="js/api.js"></script>
   <script src="js/pieces.js"></script>
   <script src="js/board.js"></script>
+  <script src="js/freeboard.js"></script>
   <script src="js/review.js"></script>
 </body>
 </html>

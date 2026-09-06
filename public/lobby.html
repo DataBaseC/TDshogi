@@ -50,15 +50,13 @@
           <div style="font-size:12px;color:var(--text-dim);margin-top:10px;">等待对手加入后自动开局…</div>
         </div>
       </div>
-    </div>
 
-    <!-- 加入房间 -->
-    <div class="card lobby-card" style="margin-bottom:32px;">
-      <h3>🔑 加入房间</h3>
-      <p>输入好友提供的 6 位房间码加入对局。</p>
-      <div style="display:flex;gap:12px;">
-        <input class="input" id="joinCode" placeholder="输入房间码，如 AB3X7Q" maxlength="6" style="flex:1;text-transform:uppercase;letter-spacing:4px;">
-        <button class="btn btn-primary" id="btnJoinRoom">加入</button>
+      <!-- 加入房间 -->
+      <div class="card lobby-card">
+        <h3>🔑 加入房间</h3>
+        <p>输入好友提供的 6 位房间码加入对局。</p>
+        <input class="input" id="joinCode" placeholder="输入房间码，如 AB3X7Q" maxlength="6" style="width:100%;text-transform:uppercase;letter-spacing:4px;margin-bottom:12px;">
+        <button class="btn btn-primary btn-lg" id="btnJoinRoom" style="width:100%;">加入房间</button>
       </div>
     </div>
 
@@ -73,6 +71,7 @@
 
   <script src="js/nav.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/hovercard.js"></script>
   <script src="js/lobby.js"></script>
 </body>
 </html>

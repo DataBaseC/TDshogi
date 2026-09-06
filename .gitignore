@@ -11,6 +11,8 @@ data/
 *.log
 .pack-tmp/
 .verify-tmp/
+.tmpdata*
+.tmp-*/
 
 # 部署产物（有独立归档，不入库）
 tdshogi-deploy-*.zip

@@ -10,11 +10,11 @@
 | 维度 | 说明 |
 |---|---|
 | 形态 | **单进程 Node.js 常驻服务**（Express REST + ws WebSocket 同端口） |
-| 运行时 | Node 18+（实测 24），npm 依赖：express / ws / shogi.js / better-sqlite3 |
+| 运行时 | Node 22+（better-sqlite3 v13 硬性要求，22/24 实测），npm 依赖：express / ws / shogi.js / better-sqlite3 |
 | 数据 | 单一 SQLite 库 `data/tdshogi.db`（WAL 模式），零外部服务 |
 | 前端 | 原生 JS + 程序化 SVG/PNG 棋子，无构建步骤 |
 | 规则引擎 | shogi.js（走法生成）+ `src/game.js`（王手过滤/升变/判定封装） |
-| 部署 | 云主机 / Docker / PaaS（需常驻进程 + 可写文件系统，非纯静态站） |
+| 部署 | 云主机 / Docker / PaaS（需常驻进程 + 可写文件系统，非纯静态站）；`.npmrc` ignore-scripts 免编译工具链 |
 
 ```
 浏览器 ──HTTP──▶ Express(server.js) ──▶ protocol.js（REST 数据 + WS 消息路由）
@@ -39,7 +39,7 @@ shogiwebapp/
 ├── package.json         # 依赖清单（better-sqlite3 需 npm install 编译/预编译）
 ├── src/                 # 服务端（全部 CommonJS）
 │   ├── storage.js       # SQLite 存储层（kv/records/sessions/gamesnapshots 表 + 旧 JSON 迁移）
-│   ├── rooms.js         # ★ 对局状态机（房间/匹配/棋钟/观战/聊天/快照）— 1025 行，核心
+│   ├── rooms.js         # ★ 对局状态机（房间/匹配/棋钟/观战/聊天/快照/幽灵房间清理）— ~1250 行，核心
 │   ├── protocol.js      # WS 消息路由 + REST 数据聚合 + 连接/身份管理
 │   ├── game.js          # 规则引擎封装（USI 走法、王手过滤、结果判定）
 │   ├── coords.js        # USI 坐标 ↔ shogi.js (x,y) 转换
@@ -50,11 +50,15 @@ shogiwebapp/
 │   ├── accounts.js      # 账号（scrypt 哈希 + 令牌 + 游客升级迁移）
 │   ├── auth.js          # 游客会话（基于 storage kv 的 sessions/*）
 │   ├── admin.js         # 管理员鉴权（HMAC 令牌）
+│   ├── net.js           # 客户端网络信息：IP/UA 解析 + 反代信任（PLAN §M3）
+│   ├── audit.js         # 登录/管理员操作事件日志（kv events/*，PLAN §M3）
+│   ├── privacy.js       # 隐私字段出口白名单 stripPrivate/assertNoPrivate（PLAN §M3）
 │   └── announcements.js # 系统公告
 ├── public/              # 前端（静态）
 │   ├── *.html           # 8 页面：index/lobby/play/history/review/tournaments/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
-│   └── js/              # api.js(WS封装) nav.js board.js pieces.js play.js sound.js …
+│   └── js/              # 15 个脚本：api.js(WS封装) nav.js board.js pieces.js(图集配置)
+│   │                      freeboard.js(统一棋盘组件 play/demo-rules/free 三模式) play.js sound.js …
 ├── scripts/             # e2e-*.js 回归测试（ws 客户端模拟）+ import-kif-batch
 ├── data/                # 运行时：tdshogi.db（+ 迁移前的 *.bak）
 └── agents/MEMORY/       # 开发反思档案（非运行依赖）
@@ -112,7 +116,7 @@ chat{text} → rooms.chat：校验在房间 → 2s/条节流 → _broadcast 房�
 | `gamesnapshots` | 进行中对局快照（重启恢复） | roomId |
 
 ### 4.2 设计要点
-- **兼容层**：`readJson(name)`/`writeJson(name)` 映射到 kv 表——业务模块（ratings/tournaments/accounts 等）几乎零改动
+- **兼容层**：`readJson(name)`/`writeJson(name)` 映射到 kv 表——业务模块（ratings/tournaments/accounts 等）几乎零改动；`listJsonByPrefix(prefix)` 按前缀枚举 kv（会话列表的唯一数据源，auth.listSessions 用它）
 - **首次启动自动迁移**旧 `data/*.json` 与 `data/records/*.json` 入库，原文件改 `.bak`
 - **JSON 函数检索**：`searchRecords` 用 SQLite `json_extract`/`json_array_length` 实现条件组合查询（开局/手数/结果/关键词）
 - WAL 模式（读写并发友好）+ synchronous=NORMAL
@@ -152,6 +156,9 @@ room = {
 - `_bindClient(clientId, roomId, seat)`：写 clientToRoom + clientToPlayer + playerToClient，并清断线计时器
 - `_unbindClient(clientId)`：清三个映射；观战者单独清理 spectators；对局中玩家断线启动 60s 判负计时
 - `_autoLeaveFinished(clientId)`：当前绑定房间已 FINISHED 则自动解绑（玩家无需手动退出即可再匹配）
+- `_autoLeaveAllRooms(playerId, exceptClientId)`：按 playerId 退出名下**所有**其他房间的座位
+  （对局中自动认输投了；复盘中移除座位记录并释放演示权）——覆盖已关闭旧连接残留的座位，
+  建房/加入/快速匹配三入口绑新房间前调用（幽灵房治理，见 6.2）
 
 ### 5.4 状态推送（_pushState）
 ```
@@ -189,7 +196,9 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 | 场景 | 问题 | 防护 |
 |---|---|---|
 | 同 guestId 多窗口 | 观战窗口连接曾把玩家座位绑定抢走（空棋盘/ID 顶替） | handleConnection **不自动绑定**，绑定延后到 `request_state`（玩家意图）；观战走 `spectate` 永不触发重连绑定 |
-| 页面跳转竞态 | 新连接先于旧 close 到达，`reconnect` 找不到断线座位 | `request_state` 兜底：先 `reconnect`（connected=false）再 `bindToActiveGame`（强制顶替） |
+| 页面跳转竞态 | 新连接先于旧 close 到达，`reconnect` 找不到断线座位 | `request_state` 兜底：先 `reconnect`（connected=false）再 `bindToActiveGame`（强制顶替旧 clientId） |
+| **掉线后从大厅列表重进变观战** | `spectate()` 回位曾按 `clientToPlayer.get(clientId)`（断线即删）查座位，新连接永远不命中 → 落观战席 | `spectate()` 按 playerId 匹配断线座位回位（含旧连接竞态清理）；lobby 卡片对本局选手不带 `spectate=1`，走 request_state 路径 |
+| **幽灵房（重新匹配进旧对局）** | ① 回位扫描按 Map 插入顺序取第一个断线座位，旧复盘中房间排前劫持新连接；② 旧连接残留的座位只按当前 clientId 查，既有自动退出覆盖不到 | ① `request_state` 带 URL roomId，`reconnect`/`bindToActiveGame` 优先绑定该房间且不再兜底绑其他复盘中房间；② `_autoLeaveAllRooms` 三入口（建房/加入/匹配）绑新房间前按 playerId 清空名下旧座位 |
 | 对局结束残留 | clientToRoom 残留导致误报"已在房间中" | `_autoLeaveFinished` 三入口（match/create/join）自动解绑 FINISHED 房间 |
 | 观战者残留 | 离开/断线后仍在 spectators 收广播 | `leave`/`_unbindClient` 显式清理 spectatorsByRoom |
 | 断线判负 | 断线方永不判负、对手干等 | 60s 宽限期计时（`_scheduleDisconnectLoss`），重连清除 |
@@ -198,14 +207,19 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 ```
 玩家窗口刷新：
   新连接 → hello（findPendingGame 探测 ok）
-  → 前端 play.js open 后发 request_state
+  → 前端 play.js open 后发 request_state（带 URL 里的 roomId）
   → 服务端：getRoomStateForClient 无绑定
-     → reconnect()（座位 connected=false？绑定）
-     → 否则 bindToActiveGame()（强制顶替旧 clientId）
+     → reconnect()（优先 URL 指定房间；座位 connected=false？绑定）
+     → 否则 bindToActiveGame()（同优先级；强制顶替旧 clientId）
+     ※ 带 roomId 时两步都不再兜底绑到其他「复盘中」房间（幽灵房防护）
   → 玩家恢复对局
 观战窗口（同 guestId）：
   新连接 → hello（探测到对局，但只报告）
   → 前端带 spectate=1 发 spectate → 只加入 spectators，不碰座位
+      ※ 但若该 playerId 在此房间有断线座位（掉线重进自己那局）→ 按 playerId 回位到座位
+掉线后开新局：
+  建房/加入/快速匹配 → _autoLeaveAllRooms(playerId) 先清空名下旧座位
+  → 旧房间不再出现在回位扫描里（幽灵房根治）
 ```
 
 ---
@@ -215,14 +229,16 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 ### 7.1 页面与职责
 | 页面 | 职责 |
 |---|---|
-| index.html | 首页：公告/排行/进行中对局/随机观战 |
-| lobby.html | 建房/加入/快速匹配/观战列表 |
-| play.html | 对局页（对战+观战+聊天+音效） |
+| index.html | 首页：公告/排行/进行中对局（改版中：删快捷三卡与对局区，方案见 PLAN §A） |
+| lobby.html | 建房/加入/快速匹配三卡 + 观战列表 |
+| play.html | 对局页（对战+观战+聊天+音效+断线提示；终局自动切感想战模式，同页同组件） |
 | history.html | 棋谱检索 + 列表 |
 | review.html | 复盘器（书签/评论/变着） |
-| tournaments.html | 赛事创建/报名/对阵表 |
+| tournaments.html | 赛事：我要创建赛事（登录门槛）+ 进行中/往期列表（审核流见 PLAN §B） |
 | profile.html | 账号（注册/登录/登出）+ 战绩 |
-| admin.html | 管理后台（全部棋谱/用户/KIF 导入） |
+| admin.html | 管理后台（全部棋谱/用户/KIF 导入；增强设计见 PLAN §C） |
+
+每页的布局区块、行为细节与数据源见 `UI-PAGES.md`。
 
 ### 7.2 play.js 关键逻辑
 - `api.on('open')` → `enterRoom()`：按 URL 参数分支——`spectate=1` 观战 / `join=1` 赛事 / 否则 `request_state`（重连）
@@ -240,13 +256,19 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
 
 | 脚本 | 覆盖 | 断言数 |
 |---|---|---|
-| e2e-test.js | 建房/加入/走子同步/观战隔离/观战离开/断线重连/竞态/匹配/结束残留 | 44 |
+| e2e-test.js | 建房/加入/走子同步/观战隔离/断线重连/竞态/匹配/幽灵房间防护/同身份占用防护 | 47 |
 | e2e-account.js | 注册/登录/令牌/WS 身份/游客升级迁移 | 15 |
-| e2e-tournament.js | 报名→开赛→晋级→决赛→冠军 | 13 |
-| e2e-snapshot.js | 快照落盘→杀进程→重启→双方重连续局 | 9 |
+| e2e-profile.js | 个人资料读写/手机号私密边界/玩家信息卡/state 携带 id | 17 |
+| e2e-tournament.js | 账号创建→审核→报名→开赛→晋级→决赛→冠军 | 15 |
+| e2e-tournament-admin.js | 赛事管理台：游客拒/待审核隐藏/403/审核/拒绝/取消解散/幂等 | 19 |
+| e2e-snapshot.js | 快照落盘→杀进程→重启→续局 + 恢复局治理（WAITING 不复活/60s 自愈） | 16 |
 | e2e-chat.js | 三方聊天/身份/节流 | 7 |
 | e2e-spectator-identity.js | 观战不顶替玩家（含同 guestId） | 6 |
 | e2e-timecontrol.js | 0+10 快棋：开局即读秒/重置/超时判负 | 10 |
+| e2e-freeboard.js | 感想战：终局初始化/权限矩阵/规则校验/分支/KIF/清理改版 | 39 |
+| test-spectate-rejoin.js | 掉线后经 spectate 入口按 playerId 回位 + 对照组（纯观众/多窗口） | 15 |
+
+全量合计 **179 项**（2026-08-29 实测通过；其后 v1.2.0 批次新增后两项，改动当日主套件 48/39/6 通过，详见 PLAN §I）。
 
 **统一模式**：ws 客户端模拟多端 + "队列+wait（取最新匹配）" + `process.exit` 强制收尾。
 运行：先起服务器（`PORT=3999 DATA_DIR=独立目录`），再 `node scripts/e2e-*.js`。
@@ -255,7 +277,10 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
 
 ## 9. 部署与运维
 
-- 环境变量：`PORT` / `DATA_DIR` / `ADMIN_PASSWORD` / `ADMIN_SECRET` / `SESSION_SECRET` / `SNAPSHOT_INTERVAL_MS`
+- 环境变量：`PORT` / `DATA_DIR` / `ADMIN_PASSWORD`（未配置时内置密码 `Cplusplus123`）/ `ADMIN_SECRET`（未配置时从管理密码派生）/ `SESSION_SECRET` / `SNAPSHOT_INTERVAL_MS`
+- 网络与审计（PLAN §M3）：`TRUST_PROXY`（反代层数，`0`|`1`|`true`；**未配置时不信任 XFF**，直连部署保持默认即可）/ `AUDIT_MAX_EVENTS`（默认 5000）/ `AUDIT_RETENTION_DAYS`（默认 90）
+- 后台入口（PLAN §J5）：`ADMIN_ENTRY_KEY`（可选；设置后 `/admin.html` 须带 `?k=<key>`，否则 404。导航 🛡️ 入口仅本机持有 admin token 时显示）
+- 依赖安装：仓库 `.npmrc` 设了 `ignore-scripts=true`（better-sqlite3 v13 走 tarball 内置预编译，无需任何 C++ 工具链；排障见 DEPLOY.md）
 - 数据：单文件 `data/tdshogi.db`（备份 = 复制该文件；迁移前旧文件为 .bak）
 - 常驻：PM2 / systemd / Docker；WebSocket 需 Nginx 反代 `Upgrade` 头
 - 详见 `DEPLOY.md`

@@ -25,6 +25,20 @@
 
     <div class="play-layout">
       <div class="play-main">
+        <!-- 感想战工具条（终局自动进入，PLAN §G v6） -->
+        <div id="demoBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:10px;background:var(--bg-2);border:1px solid rgba(201,162,39,0.35);border-radius:10px;">
+          <span id="demoStatus" style="font-size:13px;font-weight:700;color:var(--gold-light);">🎤 感想战中</span>
+          <span id="turnHint" style="font-size:12px;color:var(--text-dim);"></span>
+          <button class="btn btn-primary btn-sm" id="btnDemoClaim" style="display:none;">🙋 我来演示</button>
+          <button class="btn btn-ghost btn-sm" id="btnDemoTransfer" style="display:none;">🤝 交给对方</button>
+          <button class="btn btn-ghost btn-sm" id="btnDemoUndo" style="display:none;">↩️ 待った</button>
+          <button class="btn btn-ghost btn-sm" id="btnDemoClear" style="display:none;">🗑 清空推演</button>
+          <button class="btn btn-ghost btn-sm" id="btnDemoLatest" style="display:none;">⏭ 回到最新</button>
+          <button class="btn btn-ghost btn-sm" id="btnDemoRematch" style="display:none;">🔁 再来一局</button>
+          <button class="btn btn-ghost btn-sm" id="btnFreeMode" style="display:none;">✋ 自由摆棋</button>
+          <span style="font-size:11px;color:var(--text-dim);margin-left:auto;">按规则行棋 · 不计入棋谱</span>
+        </div>
+
         <!-- 上方玩家栏（对面）—— 由 play.js 按视角动态渲染 -->
         <div class="player-bar" id="topPlayerBar">
           <div>
@@ -62,6 +76,10 @@
         <div class="panel">
           <h3>棋谱</h3>
           <div class="move-list" id="moveList"></div>
+        </div>
+        <div class="panel">
+          <h3>观众（<span id="spectatorCount">0</span>）</h3>
+          <div id="spectatorList" style="font-size:13px;min-height:20px;color:var(--text);"><div style="color:var(--text-dim);font-size:12px;">暂无观众</div></div>
         </div>
         <div class="panel">
           <h3>操作</h3>
@@ -110,6 +128,8 @@
   <script src="js/pieces.js"></script>
   <script src="js/board.js"></script>
   <script src="js/sound.js"></script>
+  <script src="js/hovercard.js"></script>
+  <script src="js/freeboard.js"></script>
   <script src="js/play.js"></script>
 </body>
 </html>

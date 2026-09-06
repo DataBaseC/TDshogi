@@ -59,9 +59,13 @@ shogiwebapp/
 
 ### 环境要求
 
-- Node.js 18+（推荐 20 LTS，已在 24 实测通过）
+- Node.js 22+（依赖 better-sqlite3 v13 的硬性要求；22/24 实测通过）
 - npm 9+
 - 现代浏览器（Chrome / Edge / Firefox）
+
+> 无需 Python / Visual Studio / gcc 等 C++ 编译工具链：better-sqlite3 v13 的 tarball
+> 自带全平台预编译二进制（`prebuilds/*.node`），项目根 `.npmrc` 已设置 `ignore-scripts=true`
+> 阻止 npm 对它做无谓且易失败的本地编译（详见下文「常见问题」）。
 
 ### 安装与启动
 
@@ -75,6 +79,22 @@ npm start
 # 3. 访问
 open http://localhost:3000
 ```
+
+### 常见问题：npm install 报 node-gyp / gyp ERR find VS 失败
+
+`better-sqlite3` 包内带 `binding.gyp` 且未声明 install 脚本，npm 默认会自动执行
+`node-gyp rebuild`，在缺少 MSVC 工具链（Windows）或 build-essential（Linux）的机器上
+整体安装失败。修复方式由仓库根目录 `.npmrc` 的 `ignore-scripts=true` 自动生效。
+
+验证安装是否健康：
+
+```bash
+node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(a)');console.log('sqlite OK')"
+```
+
+若手动加过 `--ignore-scripts=false` 或改坏了 `.npmrc`，恢复即可。
+注意：本项目所有依赖均不需要生命周期脚本；若未来引入需要编译/postinstall 的依赖，
+需重新评估该配置。
 
 ### 自定义端口
 
@@ -159,7 +179,7 @@ server {
 ### Docker
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
@@ -200,13 +220,14 @@ WS 路径：`ws://<host>/ws?guest=<guestId>`
 - `move {usi}` 走子
 - `resign` 认输
 - `rematch` 再来一局
-- `spectate {roomId}` / `random_spectate` 观战
+- `spectate {roomId}` / `random_spectate` 观战（该身份在此房间有断线座位时自动回位到选手座位，`spectating` 带 `rebind:true`）
 - `leave` 离开
 - `rename {name}` 改名
 - `create_tournament {name,size}` / `join_tournament {id}` 赛事
-- `request_state` 请求当前状态
+- `request_state {roomId?}` 请求当前状态（roomId=页面 URL 指向的房间，回位优先绑定它）
+- 感想战（FINISHED 后）：`demo_move {usi,index}` / `demo_undo` / `demo_claim` / `demo_transfer` / `demo_reset` / `demo_legal {index}`
 
-服务端消息 `type`：`hello / matched / room_created / room_joined / game_start / state / clock / move_invalid / game_over / elo_updated / spectator_update / tournament_update / renamed / error`
+服务端消息 `type`：`hello / matched / room_created / room_joined / game_start / state / clock / move_invalid / game_over / elo_updated / spectator_update / tournament_update / renamed / spectating / demo_state / demo_legal / error`
 
 ## 棋谱格式（KIF / CSA）
 
@@ -240,16 +261,14 @@ P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
 
 ## 数据存储
 
-所有数据以 JSON 文件落盘到 `data/` 目录：
+所有数据写入单一 SQLite 库 `data/tdshogi.db`（WAL 模式；storage.js 提供 kv 兼容层）：
 
-- `data/records/<id>.json` 每局棋谱（含起止局面、走法、玩家、结果）
-- `data/accounts.json` 账号（用户名 + scrypt 密码哈希）
-- `data/sessions/<guestId>.json` 游客会话（每个游客独立文件，避免并发写冲突）
-- `data/ratings.json` ELO 评级（内存缓存避免频繁 I/O）
-- `data/tournaments.json` 赛事
-- `data/announcements.json` 系统公告
+- `kv` 表：评级 / 账号 / 赛事 / 公告 / 会话 / 管理配置（原各 *.json 的键值化落点）
+- `records` 表：每局棋谱（含起止局面、走法、玩家、结果、书签/评论/变着），支持 json_extract 组合检索
+- `gamesnapshots` 表：进行中对局快照，服务器重启自动恢复未完成对局
 
-**备份建议**：定期备份整个 `data/` 目录即可还原所有数据。
+**备份建议**：定期备份 `data/tdshogi.db` 单个文件即可还原所有数据。首次启动会自动把旧版
+JSON 文件迁移入库并改名为 `.bak`。
 
 ## 规则说明
 

@@ -23,6 +23,8 @@ const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混�
 const RECONNECT_GRACE_MS = 60 * 1000; // 断线 60 秒重连期
 const TICK_MS = 1000;                   // 棋钟 tick
 const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS || '30000', 10) || 30000; // 进行中对局快照间隔（可配，默认 30s）
+const NO_MEMBER_CLEANUP_MS = parseInt(process.env.NO_MEMBER_CLEANUP_MS || '', 10) || 2 * 60 * 1000;   // 完全无连接的房间 2 分钟后清理（可配）
+const FINISHED_TTL_MS = parseInt(process.env.FINISHED_TTL_MS || '', 10) || 30 * 60 * 1000;            // 感想战中（FINISHED 有连接成员）自最后活动起 30 分钟（可配）
 
 // 时间控制预设（房间 / 快速匹配可选）
 //  - main: 本时（每方思考时间，ms）
@@ -66,6 +68,9 @@ class RoomManager {
     this._disconnectTimers = new Map(); // roomId -> Map<seat, timer>（断线宽限期）
     // 对局快照定时器（进行中对局定期落盘，重启可恢复）
     this._snapshotTimer = setInterval(() => this._snapshotAll(), SNAPSHOT_INTERVAL_MS);
+    // FINISHED 房间定期清理（已结束 5 分钟以上即从内存/byCode 删除）
+    // 修复：原先 FINISHED 房间永远留在 rooms Map，导致内存泄漏 + 进行中列表残留
+    this._finishedCleanupTimer = setInterval(() => this._cleanupFinished(), 60 * 1000);
     // 赛事建房工厂：供 tournaments 层推进对阵表时创建对局
     tournaments.setMatchFactory((tournamentId, playerIds) =>
       this.createTournamentMatch(tournamentId, playerIds));
@@ -89,7 +94,7 @@ class RoomManager {
     return this.rooms.get(roomId);
   }
 
-  _broadcast(roomId, payload) {
+  _broadcast(roomId, payload, exceptClientId = null) {
     const room = this._room(roomId);
     if (!room) return;
     const ids = new Set();
@@ -97,7 +102,10 @@ class RoomManager {
     if (room.players.w) ids.add(room.players.w.clientId);
     const specs = this.spectatorsByRoom.get(roomId) || new Set();
     for (const sid of specs) ids.add(sid);
-    for (const cid of ids) this.broadcaster(cid, payload);
+    for (const cid of ids) {
+      if (exceptClientId && cid === exceptClientId) continue;
+      this.broadcaster(cid, payload);
+    }
   }
 
   _broadcastLobby() {
@@ -116,9 +124,13 @@ class RoomManager {
     } catch (_) {
       st.movesKif = [];
     }
+    const profB = room.players.b ? ratings.profile(room.players.b.playerId) : null;
+    const profW = room.players.w ? ratings.profile(room.players.w.playerId) : null;
     st.players = {
-      b: room.players.b ? { name: room.players.b.name, rating: ratings.profile(room.players.b.playerId).rating } : null,
-      w: room.players.w ? { name: room.players.w.name, rating: ratings.profile(room.players.w.playerId).rating } : null,
+      // connected：该座位当前是否在线（前端据此显示「对手断线，等待重连」）
+      // level：等级系统（PLAN §K7），供对局页玩家栏展示
+      b: room.players.b ? { id: room.players.b.playerId, name: room.players.b.name, rating: profB.rating, level: profB.level, connected: room.players.b.connected !== false } : null,
+      w: room.players.w ? { id: room.players.w.playerId, name: room.players.w.name, rating: profW.rating, level: profW.level, connected: room.players.w.connected !== false } : null,
     };
     st.clock = { b: room.clock.b, w: room.clock.w };
     st.timeControl = room.timeControl || DEFAULT_TIME_CONTROL;
@@ -127,6 +139,25 @@ class RoomManager {
     st.inByoyomi = room.inByoyomi ? { ...room.inByoyomi } : null;
     st.roomType = room.type;
     st.seat = null;
+    // 观战者名单（对局页右列观众列表，PLAN §G v7）
+    st.spectators = this._spectatorNames(room);
+    st.moveTimes = room.moveTimes || [];  // 每手耗时（秒）——棋谱列表与 KIF 时间
+    // 感想战演示状态（仅终局后携带，重连/观战初载即可拿到推演谱与合法走法，PLAN §G）
+    if (room.status === 'FINISHED' && room.demo) {
+      const dSeat = room.demo.demonstratorSeat;
+      const g = this._demoGame(room);
+      st.demo = {
+        moves: room.demo.moves,
+        kif: room.demo.kif,
+        baseIndex: room.demo.baseIndex,
+        baseCount: room.demo.baseCount,
+        legalMoves: g.legalMovesUsi(),
+        legalTargetsBySq: this._legalTargetsMap(g),
+        turn: g.turn,
+        demonstratorSeat: dSeat || null,
+        demonstratorName: dSeat && room.players[dSeat] ? room.players[dSeat].name : null,
+      };
+    }
     if (!includeLegal || room.status !== 'PLAYING') {
       st.legalMoves = [];
       st.legalTargetsBySq = {};
@@ -167,11 +198,41 @@ class RoomManager {
   /**
    * 创建房间（host 作为先手或随机）。
    * @param {object} host { clientId, playerId, name }
-   * @returns {{roomId:string, code:string, seat:'b'|'w'}}
+   * @returns {{ok:true, roomId, code, seat}|{ok:false, error}}
    */
   createRoom(host, timeControlId) {
-    // 若在已结束的对局中则自动退出，允许直接建房
+    // 若在已结束的对局中则自动退出；对局中自动认输退出（用户确认，PLAN §H）
     this._autoLeaveFinished(host.clientId);
+    this._autoResignAndLeave(host.clientId);
+    this._autoLeaveAllRooms(host.playerId, host.clientId); // 旧连接残留的座位一并退出（幽灵房修复）
+    this._abandonRestoredFor(host.playerId);
+    // 同一 playerId 名下已有进行中房间（另一连接/另一窗口）→ 拒绝；
+    // 仅等待中的旧房 → 视为放弃并销毁（防止一人占多个房间）
+    for (const room of [...this.rooms.values()]) {
+      if (room.status === 'FINISHED') continue;
+      const seat = ['b', 'w'].find((s) => room.players[s] && room.players[s].playerId === host.playerId);
+      if (!seat) continue;
+      if (room.status === 'PLAYING' && !room.game.isGameOver()) {
+        return { ok: false, error: '你已在对局中，请先结束当前对局' };
+      }
+      this._broadcast(room.id, { type: 'room_closed', data: { roomId: room.id, reason: 'host_switch' } });
+      this._dissolveRoom(room.id, 'host_recreate_other_connection');
+    }
+    // 同一玩家已处于进行中/等待中房间 → 阻止重复建房
+    // 修复：原先未拦截，导致同连接连建多房，留下大量幽灵 WAITING 房间，
+    //      其他人用旧 code 加入会「开局但对手是断连的空壳」（即"加进来的人不能正常游戏"）
+    const curRoomId = this.clientToRoom.get(host.clientId);
+    if (curRoomId) {
+      const cur = this._room(curRoomId);
+      if (cur && cur.status === 'PLAYING') {
+        return { ok: false, error: '你已在对局中，请先结束当前对局' };
+      }
+      if (cur && cur.status === 'WAITING') {
+        // 旧等待房已存在 → 立即销毁，再建新房（避免幽灵）
+        this._dissolveRoom(curRoomId, 'host_recreate');
+        this._unbindClient(host.clientId);
+      }
+    }
     const tc = TIME_CONTROLS[timeControlId] || TIME_CONTROLS[DEFAULT_TIME_CONTROL];
     const code = this._genRoomCode();
     const roomId = genId();
@@ -204,7 +265,7 @@ class RoomManager {
     this.rooms.set(roomId, room);
     this.byCode.set(code, roomId);
     this._bindClient(host.clientId, roomId, seat);
-    return { roomId, code, seat };
+    return { ok: true, roomId, code, seat };
   }
 
   /**
@@ -213,10 +274,32 @@ class RoomManager {
    * @param {string} code
    */
   joinRoom(player, code) {
-    // 若在已结束的对局中则自动退出，允许加入新房间
+    // 若在已结束的对局中则自动退出；对局中自动认输退出（用户确认，PLAN §H）
     this._autoLeaveFinished(player.clientId);
+    this._autoResignAndLeave(player.clientId);
+    this._autoLeaveAllRooms(player.playerId, player.clientId); // 旧连接残留的座位一并退出（幽灵房修复）
+    this._abandonRestoredFor(player.playerId);
     const roomId = this.byCode.get(code.trim().toUpperCase());
     if (!roomId) return { ok: false, error: '房间不存在或房间码错误' };
+    // 同一身份不能加入自己的房间（房主座位已是自己的 playerId → 再加入即一人占两位）
+    const target = this._room(roomId);
+    if (target && ['b', 'w'].some((s) => target.players[s] && target.players[s].playerId === player.playerId)) {
+      return { ok: false, error: '这是你自己创建/所在的房间，同一身份不能加入（可在对局结束后再来，或换一个身份测试）' };
+    }
+    const curId = this.clientToRoom.get(player.clientId);
+    if (curId) {
+      const curRoom = this._room(curId);
+      if (curRoom && curRoom.status === 'PLAYING') {
+        return { ok: false, error: '你正在对局中，请先结束当前对局' };
+      }
+      // 自己的等待房未开赛：换房 → 销毁旧等待房（避免幽灵房）；
+      // 若目标就是自己的等待房，按"已在房间中"处理（不动原房间）
+      if (curRoom && curRoom.status === 'WAITING') {
+        if (curId === roomId) return { ok: false, error: '你已在房间中' };
+        this._dissolveRoom(curId, 'switch_room');
+        this._unbindClient(player.clientId);
+      }
+    }
     const room = this._room(roomId);
     if (room.status !== 'WAITING') return { ok: false, error: '对局已经开始，无法加入' };
     // 空位
@@ -241,12 +324,43 @@ class RoomManager {
   /**
    * 快速匹配：将玩家放入队列，两人即配对。
    */
+  /** 对局中自动认输并退出（用户确认：匹配/建房时若在对局中自动退出，PLAN §H） */
+  _autoResignAndLeave(clientId) {
+    const seat = this.clientToPlayer.get(clientId);
+    if (!seat) return;
+    const room = this._room(seat.roomId);
+    if (!room || room.status !== 'PLAYING' || room.game.isGameOver()) return;
+    room.game.result = seat.seat === 'b' ? 'w' : 'b';
+    room.game.resultDetail = '投了';
+    this._checkGameOver(room);
+    this._autoLeaveFinished(clientId);
+  }
+
   quickMatch(player) {
-    // 若在已结束的对局中则自动退出（否则会误报"你已在房间中"）
+    // 若在已结束的对局中则自动退出；对局中自动认输退出（用户确认，PLAN §H）
     this._autoLeaveFinished(player.clientId);
-    // 已在对局中
-    const cur = this.clientToRoom.get(player.clientId);
-    if (cur) return { ok: false, error: '你已在房间中' };
+    this._autoResignAndLeave(player.clientId);
+    this._autoLeaveAllRooms(player.playerId, player.clientId); // 旧连接残留的座位一并退出（幽灵房修复）
+    this._abandonRestoredFor(player.playerId);
+    // 已绑在某房间：进行中 → 拒绝；自己的等待房（未开赛）→ 销毁后再匹配
+    // （否则房主换玩法后 WAITING 房残留，其他人凭旧 code 加入会开局但对手是空壳）
+    const curId = this.clientToRoom.get(player.clientId);
+    if (curId) {
+      const cur = this._room(curId);
+      if (cur && cur.status === 'WAITING') {
+        this._dissolveRoom(curId, 'switch_to_match');
+        this._unbindClient(player.clientId);
+      } else {
+        return { ok: false, error: '你已在房间中' };
+      }
+    }
+    // 同一身份已在队列 → 拒绝（防止同浏览器双窗口/双标签自己和自己配对，占两个位置）
+    if (this.matchQueue.some((cid) => {
+      const p = this.playerRegistry(cid);
+      return p && p.playerId === player.playerId;
+    })) {
+      return { ok: false, error: '同一身份已在匹配队列中——不能自己和自己对弈' };
+    }
     if (this.matchQueue.includes(player.clientId)) return { ok: false, error: '已在匹配队列中' };
     this.matchQueue.push(player.clientId);
     // 配对
@@ -256,6 +370,11 @@ class RoomManager {
       // 从广播器/玩家表取会话信息（由 protocol 层注入 player registry）
       const p1 = this.playerRegistry ? this.playerRegistry(c1) : null;
       const p2 = this.playerRegistry ? this.playerRegistry(c2) : null;
+      // 配对安全网：同 playerId 永远不配到一起
+      if (p1 && p2 && p1.playerId === p2.playerId) {
+        this.matchQueue.unshift(c1);
+        return { ok: false, error: '同一身份不能自己和自己对弈' };
+      }
       if (p1 && p2) {
         this._startQuickMatch(p1, p2);
       } else {
@@ -293,6 +412,138 @@ class RoomManager {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 自动退出该身份名下所有其他房间的座位（按 playerId，含已断线的旧连接座位——幽灵房修复）。
+   * 既有 _autoLeaveFinished/_autoResignAndLeave 只查「当前连接」绑定的房间，覆盖不到
+   * 已关闭旧连接留下的座位；这些座位残留在回位扫描里，会把新连接绑回旧对局（幽灵房）。
+   *  - PLAYING 未终局 → 自动认输（投了，PLAN §H 同款）
+   *  - FINISHED（含复盘中）→ 移除座位记录（与 _autoLeaveFinished 口径一致）；
+   *    由此大厅列表不再把他认作该局选手，重访旧局走观战入口
+   *  - 复盘中持有演示权 → 释放
+   * exceptClientId：当前连接所在的房间不动（WAITING 换房/对局中认输由既有逻辑处理）
+   */
+  _autoLeaveAllRooms(playerId, exceptClientId = null) {
+    if (!playerId) return;
+    const keepRoomId = exceptClientId ? this.clientToRoom.get(exceptClientId) : null;
+    for (const room of this.rooms.values()) {
+      if (room.restored) continue;               // 恢复局由 _abandonRestoredFor 专门处理
+      if (keepRoomId && room.id === keepRoomId) continue;
+      for (const seat of ['b', 'w']) {
+        const p = room.players[seat];
+        if (!p || p.playerId !== playerId) continue;
+        if (room.status === 'PLAYING' && !room.game.isGameOver()) {
+          room.game.result = seat === 'b' ? 'w' : 'b';
+          room.game.resultDetail = '投了';
+          this._checkGameOver(room);
+        }
+        if (room.status !== 'FINISHED') continue; // WAITING 房间由既有换房/销毁逻辑处理
+        if (room.demo && room.demo.demonstratorSeat === seat) {
+          room.demo.demonstratorSeat = null;
+          room.demo.updatedAt = Date.now();
+          this._broadcastDemo(room);
+        }
+        if (p.clientId) {
+          // 该 clientId 若仍连着（多窗口场景），同步解除其房间绑定
+          this.clientToRoom.delete(p.clientId);
+          this.clientToPlayer.delete(p.clientId);
+        }
+        this.playerToClient.delete(playerId);
+        room.players[seat] = null;
+        this._pushState(room);
+      }
+    }
+  }
+
+  /**
+   * 放弃玩家名下的「恢复局」（服务器重启时从快照恢复的旧局，room.restored = true）。
+   * 在玩家主动开启新对局（建房/加入/匹配）时调用——否则 request_state 的重连兜底
+   * 会按 playerId 把玩家绑回僵尸恢复局，表现为新对局「双方锁死、计时器不动」。
+   *  - 对手仍在线 → 按接続切断判负推进（保留对手的结算与复盘）
+   *  - 对手不在线/无对手/WAITING → 直接解散
+   */
+  _abandonRestoredFor(playerId) {
+    if (!playerId) return;
+    for (const room of [...this.rooms.values()]) {
+      if (!room.restored || room.status === 'FINISHED') continue;
+      const seat = ['b', 'w'].find((s) => room.players[s] && room.players[s].playerId === playerId);
+      if (!seat) continue;
+      const otherSeat = seat === 'b' ? 'w' : 'b';
+      const other = room.players[otherSeat];
+      const otherConnected = !!(other && other.connected);
+      if (room.status === 'WAITING' || !otherConnected || room.game.isGameOver()) {
+        this._broadcast(room.id, { type: 'room_closed', data: { roomId: room.id, reason: 'abandoned_restored' } });
+        this._dissolveRoom(room.id, 'player_started_new_game');
+      } else {
+        room.game.result = seat === 'b' ? 'w' : 'b';
+        room.game.resultDetail = '接続切断';
+        this._checkGameOver(room);
+      }
+    }
+  }
+
+  /**
+   * 销毁房间：清理所有绑定与资源，避免 WAITING 房间永远残留成为「幽灵房间」。
+   * 修复：原先 leave()/断线/重复建房均不销毁 WAITING 房间，导致：
+   *  1) 房主刷新/离开后，房间码仍可被其他人加入 → 出现「开局但对手是空壳」
+   *  2) 进行中列表内存泄漏（rooms Map 永远增长）
+   * @param {string} roomId
+   * @param {string} reason 用于日志
+   */
+  _dissolveRoom(roomId, reason = 'dissolve') {
+    const room = this._room(roomId);
+    if (!room) return;
+    this.rooms.delete(roomId);
+    this.byCode.delete(room.code);
+    this._stopClock(roomId);
+    // 清理所有玩家绑定（先于清座位，避免 unbind 误判）
+    for (const seat of ['b', 'w']) {
+      const p = room.players[seat];
+      if (p && p.clientId) {
+        this.clientToRoom.delete(p.clientId);
+        this.clientToPlayer.delete(p.clientId);
+      }
+      if (p && p.playerId) this.playerToClient.delete(p.playerId);
+    }
+    // 观战者
+    const specs = this.spectatorsByRoom.get(roomId);
+    if (specs) {
+      for (const sid of specs) this.clientToRoom.delete(sid);
+      this.spectatorsByRoom.delete(roomId);
+    }
+    // 清理该房间的所有定时器
+    const dt = this._disconnectTimers.get(roomId);
+    if (dt) { for (const t of dt.values()) clearTimeout(t); this._disconnectTimers.delete(roomId); }
+    const wt = this._waitingTimers && this._waitingTimers.get(roomId);
+    if (wt) { clearTimeout(wt); this._waitingTimers.delete(roomId); }
+    this._clearSnapshot(roomId);
+    console.log(`[rooms] 房间 ${roomId} (${room.code}) 销毁 (${reason})`);
+  }
+
+  /**
+   * 安排 WAITING 房间在 N 秒后自动销毁（若仍无玩家重连）。
+   * 给玩家一个「刷新页面重连」的机会；超时后清理，避免幽灵。
+   */
+  _scheduleWaitingDissolve(roomId, ms = 20000) {
+    if (!this._waitingTimers) this._waitingTimers = new Map();
+    if (this._waitingTimers.has(roomId)) return;
+    const t = setTimeout(() => {
+      this._waitingTimers && this._waitingTimers.delete(roomId);
+      const r = this._room(roomId);
+      if (!r || r.status !== 'WAITING') return;
+      // 仍有连接的玩家 → 不销毁（可能加入了第二个玩家）
+      const anyConnected = (r.players.b && r.players.b.connected) || (r.players.w && r.players.w.connected);
+      if (anyConnected) return;
+      this._dissolveRoom(roomId, 'waiting_timeout');
+    }, ms);
+    this._waitingTimers.set(roomId, t);
+  }
+
+  _clearWaitingTimer(roomId) {
+    if (!this._waitingTimers) return;
+    const t = this._waitingTimers.get(roomId);
+    if (t) { clearTimeout(t); this._waitingTimers.delete(roomId); }
   }
 
   _startQuickMatch(p1, p2) {
@@ -336,9 +587,19 @@ class RoomManager {
   _startGame(room) {
     room.status = 'PLAYING';
     room.lastMoveTs = Date.now();
+    room.demo = null;      // 新对局开始：清除上一局的感想战演示状态
+    room.emptySince = null;
     this._startClock(room);
     this._broadcast(room.id, { type: 'game_start', data: { roomId: room.id, code: room.code } });
     this._pushState(room);
+    // 若任一座位开局时已失联（典型场景：房主建房后断线 → joiner 凭 code 加入），
+    // 立即为该座位启动断线判负计时，避免「开局但对手是空壳、永远等不到走子」。
+    for (const seat of ['b', 'w']) {
+      const p = room.players[seat];
+      if (p && !p.connected && !room.game.isGameOver()) {
+        this._scheduleDisconnectLoss(room.id, seat);
+      }
+    }
   }
 
   // ==================================================================
@@ -440,10 +701,15 @@ class RoomManager {
     const game = room.game;
     if (seat.seat !== game.turn) return { ok: false, error: '还没轮到你' };
     if (!game.isGameOver()) {
+      // 每手耗时（秒）：自该方上一手（或开局）起算——KIF 消費時間/累計時間用
+      const now = Date.now();
+      const spent = Math.max(0, Math.round((now - (room.lastMoveTs || room.createdAt)) / 1000));
       const r = game.applyMove(usi);
       if (!r.ok) return { ok: false, error: r.error || '非法走法' };
-      room.lastMoveTs = Date.now();
-      room.lastActiveAt = Date.now();
+      room.moveTimes = room.moveTimes || [];
+      room.moveTimes.push(spent);
+      room.lastMoveTs = now;
+      room.lastActiveAt = now;
       // 走子后重置下一手玩家的读秒（进入新回合计时）
       if (room.inByoyomi) {
         const nextTurn = game.turn;
@@ -507,6 +773,11 @@ class RoomManager {
     room.result = game.result;
     room.resultDetail = game.resultDetail;
     this._stopClock(room);
+    // 感想战：终局自动初始化演示状态（演示权归房主，见 PLAN §G）
+    this._initDemo(room);
+    // 向全场推送终局 state（含 demo）——双方与观战者据此统一自动进入感想战；
+    // 否则只有触发终局的那个连接能进入（其余成员停在旧画面）
+    this._pushState(room);
     // 对局结束：清理断线宽限计时器 + 清除快照（对局已落盘 records，无需恢复）
     const timers = this._disconnectTimers.get(room.id);
     if (timers) {
@@ -529,10 +800,17 @@ class RoomManager {
     if (room.rated && b && w && game.result) {
       ratings.applyGameResult(b.playerId, w.playerId, game.result);
     }
+    // 对局经验（PLAN §K7）：完成一局双方 +1（含赛事对局；离开/断线判负同样算完成）
+    try {
+      if (b) ratings.addExp(b.playerId, 1, 'game');
+      if (w) ratings.addExp(w.playerId, 1, 'game');
+    } catch (_) {}
     // 保存棋谱
     const record = saveRecord({
       startSfen: game.startSfen,
       moves: game.moves,
+      moveTimes: room.moveTimes || [],
+      timeControl: room.timeControl,
       names: [b ? b.name : '先手', w ? w.name : '後手'],
       result: game.result,
       resultDetail: game.resultDetail,
@@ -580,6 +858,8 @@ class RoomManager {
       room.lastMoveTs = Date.now();
       room.lastActiveAt = Date.now();
       room.recordId = null;
+      room.moveTimes = [];
+      room.demo = null; // 再来一局：退出感想战，清空推演
       room.rematchVotes = {};
       this._startClock(room);
       this._broadcast(room.id, { type: 'game_start', data: { roomId: room.id, code: room.code } });
@@ -618,10 +898,21 @@ class RoomManager {
     if (!seat) return { ok: true };
     const room = this._room(seat.roomId);
     if (!room) return { ok: true };
+    // 等待中房间：房主/玩家主动离开 → 立即销毁整个房间（关键修复）
+    // 否则房间永远残留成为「幽灵房间」，其他人用 code 加入会开局但对手是空壳
+    if (room.status === 'WAITING') {
+      // 通知仍在房间里的观战者（若有）
+      this._broadcast(room.id, { type: 'room_closed', data: { roomId: room.id, reason: 'host_left' } });
+      this._dissolveRoom(room.id, 'host_left');
+      this.clientToPlayer.delete(clientId);
+      this.clientToRoom.delete(clientId);
+      return { ok: true };
+    }
     // 对局中离开 → 判「离开座位」负（而不是当前手番方）
+    // 修复：原 resultDetail 写「投了」误导对手；中途退出/断线超时应提示「接続切断」
     if (room.status === 'PLAYING' && !room.game.isGameOver()) {
       room.game.result = seat.seat === 'b' ? 'w' : 'b';
-      room.game.resultDetail = '投了';
+      room.game.resultDetail = '接続切断';
       this._checkGameOver(room);
     }
     this._unbindClient(clientId);
@@ -631,22 +922,64 @@ class RoomManager {
   // ==================================================================
   // 观战
   // ==================================================================
-  spectate(clientId, roomId) {
+  spectate(clientId, roomId, playerId) {
     const room = this._room(roomId);
     if (!room) return { ok: false, error: '对局不存在' };
-    // 已在房间（玩家）则不重复
-    if (this.clientToPlayer.has(clientId)) return { ok: true, roomId };
+    // 座位回位（PLAN §H）：本连接 playerId 命中本房间座位 → 回到座位（对局中/复盘中皆可），不进观战席
+    const seatInfo = this.clientToPlayer.get(clientId);
+    if (seatInfo && seatInfo.roomId === roomId) {
+      const mySeat = seatInfo.seat;
+      const p = room.players[mySeat];
+      if (p) {
+        p.clientId = clientId;
+        p.connected = true;
+        this._bindClient(clientId, roomId, mySeat);
+        this._pushState(room);
+        return { ok: true, roomId, seat: mySeat, rebind: true };
+      }
+    }
+    // 掉线重进（进行中对局列表入口）：新连接的 clientId 映射已被 _unbindClient 清除，
+    // 必须按持久 playerId 匹配座位才能回位（与 reconnect()/bindToActiveGame() 同口径）
+    if (playerId && !(room.status === 'FINISHED' && !room.demo)) {
+      for (const seat of ['b', 'w']) {
+        const p = room.players[seat];
+        if (p && p.playerId === playerId && !p.connected) {
+          // 旧连接仍挂着时先解除其绑定（页面跳转竞态：新连接先于旧 close 到达）
+          if (p.clientId && p.clientId !== clientId) {
+            this.clientToRoom.delete(p.clientId);
+            this.clientToPlayer.delete(p.clientId);
+            this.playerToClient.delete(p.playerId);
+          }
+          p.clientId = clientId;
+          p.connected = true;
+          this._bindClient(clientId, roomId, seat);
+          this._pushState(room);
+          return { ok: true, roomId, seat, rebind: true };
+        }
+      }
+    }
+    // 正在对局的玩家禁止观战其他对局：
+    // 原先静默返回 ok，前端会跳转到别人的对局页，导致玩家"丢失"自己的对局、
+    // 重连混乱（表现为"掉线后回不到对局"）。这里直接拒绝并引导回对局。
+    const seat = this.clientToPlayer.get(clientId);
+    if (seat) {
+      const myRoom = this._room(seat.roomId);
+      if (myRoom && myRoom.status === 'PLAYING') {
+        return { ok: false, error: '你正在对局中，不能观战其他对局', backRoomId: myRoom.id };
+      }
+    }
     if (!this.spectatorsByRoom.has(roomId)) this.spectatorsByRoom.set(roomId, new Set());
     this.spectatorsByRoom.get(roomId).add(clientId);
+    this._broadcastSpectators(room); // 观众列表实时更新（PLAN §G v7）
     this.clientToRoom.set(clientId, roomId);
     return { ok: true, roomId };
   }
 
-  randomSpectate(clientId) {
+  randomSpectate(clientId, playerId) {
     const playing = [...this.rooms.values()].filter((r) => r.status === 'PLAYING');
     if (!playing.length) return { ok: false, error: '当前没有进行中的对局' };
     const room = playing[Math.floor(Math.random() * playing.length)];
-    const res = this.spectate(clientId, room.id);
+    const res = this.spectate(clientId, room.id, playerId);
     return res;
   }
 
@@ -659,12 +992,21 @@ class RoomManager {
     const room = this._room(roomId);
     if (room && room.players[seat]) {
       this.playerToClient.set(room.players[seat].playerId, clientId);
-      // 重连成功：清除断线宽限计时器
+      // 关键：必须更新座位记录的 clientId，否则 _pushState 广播会发到已断开的旧连接
+      // 修复：原先 reconnect() 显式设置 p.clientId，bindToActiveGame() 也设置，
+      //       但统一收敛到 _bindClient 后遗漏了 p.clientId，导致重连后收不到 state 推送
+      room.players[seat].clientId = clientId;
+      room.players[seat].connected = true;
+      // 重连成功：清除断线宽限计时器 + WAITING 销毁定时器
       this._clearDisconnectTimer(roomId, seat);
+      this._clearWaitingTimer(roomId);
     }
   }
 
   _unbindClient(clientId) {
+    // 匹配队列清理：断线/退出的排队者必须移出，否则僵尸条目会毒化后续配对
+    const qIdx = this.matchQueue.indexOf(clientId);
+    if (qIdx >= 0) this.matchQueue.splice(qIdx, 1);
     // 观战者断线：同样清理（否则残留收广播 + 泄漏）
     const specRoomId = this.clientToRoom.get(clientId);
     if (specRoomId && !this.clientToPlayer.has(clientId)) {
@@ -672,6 +1014,8 @@ class RoomManager {
       if (specs) {
         specs.delete(clientId);
         if (specs.size === 0) this.spectatorsByRoom.delete(specRoomId);
+        const room = this._room(specRoomId);
+        if (room) this._broadcastSpectators(room); // 观众列表实时更新
       }
     }
     const seat = this.clientToPlayer.get(clientId);
@@ -683,6 +1027,19 @@ class RoomManager {
         // 对局中玩家断线：启动宽限期计时，超时未重连则判负
         if (room.status === 'PLAYING' && !room.game.isGameOver()) {
           this._scheduleDisconnectLoss(room.id, seat.seat);
+          // 立即推送状态（players.connected=false），让对手实时看到「对手断线」
+          this._pushState(room);
+        }
+        // 等待中房间的玩家断线：20s 宽限后销毁（避免幽灵房间）
+        // 修复：原先断线只置 connected=false，房间永远残留，其他人用 code 加入会开局但对手是空壳
+        if (room.status === 'WAITING') {
+          this._scheduleWaitingDissolve(room.id, 20000);
+        }
+        // 感想战中演示者断线：演示权置空并广播（任何玩家可认领，PLAN §G）
+        if (room.status === 'FINISHED' && room.demo && room.demo.demonstratorSeat === seat.seat) {
+          room.demo.demonstratorSeat = null;
+          room.demo.updatedAt = Date.now();
+          this._broadcastDemo(room);
         }
       }
     }
@@ -708,10 +1065,10 @@ class RoomManager {
       const cur = this._room(roomId);
       if (!cur || cur.status !== 'PLAYING' || cur.game.isGameOver()) return;
       const p = cur.players[seat];
-      // 仍未重连 → 判该座位负
+      // 仍未重连 → 判该座位负（接続切断，与主动投了区分）
       if (p && !p.connected) {
         cur.game.result = seat === 'b' ? 'w' : 'b';
-        cur.game.resultDetail = '投了';
+        cur.game.resultDetail = '接続切断';
         this._checkGameOver(cur);
       }
       timers.delete(seat);
@@ -859,15 +1216,24 @@ class RoomManager {
     return null;
   }
 
-  reconnect(clientId, playerId) {
-    // 根据 playerId 找到其所在房间（可能断线）
+  reconnect(clientId, playerId, preferRoomId = null) {
+    // 根据 playerId 查座位表回位（含「复盘中」房间——掉线/刷新/重进都回到自己座位，PLAN §G v7）
+    // 纯 FINISHED（无感想战）的房间仍跳过
+    // preferRoomId：客户端 URL 指向的房间优先。重新匹配进入新对局时，旧对局
+    // （复盘中）的断线座位不能凭 Map 插入顺序抢先绑定（幽灵房修复）
+    if (preferRoomId) {
+      const hit = this._findDisconnectedSeat(preferRoomId, playerId);
+      if (hit) {
+        this._bindClient(clientId, hit.room.id, hit.seat);
+        return { ok: true, roomId: hit.room.id, seat: hit.seat, reconnect: true };
+      }
+    }
     for (const room of this.rooms.values()) {
+      if (room.status === 'FINISHED' && (!room.demo || preferRoomId)) continue;
       for (const seat of ['b', 'w']) {
         const p = room.players[seat];
         if (p && p.playerId === playerId && !p.connected) {
           // 找到断线的对局，重连
-          p.clientId = clientId;
-          p.connected = true;
           this._bindClient(clientId, room.id, seat);
           return { ok: true, roomId: room.id, seat, reconnect: true };
         }
@@ -876,15 +1242,37 @@ class RoomManager {
     return { ok: false };
   }
 
+  /** 在指定房间内找 playerId 的断线座位（复盘中房间也算，回位口径与 reconnect 一致） */
+  _findDisconnectedSeat(roomId, playerId) {
+    const room = this._room(roomId);
+    if (!room) return null;
+    if (room.status === 'FINISHED' && !room.demo) return null;
+    for (const seat of ['b', 'w']) {
+      const p = room.players[seat];
+      if (p && p.playerId === playerId && !p.connected) return { room, seat };
+    }
+    return null;
+  }
+
   /**
    * 兜底绑定：玩家页面跳转时，新连接可能先于旧连接 close 到达，
    * 此时 reconnect() 找不到 connected=false 的座位。这里按 playerId
    * 强制把新连接绑回其进行中的对局（顶替旧连接，不依赖 close 时序）。
+   * preferRoomId：URL 指向的房间优先（幽灵房修复，同 reconnect）；且带
+   * preferRoomId 时不再兜底绑定到旧的「复盘中」房间。
    * @returns {{roomId:string, seat:string}|null}
    */
-  bindToActiveGame(clientId, playerId) {
+  bindToActiveGame(clientId, playerId, preferRoomId = null) {
+    const ordered = [];
+    if (preferRoomId) {
+      const r0 = this._room(preferRoomId);
+      if (r0) ordered.push(r0);
+    }
     for (const room of this.rooms.values()) {
-      if (room.status === 'FINISHED') continue;
+      if (room.id !== preferRoomId) ordered.push(room);
+    }
+    for (const room of ordered) {
+      if (room.status === 'FINISHED' && (!room.demo || preferRoomId)) continue;
       for (const seat of ['b', 'w']) {
         const p = room.players[seat];
         if (p && p.playerId === playerId) {
@@ -901,15 +1289,16 @@ class RoomManager {
         }
       }
     }
-    return { ok: false };
+    return null;
   }
 
   // ==================================================================
   // 列表 / 信息
   // ==================================================================
   activeGames() {
+    // 进行中对局 + 感想战中的房间（终局后未清理，type='reviewing' 复盘中，可继续观战）
     return [...this.rooms.values()]
-      .filter((r) => r.status === 'PLAYING')
+      .filter((r) => r.status === 'PLAYING' || (r.status === 'FINISHED' && r.demo))
       .map((r) => ({
         roomId: r.id,
         code: r.code,
@@ -917,8 +1306,13 @@ class RoomManager {
           b: r.players.b ? r.players.b.name : null,
           w: r.players.w ? r.players.w.name : null,
         },
+        // 玩家 id（大厅观战列表悬停信息卡用，PLAN §F3）
+        playerIds: {
+          b: r.players.b ? r.players.b.playerId : null,
+          w: r.players.w ? r.players.w.playerId : null,
+        },
         moveCount: r.game.moves.length,
-        type: r.type,
+        type: r.status === 'FINISHED' ? 'reviewing' : r.type,
         createdAt: r.createdAt,
       }));
   }
@@ -994,6 +1388,333 @@ class RoomManager {
   }
 
   /**
+   * 管理员取消赛事：解散其全部进行中/等待中的对局房间。
+   * 由 server 路由在 tournaments.cancelTournament 返回 matchIds 后调用。
+   * 房内所有人收到 room_closed 通知。
+   */
+  dissolveTournamentMatches(matchIds, reason = 'tournament_cancelled') {
+    let n = 0;
+    for (const roomId of matchIds || []) {
+      const room = this._room(roomId);
+      if (!room) continue;
+      this._broadcast(roomId, { type: 'room_closed', data: { roomId, reason } });
+      this._dissolveRoom(roomId, reason);
+      n++;
+    }
+    return n;
+  }
+
+  // ==================================================================
+  // 感想战演示行棋（PLAN §G）
+  // ==================================================================
+
+  /** 观战者名单（对局页观众列表用） */
+  _spectatorNames(room) {
+    const specs = this.spectatorsByRoom.get(room.id) || new Set();
+    const out = [];
+    for (const cid of specs) {
+      const info = this.playerRegistry ? this.playerRegistry(cid) : null;
+      out.push((info && info.name) || '观众');
+    }
+    return out;
+  }
+
+  /** 观战者名单变动广播（对局页观众列表实时更新） */
+  _broadcastSpectators(room) {
+    this._broadcast(room.id, { type: 'spectator_update', data: { spectators: this._spectatorNames(room) } });
+  }
+
+  _hostSeat(room) {
+    if (room.creatorId) {
+      for (const seat of ['b', 'w']) {
+        const p = room.players[seat];
+        if (p && p.playerId === room.creatorId) return seat;
+      }
+    }
+    return 'b';
+  }
+
+  /**
+   * 终局后初始化演示状态（推演谱：可变基点分支模型，PLAN §G v4）。
+   * baseIndex/baseSfen：推演谱的起点（默认=原对局终局）；在棋谱历史手处下出
+   * 不同的棋 → 起点回退到该手、之后的推演截断（新分支覆盖）。
+   */
+  _initDemo(room) {
+    const moves = room.game.moves || [];
+    room.demo = {
+      baseIndex: moves.length,               // 推演起点 = 原谱第 N 手后
+      baseCount: moves.length,               // 原对局总手数（不变，用于界面区分本谱/推演）
+      baseSfen: room.game.state().sfen,      // 起点局面 SFEN
+      moves: [],                             // 推演着法（USI，规则合法，服务端校验）
+      kif: [],                               // 推演着法日式记谱
+      demonstratorSeat: this._hostSeat(room),
+      updatedAt: Date.now(),
+      _game: null,                           // 推演 Game（懒重建）
+    };
+  }
+
+  /** 原谱第 k 手后的局面 SFEN（k=0 即初始局面） */
+  _sfenAtOriginal(room, k) {
+    const g = newGame(room.game.startSfen || STARTING_SFEN, ['先手', '後手']);
+    const moves = room.game.moves || [];
+    for (let i = 0; i < k && i < moves.length; i++) g.applyMove(moves[i]);
+    return g.state().sfen;
+  }
+
+  /** 推演 Game 实例：起点 SFEN + 重放推演着法（懒重建） */
+  _demoGame(room) {
+    const demo = room.demo;
+    if (!demo._game) {
+      const g = newGame(demo.baseSfen, ['先手', '後手']);
+      for (const usi of demo.moves) g.applyMove(usi);
+      demo._game = g;
+    }
+    return demo._game;
+  }
+
+  /** 推演谱日式记谱（相对起点重放） */
+  _refreshDemoKif(room) {
+    const demo = room.demo;
+    try {
+      const { movesToKif } = require('./records');
+      demo.kif = movesToKif(demo.baseSfen, demo.moves);
+    } catch (_) {
+      demo.kif = demo.moves.map((u, i) => `${u}`);
+    }
+  }
+
+  /** 推演谱第 k 手后的 Game 实例（k ≤ baseIndex 用本谱重放；> baseIndex 叠推演） */
+  _demoGameAt(room, k) {
+    let g;
+    if (k <= room.demo.baseIndex) {
+      g = newGame(room.game.startSfen || STARTING_SFEN, ['先手', '後手']);
+      const moves = room.game.moves || [];
+      for (let i = 0; i < k && i < moves.length; i++) g.applyMove(moves[i]);
+    } else {
+      g = this._demoGame(room);
+      const moves = room.demo.moves;
+      for (let i = room.demo.baseIndex; i < k && i < moves.length; i++) g.applyMove(moves[i]);
+    }
+    return g;
+  }
+
+  _broadcastDemo(room, exceptClientId = null) {
+    if (!room.demo) return;
+    const seat = room.demo.demonstratorSeat;
+    const g = this._demoGame(room);
+    this._broadcast(room.id, {
+      type: 'demo_state',
+      data: {
+        moves: room.demo.moves,
+        kif: room.demo.kif,
+        baseIndex: room.demo.baseIndex,
+        baseCount: room.demo.baseCount,
+        legalMoves: g.legalMovesUsi(),
+        legalTargetsBySq: this._legalTargetsMap(g),
+        turn: g.turn,
+        demonstratorSeat: seat || null,
+        demonstratorName: seat && room.players[seat] ? room.players[seat].name : null,
+      },
+    }, exceptClientId);
+  }
+
+  /**
+   * 感想战演示操作分发（仅 FINISHED 房间）。
+   * action: move（演示者按规则行棋）/ undo（待った）/ transfer / claim / reset（清空推演）
+   */
+  /**
+   * 进入感想战页：返回该客户端视角的完整载荷（独立感想战页 demo.html 用）。
+   * 玩家带座位与演示权；观战者/离开者以旁观身份进入。
+   */
+  demoEnter(clientId, roomId) {
+    const seatInfo = this.clientToPlayer.get(clientId);
+    const rid = roomId || (seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId));
+    const room = this._room(rid);
+    if (!room) return { ok: false, error: '对局房间不存在（可能已清理，请到棋谱页复盘）' };
+    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
+    if (!room.demo) this._initDemo(room);
+    const demo = room.demo;
+    const g = this._demoGame(room);
+    const mySeat = seatInfo ? seatInfo.seat : null;
+    const { movesToKif } = require('./records');
+    const gameKif = movesToKif(room.game.startSfen || STARTING_SFEN, room.game.moves || []);
+    return {
+      ok: true,
+      demo: {
+        roomId: room.id,
+        mySeat,
+        isPlayer: !!mySeat,
+        startSfen: room.game.startSfen || STARTING_SFEN,
+        gameMoves: room.game.moves || [],
+        gameKif,
+        moves: demo.moves,
+        kif: demo.kif,
+        baseIndex: demo.baseIndex,
+        baseCount: demo.baseCount,
+        legalMoves: g.legalMovesUsi(),
+        legalTargetsBySq: this._legalTargetsMap(g),
+        turn: g.turn,
+        demonstratorSeat: demo.demonstratorSeat || null,
+        demonstratorName: demo.demonstratorSeat ? (room.players[demo.demonstratorSeat] || {}).name : null,
+        names: (room.game.names && room.game.names.length === 2) ? room.game.names : ['先手', '後手'],
+        result: room.game.result,
+        resultDetail: room.game.resultDetail,
+      },
+    };
+  }
+
+  /** 感想战：按需下发指定手数局面的合法走法（历史手行棋，PLAN §H） */
+  demoLegal(clientId, data = {}) {
+    const seatInfo = this.clientToPlayer.get(clientId);
+    const roomId = seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId);
+    const room = this._room(roomId);
+    if (!room) return { ok: false, error: '房间不存在' };
+    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
+    if (!room.demo) this._initDemo(room);
+    const idx = Math.max(0, Math.min(Number(data.index) || 0, room.demo.baseIndex + room.demo.moves.length));
+    const g = this._demoGameAt(room, idx);
+    return {
+      ok: true,
+      data: {
+        index: idx,
+        legalMoves: g.legalMovesUsi(),
+        legalTargetsBySq: this._legalTargetsMap(g),
+        turn: g.turn,
+      },
+    };
+  }
+
+  demoAction(clientId, action, data = {}) {
+    const seatInfo = this.clientToPlayer.get(clientId);
+    const roomId = seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId);
+    const room = this._room(roomId);
+    if (!room) return { ok: false, error: '房间不存在' };
+    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
+    if (!room.demo) this._initDemo(room);
+    const demo = room.demo;
+    const mySeat = seatInfo ? seatInfo.seat : null; // 观战者为 null
+    const isDemo = !!mySeat && demo.demonstratorSeat === mySeat;
+    const curName = demo.demonstratorSeat ? (room.players[demo.demonstratorSeat] || {}).name : null;
+    switch (action) {
+      case 'move': {
+        if (!isDemo) return { ok: false, error: curName ? `正在由 ${curName} 演示` : '演示权空闲，请先认领' };
+        const usi = String(data.usi || '');
+        // 分支：携带 index（在该手之后的局面下行棋）。与既有推演不同 → 截断/重设起点开新分支
+        if (Number.isInteger(data.index) && data.index !== demo.baseIndex + demo.moves.length) {
+          const idx = Math.max(0, Math.min(data.index, demo.baseCount));
+          if (idx <= demo.baseIndex) {
+            demo.baseIndex = idx;
+            demo.baseSfen = this._sfenAtOriginal(room, idx);
+            demo.moves = [];
+          } else {
+            demo.moves = demo.moves.slice(0, idx - demo.baseIndex);
+          }
+          demo._game = null;
+        }
+        const res = this._demoGame(room).applyMove(usi); // 服务端规则校验（含王手过滤）
+        if (!res.ok) return { ok: false, error: res.error || '非法走法' };
+        demo.moves.push(usi);
+        this._refreshDemoKif(room);
+        demo.updatedAt = Date.now();
+        this._broadcastDemo(room); // 全员回显（含演示者）——客户端统一以服务端回执渲染
+        return { ok: true };
+      }
+      case 'undo': {
+        // 待った：优先回退推演手；推演谱为空且起点在本谱内 → 跨界回退本谱一手（PLAN §H）
+        if (demo.moves.length) {
+          demo.moves.pop();
+        } else if (demo.baseIndex > 0) {
+          demo.baseIndex -= 1;
+          demo.baseSfen = this._sfenAtOriginal(room, demo.baseIndex);
+        } else {
+          return { ok: false, error: '没有可回退的推演手' };
+        }
+        demo._game = null; // 强制重建
+        this._refreshDemoKif(room);
+        demo.updatedAt = Date.now();
+        this._broadcastDemo(room); // 全员（含请求方）按新推演谱重绘
+        return { ok: true };
+      }
+      case 'transfer': {
+        if (!isDemo) return { ok: false, error: '只有演示者可以交接演示权' };
+        demo.demonstratorSeat = mySeat === 'b' ? 'w' : 'b';
+        demo.updatedAt = Date.now();
+        this._broadcastDemo(room);
+        return { ok: true };
+      }
+      case 'claim': {
+        if (!mySeat) return { ok: false, error: '观战者不能获得演示权' };
+        if (demo.demonstratorSeat) return { ok: false, error: '演示权已被占用' };
+        demo.demonstratorSeat = mySeat;
+        demo.updatedAt = Date.now();
+        this._broadcastDemo(room);
+        return { ok: true };
+      }
+      case 'reset': {
+        if (!isDemo) return { ok: false, error: '只有演示者可以清空推演' };
+        demo.baseIndex = demo.baseCount;
+        demo.baseSfen = this._sfenAtOriginal(room, demo.baseCount);
+        demo.moves = [];
+        demo.kif = [];
+        demo._game = null;
+        demo.updatedAt = Date.now();
+        this._broadcastDemo(room); // 全员回到本谱终局
+        return { ok: true };
+      }
+      default:
+        return { ok: false, error: '未知演示操作' };
+    }
+  }
+
+  /**
+   * 清理已结束超过 N 分钟的 FINISHED 房间，避免 rooms Map 无限增长
+   * 与「进行中对局」列表幽灵残留。
+   */
+  /**
+   * 房间清理（PLAN §G6 改版，用户建议）：
+   *  - 完全无连接（玩家+观战者均 0）：缓冲 NO_MEMBER_CLEANUP_MS（默认 2 分钟，
+   *    覆盖刷新/闪断）后清理，任何状态一律适用
+   *  - FINISHED（感想战中）且有连接成员：自最后活动起 FINISHED_TTL_MS（默认 30 分钟）后清理
+   *  - WAITING/PLAYING 的断线场景仍走各自的 20s/60s 宽限（现状不变）
+   */
+  _cleanupFinished() {
+    const now = Date.now();
+    for (const room of [...this.rooms.values()]) {
+      const members = this._connectedMemberCount(room);
+      if (members === 0) {
+        if (!room.emptySince) {
+          room.emptySince = now;
+        } else if (now - room.emptySince >= NO_MEMBER_CLEANUP_MS) {
+          this._dissolveRoom(room.id, 'no_members_cleanup');
+        }
+        continue;
+      }
+      room.emptySince = null;
+      if (room.status !== 'FINISHED') continue;
+      const lastActive = Math.max(
+        room.demo ? room.demo.updatedAt || 0 : 0,
+        room.lastActiveAt || 0,
+        room.createdAt || 0
+      );
+      if (now - lastActive >= FINISHED_TTL_MS) {
+        this._dissolveRoom(room.id, 'finished_ttl_cleanup');
+      }
+    }
+  }
+
+  /** 房间当前连接成员数（在线玩家 + 观战者） */
+  _connectedMemberCount(room) {
+    let n = 0;
+    for (const seat of ['b', 'w']) {
+      const p = room.players[seat];
+      if (p && p.connected !== false) n++;
+    }
+    const specs = this.spectatorsByRoom.get(room.id);
+    if (specs) n += specs.size;
+    return n;
+  }
+
+  /**
    * 启动时恢复全部快照（服务器重启后续局）。
    * 玩家重连时由 protocol.reconnect 找到恢复的房间。
    * @returns {number} 恢复的房间数
@@ -1023,7 +1744,26 @@ class RoomManager {
             }
           }
         }
-        if (room.status === 'PLAYING') this._startClock(room);
+        // 恢复局自愈（防幽灵复活循环，修复「重启后新对局被旧局劫持」）：
+        //  - WAITING 恢复房：没有需要保留的对局，立即销毁
+        //  - PLAYING 恢复局：对未连接座位启动 60s 判负计时——
+        //    及时重连可续局；都不回来则判负收尾并清快照，
+        //    否则僵尸恢复局每次重启复活，request_state 重连兜底会把
+        //    玩家绑进死局（表现为新对局「双方锁死、计时器不动」）
+        room.restored = true;
+        if (room.status === 'WAITING') {
+          this._dissolveRoom(room.id, 'restored_waiting_cleanup');
+          continue;
+        }
+        if (room.status === 'PLAYING') {
+          this._startClock(room);
+          for (const seat of ['b', 'w']) {
+            const p = room.players[seat];
+            if (p && p.connected === false && !room.game.isGameOver()) {
+              this._scheduleDisconnectLoss(room.id, seat);
+            }
+          }
+        }
         restored++;
       } catch (err) {
         console.error('[rooms] 恢复房间失败:', err.message, roomId);
@@ -1076,6 +1816,7 @@ class RoomManager {
     return {
       online: this.rooms.size + (this.clientToRoom.size - this.rooms.size),
       playing: [...this.rooms.values()].filter((r) => r.status === 'PLAYING').length,
+      reviewing: [...this.rooms.values()].filter((r) => r.status === 'FINISHED' && r.demo).length,
       waiting: [...this.rooms.values()].filter((r) => r.status === 'WAITING').length,
       matching: this.matchQueue.length,
       totalGames: this.rooms.size,

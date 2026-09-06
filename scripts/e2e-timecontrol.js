@@ -67,8 +67,11 @@ async function main() {
   ok(lastClock.inByoyomi.b === true, 'clock 消息标记读秒');
 
   // 先手走一步 → 轮到后手，后手读秒重新满 10 秒（每手独立）
-  const mover = st0.turn === 'b' ? A : B;  // st0.turn 总是 b（先手）
-  const moverSeat = mover === A ? created.seat : (created.seat === 'b' ? 'w' : 'b');
+  // 座位是随机的（rooms.createRoom 随机先手）——必须按 created.seat 映射客户端。
+  // 旧写法假设房主 A=先手：A 抽到后手时走子被服务端拒绝，st1 停在旧局面，
+  // nextSeat 误取仍在倒数的 b 方时钟 → 断言 8000ms/7.4s（历史"偶发 8/10"的真因）。
+  const seatClient = (s) => (created.seat === s ? A : B);
+  const mover = seatClient(st0.turn);
   const t0 = Date.now();  // 从走子时刻起算对手读秒
   mover.send('move', { usi: st0.legalMoves[0] });
   await T(300);  // 等走子后的第一条 clock（重置后 10 秒）
@@ -81,7 +84,7 @@ async function main() {
   const loserSeat = nextSeat;
   let gameOver = null;
   try {
-    const go = await (loserSeat === 'b' ? A : B).wait('game_over', 15000);
+    const go = await seatClient(loserSeat).wait('game_over', 15000);
     gameOver = go;
   } catch (_) {}
   const elapsed = Date.now() - t0;

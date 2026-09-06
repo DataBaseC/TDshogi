@@ -7,12 +7,16 @@
 (function (global) {
   const GUEST_KEY = 'tdshogi_guest';
   const THEME_KEY = 'tdshogi_theme';
+  const ADMIN_KEY = 'tdshogi_admin_token'; // 与 admin.js 的 ADMIN_KEY 保持一致
 
   function getGuest() {
+    // 名字以服务端 identify() 为权威来源（解决「客户端/服务端名不一致」导致
+    // 同一玩家在大厅/对局/历史/个人页显示不同名字的 ID 混乱问题）。
+    // 首次访问只生成 id，name 在 hello 时由 API 注入。
     let g = null;
     try { g = JSON.parse(localStorage.getItem(GUEST_KEY)); } catch (_) {}
     if (!g || !g.id) {
-      g = { id: genId(), name: randomName() };
+      g = { id: genId(), name: '' };
       saveGuest(g);
     }
     return g;
@@ -20,6 +24,21 @@
 
   function saveGuest(g) {
     localStorage.setItem(GUEST_KEY, JSON.stringify(g));
+  }
+
+  /**
+   * hello 到达后用服务端返回的名字更新本地身份，并同步刷新导航栏徽章。
+   * 解决「客户端 randomName 与服务端 identify name 不一致」导致的 ID 混乱。
+   */
+  function updateUserName(name) {
+    name = String(name || '').trim().slice(0, 16) || '无名棋士';
+    const g = getGuest();
+    if (g.name === name) return;
+    g.name = name;
+    saveGuest(g);
+    // 刷新导航栏用户徽章（可能跨页未重渲染）
+    const badge = document.querySelector('.nav-user span');
+    if (badge) badge.textContent = name;
   }
 
   function genId() {
@@ -43,6 +62,23 @@
   ];
 
   /**
+   * 本机是否已登录管理员（localStorage 持有 admin token）。
+   * 注意：这只是「入口可见性」，不是权限校验——真正的鉴权始终在服务端 admin.verify。
+   */
+  function isAdminSession() {
+    try { return !!localStorage.getItem(ADMIN_KEY); } catch (_) { return false; }
+  }
+
+  /**
+   * 管理后台入口 HTML。普通用户一律不渲染（PLAN §J5：不暴露后台入口）；
+   * 本机登录过管理员才显示，方便管理员自己进出。
+   */
+  function adminEntryHtml() {
+    if (!isAdminSession()) return '';
+    return `<a class="admin-entry" href="admin.html" title="管理后台">🛡️</a>`;
+  }
+
+  /**
    * 渲染导航栏。
    * @param {string} current 当前页 id（'home'|'lobby'|'history'|'tournaments'|'profile'）
    */
@@ -61,6 +97,8 @@
     const guest = getGuest();
     const isAccount = typeof guest.id === 'string' && guest.id.includes('.');
     const userBadge = isAccount ? '🔐' : '👤';
+    // 名字首次到达前（hello 未回）显示占位，避免导航与对局/列表不同步
+    const displayName = guest.name || '载入中…';
     const nav = document.querySelector('.nav');
     if (nav) {
       nav.innerHTML = `
@@ -73,9 +111,9 @@
         </nav>
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" title="切换主题" onclick="NAV.toggleTheme()">🌙</button>
-          <a class="admin-entry" href="admin.html" title="管理后台">🛡️</a>
+          ${adminEntryHtml()}
           <a class="nav-user" href="profile.html" title="个人页面/账号">
-            <span>${guest.name}</span>
+            <span>${displayName}</span>
             <span class="nav-avatar">${userBadge}</span>
           </a>
         </div>
@@ -91,7 +129,7 @@
         </nav>
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" title="切换主题" onclick="NAV.toggleTheme()">🌙</button>
-          <a class="admin-entry" href="admin.html" title="管理后台">🛡️</a>
+          ${adminEntryHtml()}
         </div>
       `;
       document.body.insertBefore(n, document.body.firstChild);
@@ -106,5 +144,5 @@
     applyTheme();
   }
 
-  global.NAV = { renderNav, getGuest, saveGuest, randomName, genId, GUEST_KEY, THEME_KEY, toggleTheme, getTheme, applyTheme };
+  global.NAV = { renderNav, getGuest, saveGuest, updateUserName, randomName, genId, GUEST_KEY, THEME_KEY, ADMIN_KEY, isAdminSession, toggleTheme, getTheme, applyTheme };
 })(window);

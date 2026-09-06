@@ -306,11 +306,37 @@ async function main() {
   try { await D.wait('matched', 3000); dMatched = true; } catch (_) {}
   try { await F.wait('matched', 3000); fMatched = true; } catch (_) {}
   ok(dMatched && fMatched, '对局结束后不退出可直接再次匹配（修复前报"你已在房间中"）');
-  // D 不退出直接建房也应成功
+  // 注意：上一步成功后 D 已进入新的进行中对局 → 再建房 = 自动认输退出旧局（用户确认行为，PLAN §H）
   D.send('create_room', {});
+  let reCreated2 = null;
+  try { reCreated2 = await D.wait('room_created', 3000); } catch (_) {}
+  ok(!!reCreated2, '对局中建房 = 自动认输退出旧局并创建新房间');
+  const oldGame = (await (await fetch('http://localhost:3999/api/history?player=' + D.guestId)).json()).records[0];
+  ok(oldGame && oldGame.resultDetail === '投了', `旧对局被自动认输（${oldGame && oldGame.resultDetail}）`);
+  // E 不退出直接建房也应成功（E 仍绑定在刚结束的房间里，_autoLeaveFinished 应先解绑）
+  E.send('create_room', {});
   let reCreated = null;
-  try { reCreated = await D.wait('room_created', 3000); } catch (_) {}
+  try { reCreated = await E.wait('room_created', 3000); } catch (_) {}
   ok(!!reCreated, '对局结束后不退出可直接建房');
+
+  // ===== 同身份占用防护（同一 guestId 双连接）=====
+  console.log('\n=== 同身份占用防护 ===');
+  const sameId = gid();
+  const G1 = new Client('G1', sameId);
+  const G1b = new Client('G1b', sameId); // 同一身份的第二连接（模拟同浏览器双标签）
+  await G1.connect(); await G1b.connect(); await T(250);
+  G1.send('create_room', {});
+  const gRoom = await G1.wait('room_created');
+  G1b.send('join_room', { code: gRoom.code });
+  const jErr = await G1b.wait('error', 3000);
+  ok(/自己|同一身份/.test(jErr.message || ''), `同身份加入自己的房间被拒（${jErr.message}）`);
+  G1.send('quick_match', {}); // G1 解散等待房并进入匹配队列
+  await T(300);
+  G1b.send('quick_match', {});
+  const mErr = await G1b.wait('error', 3000);
+  ok(/自己|同一身份/.test(mErr.message || ''), `同身份快速匹配被拒（${mErr.message}）`);
+  G1.send('cancel_match', {});
+  await T(200);
 
   console.log(`\n========== 结果：${pass} 通过, ${fail} 失败 ==========`);
   if (failures.length) {

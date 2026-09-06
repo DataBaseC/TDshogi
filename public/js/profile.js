@@ -21,11 +21,13 @@
   const isLoggedIn = (id) => typeof id === 'string' && id.includes('.');
   const sessionToken = () => isLoggedIn(guest.id) ? guest.id : localStorage.getItem(SESSION_KEY);
 
-  // 已登录状态渲染
+  // 已登录状态渲染（gate 只看当前页身份 guest.id 是否为账号令牌——
+  // 不读共享存储里的旧令牌，避免「本标签是游客却显示账号资料卡」）
   function renderAccountUI() {
-    const logged = !!sessionToken();
+    const logged = isLoggedIn(guest.id);
     document.getElementById('accountNotLogged').style.display = logged ? 'none' : 'block';
     document.getElementById('accountLogged').style.display = logged ? 'flex' : 'none';
+    document.getElementById('myProfileCard').style.display = logged ? 'block' : 'none';
     // 账号登录后隐藏游客改名区（账号名由注册决定）
     const renameWrap = document.querySelector('.profile-head input, .profile-head #btnRename')?.closest('div');
     if (renameWrap) renameWrap.style.display = logged ? 'none' : 'flex';
@@ -35,8 +37,58 @@
       document.getElementById('accountAvatar').textContent = guest.name[0] || '棋';
       document.getElementById('pRoleLabel').innerHTML = '正式账号 · ID: <span id="pId"></span>';
       document.getElementById('pId').textContent = guest.id.split('.')[0];
+      loadMyProfile();
     }
   }
+
+  // ---- 我的资料（PLAN §F：手机号私密/棋风/注册日期） ----
+  async function loadMyProfile() {
+    try {
+      const data = await window.ApiUtils.get(`/api/account/profile?token=${encodeURIComponent(sessionToken())}`);
+      const a = data.account;
+      if (!a) return;
+      document.getElementById('editPhone').value = a.profile.phone || '';
+      document.getElementById('editStyle').value = a.profile.style || '不设定';
+      document.getElementById('createdAtLabel').textContent = new Date(a.createdAt).toLocaleDateString('zh-CN');
+      // 身份卡补充棋风与注册日期
+      const role = document.getElementById('pRoleLabel');
+      if (role && !document.getElementById('profileMeta')) {
+        const meta = document.createElement('div');
+        meta.id = 'profileMeta';
+        meta.style.cssText = 'font-size:12px;color:var(--text-dim);margin-top:6px;';
+        role.parentNode.insertBefore(meta, role.nextSibling);
+      }
+      const meta = document.getElementById('profileMeta');
+      if (meta) {
+        meta.innerHTML = `⚔️ 棋风：<span style="color:var(--gold-light);">${esc(a.profile.style || '不设定')}</span>` +
+          ` · 📅 注册于 ${new Date(a.createdAt).toLocaleDateString('zh-CN')}`;
+      }
+    } catch (_) { /* 令牌失效等情况静默 */ }
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  document.getElementById('btnSaveProfile').addEventListener('click', async () => {
+    const phone = document.getElementById('editPhone').value.trim();
+    const style = document.getElementById('editStyle').value;
+    try {
+      const res = await window.ApiUtils.post('/api/account/profile', {
+        token: sessionToken(),
+        phone,
+        style,
+      });
+      if (res.ok) {
+        toast('资料已保存');
+        loadMyProfile();
+      } else {
+        toast(res.error || '保存失败');
+      }
+    } catch (e) {
+      toast('保存失败，请重试');
+    }
+  });
 
   function applySession(token, name) {
     localStorage.setItem(SESSION_KEY, token);
@@ -123,6 +175,14 @@
       const data = await window.ApiUtils.get(`/api/profile?player=${encodeURIComponent(pid)}`);
       const p = data.profile;
       document.getElementById('pRating').textContent = p.rating;
+      // 等级系统（PLAN §K7）：显示等级与当前经验，及距下一级的差额
+      const lvEl = document.getElementById('pLevel');
+      const expEl = document.getElementById('pExp');
+      if (lvEl) lvEl.textContent = 'Lv.' + (p.level || 0);
+      if (expEl) {
+        const need = Math.pow(2, Math.min((p.level || 0) + 1, 64) + 1) - 2;
+        expEl.textContent = p.level >= 64 ? `满级 · 经验 ${p.exp}` : `经验 ${p.exp} / ${need}`;
+      }
       document.getElementById('sGames').textContent = p.games;
       document.getElementById('sWins').textContent = p.wins;
       document.getElementById('sLosses').textContent = p.losses;

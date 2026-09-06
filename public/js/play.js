@@ -25,6 +25,13 @@
   let inByoyomi = { b: false, w: false }; // 是否在读秒
   let byoyomiDuration = 0;             // 秒读时长
   let lastTickTs = Date.now();
+  // 统一棋盘组件（PLAN §G v6）：play 模式行棋 / 终局切感想战（demo-rules）/ 自由摆棋
+  let fb = null;                  // FreeBoard 控制器（棋盘交互与拖拽）
+  let reviewActive = false;       // 感想战模式中
+  let demoInfo = null;            // 推演谱（服务端 v4 载荷）
+  let demoCursor = 0;             // 联合谱浏览位置
+  let originalPositions = null;   // 原谱各手局面缓存
+  let pendingDemoPromo = null;    // 感想战升变选择
 
   // 时间控制预设（与服务端 TIME_CONTROLS 对应）
   const TIME_CONTROLS = {
@@ -54,14 +61,21 @@
 
     // 上方（对面）玩家栏
     const opp = players[oppSeat];
+    const oppDisconnected = opp && opp.connected === false && state.status === 'PLAYING';
     $('topName').textContent = (opp && opp.name) || (oppSeat === 'b' ? '先手' : '後手');
+    $('topName').setAttribute('data-player-id', (opp && opp.id) || ''); // 悬停信息卡
     $('topRating').textContent = opp ? `ELO ${opp.rating}` : '';
-    $('topPlayerBar').classList.toggle('active', state.turn === oppSeat);
+    $('topRating').textContent = oppDisconnected
+      ? '⚠️ 断线 · 60秒内未重连将判你获胜'
+      : (opp ? `ELO ${opp.rating}` : '');
+    $('topPlayerBar').classList.toggle('disconnected', !!oppDisconnected);
+    $('topPlayerBar').classList.toggle('active', state.turn === oppSeat && !oppDisconnected);
 
     // 下方（自己）玩家栏：名字优先显示自己账号名（localStorage），对手用服务端名
     const me = players[mySeatX];
     const myName = guest && guest.name ? guest.name : (me && me.name) || (mySeatX === 'b' ? '先手' : '後手');
     $('bottomName').textContent = myName;
+    $('bottomName').setAttribute('data-player-id', (me && me.id) || '');
     $('bottomRating').textContent = me ? `ELO ${me.rating}` : '';
     $('bottomPlayerBar').classList.toggle('active', state.turn === mySeatX);
 
@@ -87,21 +101,22 @@
     }
     updateClocks();
 
-    // 王手红格
-    const checkSqs = state.check ? [findKingSq(state, state.turn)] : [];
+    // 感想战中：棋盘由推演谱渲染（state 推送仅更新横幅/时钟等周边）
+    if (reviewActive && fb) {
+      if (state.status === 'FINISHED') { applyDemoMode(); }
+      updateDemoUI();
+      return;
+    }
 
-    // 渲染棋盘（含当前选中目标）；后手视角镜像棋盘
-    board.render(state, {
-      lastMove: state.lastMove,
-      check: checkSqs,
-    }, viewpoint);
-    renderHands(state);
-    renderMoveList(state);
-
-    // 可交互：轮到己方
+    // 棋盘渲染与交互统一交给 FreeBoard 组件（PLAN §G v6）
+    ensureBoard(viewpoint);
+    fb.setModel({ board: state.board, hands: state.hands }, state.lastMove, { check: state.check ? [findKingSq(state, state.turn)] : [] });
+    fb.setLegalTargets(state.legalTargetsBySq || {});
+    fb.setTurn(state.turn); // 手番方持驹才可点选（打子符号与颜色无关，防误选对手驹台）
     const canMove = isPlayer && state.status === 'PLAYING' && mySeat === state.turn;
-    board.setInteractive(canMove);
-    bindBoardClicks(canMove, state);
+    fb.setInteractive(canMove);
+    fb.render();
+    renderMoveList(state);
 
     // 胜负横幅
     if (state.result) {
@@ -145,10 +160,17 @@
       el.innerHTML = '<div style="color:var(--text-dim);font-size:12px;">尚未走子</div>';
       return;
     }
+    // 每手耗时（KIF 消費時間/累計時間样式）
+    const times = st.moveTimes || [];
+    let cum = 0;
+    const fmt = (sec) => Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
     el.innerHTML = moves.map((m, i) => {
       const player = i % 2 === 0 ? '▲' : '△';
       const label = kif[i] || m;
-      return `<div class="move-row"><span class="no">${i + 1}</span><span>${player} ${label}</span></div>`;
+      const spent = Number(times[i]) || 0;
+      cum += spent;
+      const timeTxt = (spent || cum) ? ' <span style="color:var(--text-dim);font-size:11px;">(' + fmt(spent) + '/' + fmt(cum) + ')</span>' : '';
+      return `<div class="move-row"><span class="no">${i + 1}</span><span>${player} ${label}${timeTxt}</span></div>`;
     }).join('');
     el.scrollTop = el.scrollHeight;
   }
@@ -232,8 +254,11 @@
     targets.forEach((t) => {
       const cell = board._findCell(t.to);
       if (cell) {
+        // 先清旧类再添加：避免残留 has-piece（方块）污染空格目标（应为绿点）
+        cell.classList.remove('target', 'has-piece');
         cell.classList.add('target');
-        if (cell.dataset.sq !== t.to || cell.innerHTML) cell.classList.add('has-piece');
+        // 有棋子的目标格 → 绿色方块；空位 → 绿点
+        if (cell.innerHTML) cell.classList.add('has-piece');
       }
     });
   }
@@ -284,18 +309,33 @@
     api.send({ type: 'move', data: { usi } });
     selected = null;
     targets = [];
+    // 立即移除本地高亮（否则走子后绿点/方块残留直到服务器推送）
+    clearHighlights();
   }
 
-  // 升变按钮
+  /** 清除棋盘上的选中/目标/方块高亮类 */
+  function clearHighlights() {
+    if (!board || !board.boardEl) return;
+    board.boardEl.querySelectorAll('.cell.sel, .cell.target, .cell.has-piece').forEach((c) => {
+      c.classList.remove('sel', 'target', 'has-piece');
+    });
+  }
+
+  // 升变按钮（对局走子 / 感想战演示共用弹层）
+  // 感想战分支必须走 demo_move 通道（带光标 index）；sendMove() 硬编码 type:'move' 不能复用
   $('btnPromote').addEventListener('click', () => {
-    if (pendingPromote) sendMove(pendingPromote.promoteUsi);
+    if (pendingDemoPromo) api.send({ type: 'demo_move', data: { usi: pendingDemoPromo.usiPromote, index: demoCursor } });
+    else if (pendingPromote) sendMove(pendingPromote.promoteUsi);
     $('promoteOverlay').classList.remove('show');
     pendingPromote = null;
+    pendingDemoPromo = null;
   });
   $('btnNoPromote').addEventListener('click', () => {
-    if (pendingPromote) sendMove(pendingPromote.nonPromoteUsi);
+    if (pendingDemoPromo) api.send({ type: 'demo_move', data: { usi: pendingDemoPromo.usiMove, index: demoCursor } });
+    else if (pendingPromote) sendMove(pendingPromote.nonPromoteUsi);
     $('promoteOverlay').classList.remove('show');
     pendingPromote = null;
+    pendingDemoPromo = null;
   });
 
   // 认输 / 再来一局 / 退出
@@ -322,6 +362,9 @@
     let text;
     if (st.resultDetail === '投了') {
       text = `${loserName || '一方'} 投了 · ${winnerName || ''} 胜`;
+    } else if (st.resultDetail === '接続切断') {
+      // 断线（中途退出/掉线超时）：提示对手掉线而非投了
+      text = `${loserName || '对手'} 掉线断开 · ${winnerName || ''} 胜`;
     } else if (st.resultDetail === '詰み') {
       text = `${winnerName || '一方'} 詰み勝ち`;
     } else if (st.resultDetail === '時間切れ') {
@@ -383,6 +426,12 @@
     mySeat = data.seat || null;
     isPlayer = data.isPlayer === true;
     lastTickTs = Date.now();
+    // 感想战路由（PLAN §G v6）：终局自动进入；新对局自动退出
+    if (state.status === 'FINISHED' && state.result) {
+      enterDemo(state);
+      return;
+    }
+    if (reviewActive) exitDemo();
     // 收到新状态时清空选中（如果对方走子则清）
     if (selected && mySeat !== state.turn) {
       selected = null;
@@ -390,6 +439,7 @@
     }
     render(state);
   });
+
   api.on('clock', (data) => {
     if (!data) return;
     if (typeof data.b === 'number') {
@@ -406,9 +456,245 @@
     lastTickTs = Date.now();
     updateClocks();
   });
-  api.on('game_over', (data) => {
-    toast(`对局结束：${data.resultDetail || ''}`);
+  // 观战者名单（对局页右列观众列表，PLAN §G v7）
+  function renderSpectators(list) {
+    const countEl = $('spectatorCount');
+    const el = $('spectatorList');
+    if (!el) return;
+    const names = list || [];
+    if (countEl) countEl.textContent = names.length;
+    el.innerHTML = names.length
+      ? names.map((n) => '<div style="padding:3px 0;">👤 ' + escHtml(n) + '</div>').join('')
+      : '<div style="color:var(--text-dim);font-size:12px;">暂无观众</div>';
+  }
+  api.on('spectator_update', (d) => renderSpectators(d.spectators || []));
+
+  // ==================================================================
+  // 感想战模式（PLAN §G v6 单页）：终局自动进入，同一棋盘组件切 demo-rules
+  // ==================================================================
+  function demoEdge() {
+    return demoInfo ? demoInfo.baseIndex + demoInfo.moves.length : 0;
+  }
+
+  function enterDemo(st) {
+    if (reviewActive && fb) { applyDemoMode(); updateDemoUI(); return; }
+    reviewActive = true;
+    freeMode = false;
+    selected = null; targets = [];
+    ensureBoard(mySeat === 'w' ? 'w' : 'b');
+    demoInfo = st.demo || { moves: [], kif: [], baseIndex: (state.moves || []).length, baseCount: (state.moves || []).length, legalTargetsBySq: {}, legalMoves: [], turn: 'b', demonstratorSeat: null, demonstratorName: null };
+    demoCursor = demoEdge();
+    $('demoBar').style.display = 'flex';
+    applyDemoMode();
+    updateDemoUI();
     if (window.Sound) window.Sound.playEnd();
+  }
+
+  function exitDemo() {
+    reviewActive = false;
+    freeMode = false;
+    demoInfo = null;
+    pendingDemoPromo = null;
+    $('demoBar').style.display = 'none';
+  }
+
+  function ensureBoard(viewpoint) {
+    if (fb) return;
+    fb = new window.FreeBoard({
+      board,
+      viewpoint,
+      interactive: false,
+      mode: 'play',
+      hands: {
+        my: $('myHandPieces'), myColor: viewpoint,
+        opp: $('oppHandPieces'), oppColor: viewpoint === 'b' ? 'w' : 'b',
+      },
+      onMove: (usi) => {
+        if (reviewActive) api.send({ type: 'demo_move', data: { usi, index: demoCursor } });
+        else api.send({ type: 'move', data: { usi } });
+      },
+      onPromoteChoice: ({ usiMove, usiPromote }) => {
+        if (reviewActive) pendingDemoPromo = { usiMove, usiPromote };
+        else pendingPromote = { promoteUsi: usiPromote, nonPromoteUsi: usiMove };
+        $('promoteOverlay').classList.add('show');
+      },
+    });
+    fb.attach();
+    fb.bindHands($('myHandPieces'), viewpoint, $('oppHandPieces'), viewpoint === 'b' ? 'w' : 'b');
+  }
+
+  function ensureOriginalPositions() {
+    if (originalPositions) return originalPositions;
+    const arr = [window.FreeBoard.initialModel()];
+    for (const usi of (state.moves || [])) {
+      const prev = arr[arr.length - 1];
+      const model = { board: JSON.parse(JSON.stringify(prev.board)), hands: JSON.parse(JSON.stringify(prev.hands)) };
+      const color = (arr.length - 1) % 2 === 0 ? 'b' : 'w';
+      window.FreeBoard.applyUsiOnModel(model, usi, color);
+      arr.push(model);
+    }
+    originalPositions = arr;
+    return arr;
+  }
+
+  function applyDemoMode() {
+    // 棋盘 = 联合谱 cursor 对应局面（原谱重放 + 推演叠加）
+    const k = Math.min(demoCursor, demoEdge());
+    const bi = demoInfo.baseIndex;
+    const ops = ensureOriginalPositions();
+    let model;
+    if (k <= bi) model = ops[k];
+    else {
+      const basePos = ops[bi];
+      model = { board: JSON.parse(JSON.stringify(basePos.board)), hands: JSON.parse(JSON.stringify(basePos.hands)) };
+      for (let i = 0; i < k - bi; i++) {
+        const color = (bi + i) % 2 === 0 ? 'b' : 'w';
+        window.FreeBoard.applyUsiOnModel(model, demoInfo.moves[i], color);
+      }
+    }
+    let lastMove = null;
+    if (k > 0) lastMove = k <= bi ? ((state.moves || [])[k - 1] || null) : (demoInfo.moves[k - bi - 1] || null);
+    fb.setModel(model, lastMove);
+    fb.setLegalTargets(demoInfo.legalTargetsBySq || {});
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  function renderDemoMoveList() {
+    const el = $('moveList');
+    if (!demoInfo) return;
+    const bi = demoInfo.baseIndex;
+    const base = demoInfo.baseCount;
+    const kifAll = (state.movesKif || []);
+    const html = [];
+    for (let no = 1; no <= base; no++) {
+      const mark = no % 2 === 1 ? '▲' : '△';
+      const cur = demoCursor === no ? ' current' : '';
+      const off = no > bi;
+      const style = off ? ' style="color:var(--text-dim);text-decoration:line-through;opacity:.55;"' : '';
+      const times = state.moveTimes || [];
+      const spent = Number(times[no - 1]) || 0;
+      let cum = 0; for (let k = 0; k <= no - 1; k++) cum += Number(times[k]) || 0;
+      const timeTxt = (spent || cum) ? ' (' + Math.floor(spent / 60) + ':' + String(spent % 60).padStart(2, '0') + '/' + Math.floor(cum / 3600) + ':' + Math.floor((cum % 3600) / 60) + ':' + String(cum % 60).padStart(2, '0') + ')' : '';
+      html.push('<div class="move-row' + cur + '" data-no="' + no + '" style="cursor:pointer;' + (off ? style : '') + '"><span class="no">' + no + '</span><span' + (off ? style : '') + '>' + mark + ' ' + escHtml(kifAll[no - 1] || (state.moves || [])[no - 1] || '') + timeTxt + '</span></div>');
+    }
+    for (let i = 0; i < demoInfo.moves.length; i++) {
+      const no = bi + i + 1;
+      const mark = no % 2 === 1 ? '▲' : '△';
+      const cur = demoCursor === no ? ' current' : '';
+      const live = no === demoEdge() ? ' 🎤' : '';
+      html.push('<div class="move-row' + cur + '" data-no="' + no + '" style="cursor:pointer;color:var(--gold-light);"><span class="no">' + no + '</span><span>' + mark + ' ' + escHtml(demoInfo.kif[i] || demoInfo.moves[i]) + live + '</span></div>');
+    }
+    el.innerHTML = html.join('');
+    el.querySelectorAll('.move-row').forEach((row) => {
+      row.addEventListener('click', () => {
+        demoCursor = Math.min(parseInt(row.dataset.no, 10), demoEdge());
+        applyDemoMode();
+        updateDemoUI();
+        const curEl = el.querySelector('.move-row.current');
+        if (curEl) curEl.scrollIntoView({ block: 'nearest' });
+      });
+    });
+    const curEl = el.querySelector('.move-row.current');
+    if (curEl) curEl.scrollIntoView({ block: 'nearest' });
+  }
+
+  function updateDemoUI() {
+    const seat = demoInfo ? demoInfo.demonstratorSeat : null;
+    const name = demoInfo ? demoInfo.demonstratorName : null;
+    const amDemo = !!mySeat && seat === mySeat;
+    let status;
+    if (freeMode) status = '✋ 自由摆棋中（本地草稿，不入谱不同步）';
+    else if (seat && amDemo) status = '🎤 正在由你演示（对方实时观看）';
+    else if (seat) status = '🎤 正在由 ' + (name || '对方') + ' 演示';
+    else status = '💤 演示暂停——点「我来演示」开始行棋';
+    $('demoStatus').textContent = status;
+    $('btnDemoClaim').style.display = (mySeat && !seat && !freeMode) ? 'inline-block' : 'none';
+    [ $('btnDemoTransfer'), $('btnDemoUndo'), $('btnDemoClear') ]
+      .forEach((b) => { b.style.display = (amDemo && !freeMode) ? 'inline-block' : 'none'; });
+    $('btnFreeMode').style.display = mySeat ? 'inline-block' : 'none';
+    $('btnFreeMode').textContent = freeMode ? '🧑‍🔧 退出自由摆棋' : '✋ 自由摆棋';
+    $('btnDemoLatest').style.display = (demoCursor < demoEdge()) ? 'inline-block' : 'none';
+    $('btnDemoRematch').style.display = isPlayer ? 'inline-block' : 'none';
+    const turn = demoInfo ? (demoInfo.turn || 'b') : 'b';
+    const turnHint = $('turnHint');
+    if (turnHint) turnHint.textContent = turn === 'b' ? '当前轮到 先手▲' : '当前轮到 後手△';
+    const topBar = $('topPlayerBar'), bottomBar = $('bottomPlayerBar');
+    if (topBar) topBar.classList.toggle('active', turn === 'w');
+    if (bottomBar) bottomBar.classList.toggle('active', turn === 'b');
+    if (fb) {
+      fb.setMode(freeMode ? 'free' : 'demo-rules');
+      // 感想战不限制驹台：演示时两方持驹都要能选（手番合法性由服务端校验），
+      // 清掉对战模式留下的手番限制
+      fb.setTurn(null);
+      // 合法走法表：最新一手用 demo_state 下发的；历史手按需向服务端请求（demo_legal）
+      const atEdge = demoCursor === demoEdge();
+      if (freeMode) fb.setLegalTargets({});
+      else if (atEdge) fb.setLegalTargets(demoInfo.legalTargetsBySq || {});
+      else requestDemoLegal(demoCursor);
+      fb.setInteractive(amDemo && (freeMode || atEdge));
+    }
+  }
+
+  // 历史手合法走法按需缓存（PLAN §H）
+  let demoLegalCache = {};
+  function requestDemoLegal(index) {
+    const key = index + ':' + demoInfo.moves.length + ':' + demoInfo.baseIndex;
+    if (demoLegalCache[key]) { fb.setLegalTargets(demoLegalCache[key]); return; }
+    api.send({ type: 'demo_legal', data: { index } });
+  }
+  api.on('demo_legal', (d) => {
+    demoLegalCache[d.index] = d.legalTargetsBySq;
+    if (fb && reviewActive && demoCursor === d.index) {
+      fb.setLegalTargets(d.legalTargetsBySq);
+      fb.render();
+    }
+  });
+
+  $('btnDemoClaim').addEventListener('click', () => api.send({ type: 'demo_claim' }));
+  $('btnDemoTransfer').addEventListener('click', () => api.send({ type: 'demo_transfer' }));
+  $('btnDemoUndo').addEventListener('click', () => api.send({ type: 'demo_undo' }));
+  $('btnDemoClear').addEventListener('click', () => { if (confirm('清空全部推演手，回到本谱终局局面？')) api.send({ type: 'demo_reset' }); });
+  $('btnDemoLatest').addEventListener('click', () => { demoCursor = demoEdge(); applyDemoMode(); updateDemoUI(); });
+  $('btnDemoRematch').addEventListener('click', () => { api.send({ type: 'rematch' }); toast('已请求再来一局，等待对方同意…'); });
+  $('btnFreeMode').addEventListener('click', () => {
+    if (!fb) return;
+    freeMode = !freeMode;
+    if (freeMode) {
+      demoCursor = Math.min(demoCursor, demoEdge());
+      applyDemoMode();
+      toast('自由摆棋开启：任意移动/吃子/双击升变（本地草稿，不入谱不同步）');
+    } else {
+      demoCursor = demoEdge();
+      applyDemoMode();
+      toast('已退出自由摆棋，回到推演谱最新一手');
+    }
+    updateDemoUI();
+  });
+
+  api.on('demo_state', (d) => {
+    if (!reviewActive) {
+      if (state && state.status === 'FINISHED' && state.result) enterDemo(state);
+      return;
+    }
+    // 光标自动跟随：之前在最新一手 → 跟进新一手；浏览历史则停留（可点「回到最新」）
+    const prevEdge = demoEdge();
+    demoInfo = d;
+    if (demoCursor >= prevEdge || demoCursor > demoEdge()) demoCursor = demoEdge();
+    applyDemoMode();
+    renderDemoMoveList();
+    updateDemoUI();
+  });
+
+  // ==================================================================
+  // 对局事件
+  // ==================================================================
+  api.on('game_over', (data) => {
+    toast('对局结束：' + (data.resultDetail || ''));
+    if (window.Sound) window.Sound.playEnd();
+    // 终局不跳页——state 推送（含 demo）会触发自动进入感想战模式
   });
   api.on('game_start', (data) => {
     toast('对局开始！');
@@ -472,8 +758,9 @@
   api.on('chat', (data) => {
     if (data) appendChat({ name: data.name, text: data.text });
   });
-  // 观战者进入时系统提示
-  api.on('spectating', () => {
+  // 观战者进入时系统提示（rebind=选手掉线重进回位，不算观战）
+  api.on('spectating', (data) => {
+    if (data && data.rebind) return;
     appendChat({ name: '系统', text: '你已进入观战，欢迎交流！', sys: true });
   });
 
@@ -490,8 +777,10 @@
       // 赛事对局：玩家主动进入（建局时可能不在线）
       api.send({ type: 'join_tournament_match', data: { roomId: roomParam } });
     } else {
-      // 请求当前状态（可能是重连，也可能是玩家跳转进来）
-      api.send({ type: 'request_state' });
+      // 请求当前状态（可能是重连，也可能是玩家跳转进来）；
+      // 带 URL 里的 roomId：服务端回位优先绑定该房间（重新匹配后不被旧对局的
+      // 复盘中座位按插入顺序劫持——幽灵房修复）
+      api.send({ type: 'request_state', data: roomParam ? { roomId: roomParam } : {} });
     }
   }
   // WS 首次连接与断线重连统一在此进入房间；

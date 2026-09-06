@@ -113,6 +113,7 @@ function saveRecord(data) {
     id,
     startSfen: data.startSfen,
     moves: data.moves || [],
+    moveTimes: data.moveTimes || [],   // 每手耗时（秒）——KIF 消費時間
     names: data.names || ['先手', '後手'],
     result: data.result,
     resultDetail: data.resultDetail,
@@ -120,6 +121,7 @@ function saveRecord(data) {
     winnerId: data.winnerId || null,
     rated: data.rated !== false,
     source: data.source || null,
+    timeControl: data.timeControl || null,
     createdAt: data.createdAt || now,
     durationSec: data.durationSec || null,
   };
@@ -150,6 +152,23 @@ function listPlayerRecords(playerId, limit = 50) {
 }
 
 /**
+ * 最新对局轻量摘要（首页"最新战报"轮询用）：
+ * 不携带 moves 全量数组，避免每次轮询都传输整谱。
+ */
+function recentSummaries(limit = 5) {
+  return listRecords(limit).map((r) => ({
+    id: r.id,
+    names: r.names || [],
+    result: r.result,
+    resultDetail: r.resultDetail,
+    moveCount: Array.isArray(r.moves) ? r.moves.length : 0,
+    createdAt: r.createdAt,
+    rated: !!r.rated,
+    playerIds: r.playerIds || {}, // 悬停信息卡定位用（PLAN §F3）
+  }));
+}
+
+/**
  * 棋谱检索（SQL 层过滤）。
  * @param {object} q 见 storage.searchRecords
  * @returns {Array} 匹配的棋谱（附带 opening 开局特征）
@@ -172,18 +191,40 @@ function openingName(rec) {
 
 const DEFAULT_SFEN = 'lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1';
 
+// 时制 → 秒（CSA $TIME_LIMIT 用）：main=持時間（秒），byo=秒読み（秒）
+const HOLD_TIME_LIMIT = {
+  '10:00': { main: 600, byo: 0 },
+  '15+60': { main: 900, byo: 60 },
+  '10+30': { main: 600, byo: 30 },
+  '10sec': { main: 0, byo: 10 },
+};
+
 function exportKif(rec) {
+  // 对齐 81Dojo 导出格式（用户提供的标答）：
+  // 首行 #KIF version=2.0 / 場所 / 持ち時間 / 每手行 (消費/累計) 时间不补零
+  const HOLD_TIME = { '10:00': '10分', '15+60': '15分+60秒', '10+30': '10分+30秒', '10sec': '10秒' };
+  const spentFmt = (s) => `${Math.floor(s / 60)}:${s % 60}`;
+  const totalFmt = (s) => `${Math.floor(s / 3600)}:${Math.floor((s % 3600) / 60)}:${s % 60}`;
+  const started = new Date(rec.createdAt || Date.now());
+  const startDate = `${started.getFullYear()}/${String(started.getMonth() + 1).padStart(2, '0')}/${String(started.getDate()).padStart(2, '0')} ${String(started.getHours()).padStart(2, '0')}:${String(started.getMinutes()).padStart(2, '0')}`;
   const lines = [
-    '# ---- Kifu for Windows V7 V7.1 棋譜ファイル ----',
-    `開始日時：${new Date(rec.createdAt || Date.now()).toISOString().replace('T', ' ').slice(0, 19)}`,
-    '終了日時：',
+    '#KIF version=2.0 encoding=UTF-8',
+    `開始日時：${startDate}`,
+    '場所：天锻将棋道场',
+    `持ち時間：${HOLD_TIME[rec.timeControl] || '10分'}`,
     '手合割：平手',
     `先手：${rec.names ? rec.names[0] : '先手'}`,
     `後手：${rec.names ? rec.names[1] : '後手'}`,
     '手数----指手---------消費時間--',
   ];
   const jpMoves = movesToKif(rec.startSfen || DEFAULT_SFEN, rec.moves || []);
-  jpMoves.forEach((m, i) => lines.push(`${i + 1} ${m}`));
+  const times = rec.moveTimes || [];
+  let cum = 0;
+  jpMoves.forEach((m, i) => {
+    const spent = Number(times[i]) || 0;
+    cum += spent;
+    lines.push(`${i + 1}   ${m}   (${spentFmt(spent)}/${totalFmt(cum)})`);
+  });
   const n = (rec.moves || []).length;
   if (rec.resultDetail === '投了') {
     lines.push(`${n + 1} 投了`);
@@ -192,6 +233,8 @@ function exportKif(rec) {
     lines.push(`まで${n}手で${rec.names[rec.result === 'b' ? 0 : 1]}の勝ち`);
   } else if (rec.result === '-') {
     lines.push(`まで${n}手で${rec.resultDetail || '持将棋'}`);
+  } else if (rec.resultDetail === '時間切れ') {
+    lines.push('*時間切れにて終局');
   }
   return lines.join('\n') + '\n';
 }
@@ -199,7 +242,19 @@ function exportKif(rec) {
 function exportCsa(rec) {
   const board = new Shogi();
   board.initializeFromSFENString(rec.startSfen || DEFAULT_SFEN);
+  // 元信息字段（81Dojo/CSA V2.2 惯例，用户标答）
+  const start = new Date(rec.createdAt || Date.now());
+  const endTime = rec.durationSec ? rec.createdAt + rec.durationSec * 1000 : Date.now();
+  const end = new Date(endTime);
+  const dt = (d) => `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  const hold = HOLD_TIME_LIMIT[rec.timeControl] || { main: 600, byo: 0 };
+  const timeLimit = `${String(Math.floor(hold.main / 60)).padStart(2, '0')}:${String(hold.main % 60).padStart(2, '0')}+${hold.byo}`;
   const lines = ['V2.2'];
+  lines.push(`$EVENT:天锻将棋道场`);
+  lines.push(`$SITE:天锻将棋道场`);
+  lines.push(`$START_TIME:${dt(start)}`);
+  lines.push(`$END_TIME:${dt(end)}`);
+  lines.push(`$TIME_LIMIT:${timeLimit}`);
   lines.push(`N+${rec.names ? rec.names[0] : '先手'}`);
   lines.push(`N-${rec.names ? rec.names[1] : '後手'}`);
   // 盘面 P1(9段)~P9(1段)：y=1 为 9段，x=1 为 1筋
@@ -240,7 +295,10 @@ function exportCsa(rec) {
   // 结果
   if (rec.resultDetail === '投了') lines.push('%TORYO');
   else if (rec.resultDetail === '詰み') lines.push('%TSUMI');
-  else if (rec.result === '-') lines.push(rec.resultDetail === '入玉' ? '%HIKIWAKE' : '%SENNICHITE');
+  else if (rec.resultDetail === '接続切断') lines.push('%CHUDAN'); // CSA 标准：对局中断（断线/逃亡）
+  else if (rec.resultDetail === '時間切れ') lines.push('%TIME_UP'); // 切れ負け
+  else if (rec.resultDetail === '反則勝ち' || rec.resultDetail === '反則負け') lines.push('%ILLEGAL_MOVE');
+  else if (rec.result === '-') lines.push(rec.resultDetail === '入玉' || rec.resultDetail === '持将棋' ? '%JISHOGI' : '%SENNICHITE');
   return lines.join('\n') + '\n';
 }
 
@@ -322,6 +380,7 @@ function reviewData(id) {
     id: r.id,
     startSfen: r.startSfen,
     moves: r.moves || [],
+    moveTimes: r.moveTimes || [],
     names: r.names || ['先手', '後手'],
     result: r.result,
     resultDetail: r.resultDetail,
@@ -391,6 +450,7 @@ module.exports = {
   listRecords,
   getRecord,
   listPlayerRecords,
+  recentSummaries,
   searchRecords,
   exportKif,
   exportCsa,

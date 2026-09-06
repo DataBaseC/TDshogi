@@ -23,9 +23,9 @@ class Client {
     this.latestState = null;
     this.listeners = [];
   }
-  connect() {
+  connect(identity) {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(`${HOST}?guest=${this.guestId}`);
+      this.ws = new WebSocket(`${HOST}?guest=${identity || this.guestId}`);
       this.ws.on('message', (raw) => {
         let msg;
         try { msg = JSON.parse(raw.toString()); } catch (_) { return; }
@@ -66,10 +66,30 @@ function ok(cond, label) {
 async function section(name) { console.log(`\n=== ${name} ===`); }
 
 async function main() {
+  // ============ 准备：创建者注册正式账号（B2 要求）+ 管理员登录 ============
+  // 用户名上限 16 字符：前缀 + 时间36进制6位 + 2位随机 ≈ 10 字符
+  const suffix = `${Date.now().toString(36).slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
+  const reg = await (await fetch('http://localhost:3999/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: `tno${suffix}`, password: 'test1234' }),
+  })).json();
+  if (!reg.ok) throw new Error('注册失败: ' + (reg.error || ''));
+
+  const adminClient = new Client('Admin');
+  await adminClient.connect();
+  adminClient.send('admin_login', { password: 'admin123' });
+  const adminTok = (await adminClient.wait('admin_logged_in')).token;
+
   // ============ 报名阶段 ============
   await section('4 人报名 → 满员自动开赛');
   const players = [];
-  for (let i = 0; i < 4; i++) {
+  // P1 为正式账号（创建者）：以令牌连接，guestId 用 accountId（对局名单按 accountId 匹配）
+  const p1 = new Client('P1');
+  p1.guestId = reg.account.id;
+  await p1.connect(reg.token);
+  players.push(p1);
+  for (let i = 1; i < 4; i++) {
     const p = new Client(`P${i + 1}`);
     await p.connect();
     await T(120);
@@ -77,7 +97,16 @@ async function main() {
   }
   players[0].send('create_tournament', { name: '测试赛', size: 4 });
   const created = await players[0].wait('tournament_created');
-  ok(!!created.id, '赛事创建成功');
+  ok(!!created.id, '账号创建赛事成功');
+  ok(created.status === 'pending_approval', '新赛事进入待审核状态（B3）');
+
+  // 管理员审核通过 → open
+  const ap = await (await fetch(`http://localhost:3999/api/admin/tournaments/${created.id}/approve`, {
+    method: 'POST',
+    headers: { 'x-admin-token': adminTok },
+  })).json();
+  ok(ap.ok === true && ap.tournament && ap.tournament.status === 'open', '管理员审核通过 → 报名中');
+
   const tid = created.id;
 
   for (let i = 1; i < 4; i++) {

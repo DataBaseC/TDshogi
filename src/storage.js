@@ -136,6 +136,32 @@ function writeJson(name, data) {
   }
 }
 
+/**
+ * 按前缀枚举 kv 中的 JSON（如 'sessions/'）。
+ * 会话实际写在此处（identify/upsertSession 走 writeJson），
+ * 读取侧（auth.listSessions → ratings.allUsers → admin 用户列表）必须走同一来源。
+ */
+function listJsonByPrefix(prefix) {
+  const d = getDb();
+  try {
+    const rows = d.prepare('SELECT key, value FROM kv WHERE key LIKE ? ESCAPE ?')
+      .all(`${String(prefix).replace(/[\\%_]/g, (c) => `\\${c}`)}%`, '\\');
+    return rows.map((r) => JSON.parse(r.value));
+  } catch (err) {
+    console.error(`[storage] 枚举 ${prefix}* 失败: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * 删除 kv 项（审计/事件日志裁剪用，PLAN §M3）。
+ * 幂等：键不存在时无副作用。
+ */
+function deleteJson(name) {
+  getDb().prepare('DELETE FROM kv WHERE key = ?').run(String(name));
+  return true;
+}
+
 // ---------------- records / sessions 表接口 ----------------
 function recordExists(id) {
   return !!getDb().prepare('SELECT 1 FROM records WHERE id = ?').get(id);
@@ -215,6 +241,11 @@ function sessionExists(id) {
   return !!getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
 }
 
+/** 棋谱总数（首页统计胶囊用） */
+function countRecords() {
+  return getDb().prepare('SELECT COUNT(*) AS n FROM records').get().n;
+}
+
 function getSessionById(id) {
   const row = getDb().prepare('SELECT data FROM sessions WHERE id = ?').get(id);
   return row ? JSON.parse(row.data) : null;
@@ -268,6 +299,8 @@ module.exports = {
   ensureDataDirs,
   readJson,
   writeJson,
+  deleteJson,
+  listJsonByPrefix,
   listRecordFiles,
   // 表级接口
   recordExists,
@@ -275,6 +308,7 @@ module.exports = {
   putRecord,
   listRecords,
   searchRecords,
+  countRecords,
   sessionExists,
   getSessionById,
   putSession,

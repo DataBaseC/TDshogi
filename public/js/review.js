@@ -40,6 +40,9 @@
   let cursor = 0;        // 当前手（0=初始）
   let displayMode = 'jp';// 'jp' | 'usi'
   let navFromList = false; // 抑制自动滚动
+  // 自由摆放（PLAN §G）：本地草稿，不入谱
+  let fb = null;
+  let freeMode = false;
 
   async function load() {
     const authQ = `guest=${encodeURIComponent(guest.id)}${adminToken ? `&token=${encodeURIComponent(adminToken)}` : ''}`;
@@ -91,14 +94,16 @@
     document.getElementById('topClock').textContent = '';
     document.getElementById('bottomClock').textContent = '';
 
-    // 棋盘（先手视角）
+    // 棋盘（先手视角）；自由摆放模式由 FreeBoard 接管渲染
     const pos = positions[cursor];
     if (pos) {
-      board.render({ board: pos.board, turn: cursor % 2 === 0 ? 'b' : 'w' }, {}, 'b');
-      // 持驹区：先手视角，左侧=后手(w)，右侧=先手(b)
-      const hands = pos.hands || {};
-      window.renderHands(document.getElementById('oppHandPieces'), hands, 'w', null, 'b');
-      window.renderHands(document.getElementById('myHandPieces'), hands, 'b', null, 'b');
+      if (freeMode && fb) { fb.render(); } else {
+        board.render({ board: pos.board, turn: cursor % 2 === 0 ? 'b' : 'w' }, {}, 'b');
+        // 持驹区：先手视角，左侧=后手(w)，右侧=先手(b)
+        const hands = pos.hands || {};
+        window.renderHands(document.getElementById('oppHandPieces'), hands, 'w', null, 'b');
+        window.renderHands(document.getElementById('myHandPieces'), hands, 'b', null, 'b');
+      }
     }
 
     // 棋谱对子列表
@@ -108,22 +113,23 @@
   }
 
   function renderMoveList() {
+    // 一编号 = 一手棋，与 KIF 文件手数顺序一致（此前为对子布局，一号两手）
     const el = document.getElementById('rvMoveList');
     const moves = review.moves;
-    const pairs = Math.ceil(moves.length / 2);
+    const times = review.moveTimes || [];
+    let cum = 0;
     const html = [];
-    for (let i = 0; i < pairs; i++) {
-      const idxB = i * 2 + 1;
-      const idxW = i * 2 + 2;
+    for (let no = 1; no <= moves.length; no++) {
       // 每手的走子前局面：positions[0]=初始，positions[k]=第 k 手后
-      const beforeB = positions[idxB - 1];
-      const beforeW = positions[idxW - 1];
-      const textB = idxB <= moves.length ? formatMove(moves[idxB - 1], beforeB) : '—';
-      const textW = idxW <= moves.length ? formatMove(moves[idxW - 1], beforeW) : '—';
-      html.push(`<div class="rv-move-row${cursor === idxB || cursor === idxW ? ' current' : ''}">
-        <span class="rv-no">${i + 1}</span>
-        <span class="rv-mv${cursor === idxB ? ' cursor' : ''}${isBookmarked(idxB) ? ' bookmark' : ''}${hasComment(idxB) ? ' has-comment' : ''}${hasVariation(idxB) ? ' has-var' : ''}" data-no="${idxB}">▲ ${textB}</span>
-        <span class="rv-mv${cursor === idxW ? ' cursor' : ''}${isBookmarked(idxW) ? ' bookmark' : ''}${hasComment(idxW) ? ' has-comment' : ''}${hasVariation(idxW) ? ' has-var' : ''}" data-no="${idxW}">${textW === '—' ? '—' : '△ ' + textW}</span>
+      const before = positions[no - 1];
+      const text = formatMove(moves[no - 1], before);
+      const mark = no % 2 === 1 ? '▲' : '△';
+      const spent = Number(times[no - 1]) || 0;
+      cum += spent;
+      const timeTxt = spent ? ` <span style="color:var(--text-dim);font-size:11px;">(${Math.floor(spent / 60)}:${String(spent % 60).padStart(2, '0')}/${Math.floor(cum / 3600)}:${String(Math.floor((cum % 3600) / 60)).padStart(2, '0')}:${String(cum % 60).padStart(2, '0')})</span>` : '';
+      html.push(`<div class="rv-move-row${cursor === no ? ' current' : ''}">
+        <span class="rv-no">${no}</span>
+        <span class="rv-mv${cursor === no ? ' cursor' : ''}${isBookmarked(no) ? ' bookmark' : ''}${hasComment(no) ? ' has-comment' : ''}${hasVariation(no) ? ' has-var' : ''}" data-no="${no}">${mark} ${text}${timeTxt}</span>
       </div>`);
     }
     el.innerHTML = html.join('');
@@ -164,11 +170,17 @@
   };
 
   function usiToJp(usi, beforeBoard) {
+    const full = ['０','１','２','３','４','５','６','７','８','９'];
+    const kanji = ['一','二','三','四','五','六','七','八','九'];
+    // 打子 P*5e → ５五歩打（此前落进普通走子分支渲染错乱）
+    const dropM = /^([PLNSGBR])\*([1-9])([a-i])$/.exec(usi);
+    if (dropM) {
+      const sym = (window.DROP_SYMBOLS || {})[dropM[1]] || '歩';
+      return `${full[parseInt(dropM[2], 10) - 1]}${kanji[dropM[3].charCodeAt(0) - 97]}${sym}打`;
+    }
     if (usi.length === 4 || usi.length === 5) {
       const toFile = usi[2];
       const toY = usi.charCodeAt(3) - 96;
-      const full = ['０','１','２','３','４','５','６','７','８','９'];
-      const kanji = ['一','二','三','四','五','六','七','八','九'];
       // 升变标记
       const promote = usi.length === 5 ? '成' : '';
       // 从走子前局面推导棋子名
@@ -177,7 +189,7 @@
       const pieceName = KIND_JP[rawPiece] || rawPiece || '';
       return `${full[parseInt(toFile, 10)]}${kanji[toY - 1]}${pieceName}${promote}`;
     }
-    // 打子 P*5e（未解析完整棋子名，保留 USI 形式）
+    // 其他未识别形式，保留 USI
     return usi;
   }
 
@@ -297,6 +309,48 @@
       render();
       toast('变着已保存');
     } else toast(r.error || '操作失败');
+  });
+
+  // ---- 自由摆放（PLAN §G）：本地草稿，不入谱；导航/关闭即丢弃 ----
+  function startFreePlace() {
+    const pos = positions[cursor];
+    if (!pos) return toast('局面尚未加载');
+    if (fb) fb.destroy();
+    fb = new window.FreeBoard({
+      board,
+      viewpoint: 'b',
+      interactive: true,
+      hands: { my: document.getElementById('myHandPieces'), myColor: 'b', opp: document.getElementById('oppHandPieces'), oppColor: 'w' },
+    });
+    fb.attach();
+    fb.startFrom({ board: pos.board, hands: pos.hands || { b: [], w: [] } });
+    freeMode = true;
+    document.getElementById('btnFreePlace').classList.add('active');
+    document.getElementById('btnUndoFree').style.display = 'inline-block';
+    toast('自由摆放已开启：移动/驹台放置/双击升变，翻页即丢弃');
+  }
+
+  function stopFreePlace() {
+    freeMode = false;
+    if (fb) { fb.detach(); fb.destroy(); fb = null; }
+    document.getElementById('btnFreePlace').classList.remove('active');
+    document.getElementById('btnUndoFree').style.display = 'none';
+    render();
+  }
+
+  document.getElementById('btnFreePlace').addEventListener('click', () => {
+    if (freeMode) stopFreePlace();
+    else startFreePlace();
+  });
+
+  function undoFreePlace() {
+    if (!freeMode || !fb) return toast('自由摆放未开启');
+    if (!fb.undo()) toast('没有可撤销的操作');
+  }
+  document.getElementById('btnUndoFree')?.addEventListener('click', undoFreePlace);
+  document.addEventListener('keydown', (e) => {
+    if (!freeMode) return;
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undoFreePlace(); }
   });
 
   // 导出

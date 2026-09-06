@@ -2,13 +2,17 @@
  * tournaments.js — 轻量单败淘汰赛
  *
  * 支持 4 / 8 / 16 人单败淘汰：
- *  - 创建赛事（名称 + 人数上限）
+ *  - 创建赛事（名称 + 人数上限）→ 进入 pending_approval，管理员审核通过后开放报名
  *  - 玩家加入（名额满则自动开赛，生成对阵表）
  *  - 对局结束回调推进晋级
- *  - 决出冠军
+ *  - 决出冠军；管理员可取消（解散赛事对局）
+ *
+ * 状态机：pending_approval → open → playing → finished
+ *         pending_approval → rejected（拒绝）
+ *         open/playing → cancelled（取消，由 rooms 层解散对局房间）
  *
  * 赛事对局复用房间对局基础设施（rooms.js），对局结束后通过回调推进。
- * 数据以 tournaments.json 落盘。
+ * 数据以 tournaments.json 落盘（经 storage kv 兼容层）。
  */
 'use strict';
 
@@ -39,11 +43,8 @@ function setMatchFactory(fn) {
 }
 
 /**
- * 创建赛事。
- * @param {string} name
- * @param {number} size 4/8/16
- * @param {object} owner { id, name }
- * @returns {{ok:boolean, tournament?:object, error?:string}}
+ * 创建赛事（需登录正式账号，由 protocol 层校验后传入 owner）。
+ * 新建赛事一律进入 pending_approval，管理员审核通过后才开放报名。
  */
 function createTournament(name, size, owner) {
   if (!SIZE_OPTIONS.includes(size)) return { ok: false, error: '人数必须为 4/8/16' };
@@ -53,9 +54,9 @@ function createTournament(name, size, owner) {
     id,
     name: String(name || '未命名赛事').slice(0, 20),
     size,
-    status: 'open',            // open | playing | finished
-    players: [],               // [{id, name}]
-    bracket: [],               // 对阵表（平铺树），见 makeBracket
+    status: 'pending_approval', // pending_approval | open | playing | finished | rejected | cancelled
+    players: [],                // [{id, name}]
+    bracket: [],                // 对阵表（平铺树），见 makeBracket
     ownerId: owner ? owner.id : null,
     createdAt: Date.now(),
     championId: null,
@@ -63,11 +64,55 @@ function createTournament(name, size, owner) {
   if (owner) {
     tournaments[id].players.push({ id: owner.id, name: owner.name });
   }
-  if (tournaments[id].players.length >= size) {
-    startTournament(id);
-  }
   persist();
   return { ok: true, tournament: publicInfo(tournaments[id]) };
+}
+
+/**
+ * 管理员审核：通过 → open 进入报名。
+ */
+function approveTournament(id, reviewer = 'admin') {
+  const t = getCache()[id];
+  if (!t) return { ok: false, error: '赛事不存在' };
+  if (t.status !== 'pending_approval') return { ok: false, error: '状态已变更' };
+  t.status = 'open';
+  t.reviewedAt = Date.now();
+  t.reviewedBy = reviewer;
+  persist();
+  return { ok: true, tournament: publicInfo(t) };
+}
+
+/**
+ * 管理员审核：拒绝。
+ */
+function rejectTournament(id, reason = '', reviewer = 'admin') {
+  const t = getCache()[id];
+  if (!t) return { ok: false, error: '赛事不存在' };
+  if (t.status !== 'pending_approval') return { ok: false, error: '状态已变更' };
+  t.status = 'rejected';
+  t.reason = String(reason || '').slice(0, 100);
+  t.reviewedAt = Date.now();
+  t.reviewedBy = reviewer;
+  persist();
+  return { ok: true, tournament: publicInfo(t) };
+}
+
+/**
+ * 管理员取消：open/playing → cancelled。
+ * 返回仍在进行中的对局房间 id，由调用方（server 路由）经 rooms 层解散，
+ * 避免 tournaments↔rooms 循环依赖。
+ */
+function cancelTournament(id, reason = '') {
+  const t = getCache()[id];
+  if (!t) return { ok: false, error: '赛事不存在' };
+  if (t.status !== 'open' && t.status !== 'playing') return { ok: false, error: '状态已变更' };
+  const matchIds = (t.bracket || []).map((n) => n.matchId).filter(Boolean);
+  t.status = 'cancelled';
+  t.reason = String(reason || '').slice(0, 100);
+  t.endedAt = Date.now();
+  for (const n of t.bracket || []) n.matchId = null;
+  persist();
+  return { ok: true, tournament: publicInfo(t), matchIds };
 }
 
 /**
@@ -156,6 +201,8 @@ function assignNextMatches(t) {
 function onMatchFinished(tournamentId, matchId, winnerId) {
   const t = getCache()[tournamentId];
   if (!t) return { ok: false, error: '赛事不存在' };
+  // 赛事已被管理员取消：对局回调静默忽略（房间解散与本回调存在竞态）
+  if (t.status === 'cancelled') return { ok: true, ignored: true };
   // 找到包含该 matchId 的节点，填入胜者
   let node = t.bracket.find((n) => n.matchId === matchId);
   if (!node) return { ok: false, error: '对局不属于该赛事' };
@@ -178,11 +225,23 @@ function onMatchFinished(tournamentId, matchId, winnerId) {
 }
 
 /**
- * 列出所有赛事（公开信息）。
+ * 公开列表：只返回可展示的赛事（审核中/被拒/已取消不对外）。
  */
 function listTournaments() {
-  const data = getCache();
-  return Object.values(data).map(publicInfo).sort((a, b) => b.createdAt - a.createdAt);
+  const PUBLIC_STATUS = ['open', 'playing', 'finished'];
+  return Object.values(getCache())
+    .filter((t) => PUBLIC_STATUS.includes(t.status))
+    .map(publicInfo)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * 管理员全量列表：含 pending_approval / rejected / cancelled。
+ */
+function listAllTournaments() {
+  return Object.values(getCache())
+    .map(publicInfo)
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function getTournament(tournamentId) {
@@ -203,14 +262,21 @@ function publicInfo(t) {
     createdAt: t.createdAt,
     championId: t.championId,
     playerCount: t.players ? t.players.length : 0,
+    // 审核标记（历史数据无此字段视为已审核）
+    reviewedAt: t.reviewedAt || null,
+    reason: t.reason || null,
   };
 }
 
 module.exports = {
   createTournament,
   joinTournament,
+  approveTournament,
+  rejectTournament,
+  cancelTournament,
   onMatchFinished,
   listTournaments,
+  listAllTournaments,
   getTournament,
   setMatchFactory,
   assignNextMatches,

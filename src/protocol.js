@@ -22,9 +22,12 @@ const auth = require('./auth');
 const accounts = require('./accounts');
 const admin = require('./admin');
 const ratings = require('./ratings');
+const audit = require('./audit');
+const privacy = require('./privacy');
 const { RoomManager } = require('./rooms');
 const tournaments = require('./tournaments');
-const { listRecords, listPlayerRecords, getRecord, exportRecord } = require('./records');
+const { listRecords, listPlayerRecords, getRecord, exportRecord, recentSummaries } = require('./records');
+const { countRecords } = require('./storage');
 const { listAnnouncements } = require('./announcements');
 
 class Protocol {
@@ -53,14 +56,29 @@ class Protocol {
   // ==================================================================
   // 连接管理
   // ==================================================================
-  handleConnection(ws, guestId) {
+  handleConnection(ws, guestId, meta = {}) {
     // guestId 可能是：游客 id（24 hex）或账号会话令牌（三段 . 分隔）
     // 会话令牌 → 解析为账号 id，使对局/评级/棋谱都绑定到账号
     let effectiveId = guestId;
     const accountId = accounts.verifyToken(guestId);
     if (accountId) effectiveId = accountId;
-    // 建立游客/账号会话
-    const session = auth.identify(effectiveId);
+    // 建立游客/账号会话（meta 含客户端 IP/UA，PLAN §K1/K2）
+    const session = auth.identify(effectiveId, meta);
+    // 封禁拦截（PLAN §K3）：封禁身份无法建立任何连接（自然无法对局/观战/聊天）
+    if (session.banned) {
+      const untilTxt = session.banned.until ? `，至 ${new Date(session.banned.until).toLocaleString('zh-CN')}` : '';
+      const reason = session.banned.reason ? `：${session.banned.reason}` : '';
+      try {
+        ws.send(JSON.stringify({ type: 'error', data: { message: `此身份已被封禁${reason}${untilTxt}` } }));
+        ws.close();
+      } catch (_) {}
+      return;
+    }
+    // 每日登录经验（PLAN §K7）：24h 内首次连接 +2（loginEvent 的同人同 IP 去重兼做「每日首次」判定）
+    try {
+      const loginEv = audit.loginEvent({ playerId: session.id, ip: meta.ip || null, ua: meta.ua || null, via: 'ws' });
+      if (loginEv) ratings.addExp(session.id, 2, 'daily-login');
+    } catch (_) {}
     const clientId = `${session.id}_${Date.now().toString(36)}`;
     this.clients.set(clientId, ws);
     this.playerRegistry.set(clientId, {
@@ -87,8 +105,6 @@ class Protocol {
         stats: this.rooms.stats(),
       },
     }));
-
-    this._sendToPlayer(session.id, { type: 'player_updated', data: { id: session.id, name: session.name } });
 
     ws.on('message', (raw) => this._onMessage(clientId, raw));
     ws.on('close', () => this._onClose(clientId));
@@ -145,8 +161,8 @@ class Protocol {
       case 'create_room': {
         const tc = data && data.timeControl;
         const res = r.createRoom(player, tc);
+        if (!res.ok) { this._error(clientId, res.error); break; }
         this._send(clientId, { type: 'room_created', data: res });
-        this._broadcastToRoomState(res.roomId);
         break;
       }
       case 'join_room': {
@@ -184,9 +200,9 @@ class Protocol {
         break;
       }
       case 'spectate': {
-        const res = r.spectate(clientId, data && data.roomId);
+        const res = r.spectate(clientId, data && data.roomId, player.playerId);
         if (res.ok) {
-          this._send(clientId, { type: 'spectating', data: { roomId: res.roomId } });
+          this._send(clientId, { type: 'spectating', data: { roomId: res.roomId, seat: res.seat || null, rebind: !!res.rebind } });
           const state = r.getRoomStateForClient(clientId);
           this._send(clientId, { type: 'state', data: state });
         } else {
@@ -195,9 +211,9 @@ class Protocol {
         break;
       }
       case 'random_spectate': {
-        const res = r.randomSpectate(clientId);
+        const res = r.randomSpectate(clientId, player.playerId);
         if (res.ok) {
-          this._send(clientId, { type: 'spectating', data: { roomId: res.roomId } });
+          this._send(clientId, { type: 'spectating', data: { roomId: res.roomId, seat: res.seat || null, rebind: !!res.rebind } });
           const state = r.getRoomStateForClient(clientId);
           this._send(clientId, { type: 'state', data: state });
         } else {
@@ -229,13 +245,16 @@ class Protocol {
         let state = r.getRoomStateForClient(clientId);
         if (!state) {
           // 断线重连：玩家明确请求状态（request_state）时才尝试恢复对局，
-          // 避免观战窗口（同 guestId）误绑玩家座位
-          const rec = r.reconnect(clientId, player.playerId);
+          // 避免观战窗口（同 guestId）误绑玩家座位。
+          // data.roomId = 页面 URL 指向的房间：回位优先绑定它（重新匹配后
+          // 不被旧对局复盘中房间的断线座位按插入顺序劫持——幽灵房修复）
+          const wantRoom = data && data.roomId;
+          const rec = r.reconnect(clientId, player.playerId, wantRoom);
           if (rec.ok) {
             state = r.getRoomStateForClient(clientId);
           } else {
             // 页面跳转竞态兜底：新连接先于旧连接 close 到达时无绑定
-            const bound = r.bindToActiveGame(clientId, player.playerId);
+            const bound = r.bindToActiveGame(clientId, player.playerId, wantRoom);
             if (bound && bound.ok) state = r.getRoomStateForClient(clientId);
           }
         }
@@ -259,6 +278,12 @@ class Protocol {
         break;
       }
       case 'create_tournament': {
+        // B2：创建赛事需要登录正式账号（guestId 为会话令牌且能解析到账号）。
+        // 游客 id 是 24 hex，账号 id 在 accounts 表中存在——以此区分。
+        if (!accounts.getAccount(player.playerId)) {
+          this._error(clientId, '创建赛事需要登录正式账号，请在个人页注册/登录');
+          break;
+        }
         const res = tournaments.createTournament(data && data.name, data && data.size, { id: player.playerId, name: player.name });
         if (res.ok) {
           this._send(clientId, { type: 'tournament_created', data: res.tournament });
@@ -282,6 +307,29 @@ class Protocol {
         if (!res.ok) this._error(clientId, res.error);
         break;
       }
+      // 感想战演示行棋（PLAN §G）：move/undo/transfer/claim/reset
+      case 'demo_move':
+      case 'demo_undo':
+      case 'demo_transfer':
+      case 'demo_claim':
+      case 'demo_reset': {
+        const res = r.demoAction(clientId, type.replace('demo_', ''), data || {});
+        if (!res.ok) this._error(clientId, res.error);
+        break;
+      }
+      // 感想战历史手合法走法按需下发（任意历史手行棋，PLAN §H）
+      case 'demo_legal': {
+        const res = r.demoLegal(clientId, data || {});
+        if (res.ok) this._send(clientId, { type: 'demo_legal', data: res.data });
+        break;
+      }
+      // 进入感想战页：下发该客户端视角的完整载荷（demo_init）
+      case 'demo_enter': {
+        const res = r.demoEnter(clientId, data && data.roomId);
+        if (!res.ok) this._error(clientId, res.error);
+        else this._send(clientId, { type: 'demo_init', data: res.demo });
+        break;
+      }
       default:
         this._error(clientId, `未知消息类型: ${type}`);
     }
@@ -291,22 +339,28 @@ class Protocol {
   // REST 辅助（供 server.js 调用）
   // ==================================================================
   lobbyData() {
-    return {
-      stats: this.rooms.stats(),
+    // 非管理员公开出口：统一过隐私白名单（PLAN §M3/§K——结构性保证，不靠人肉记忆）
+    return privacy.stripPrivate({
+      // online 修正为「实际活跃 WS 连接数」（rooms.stats().online 之前用的是
+      // clientToRoom.size，只统计已绑定房间的连接，会漏掉大厅/观战/未进房的连接）
+      stats: { ...this.rooms.stats(), online: this.clients.size },
       games: this.rooms.activeGames(),
       announcements: listAnnouncements(),
       leaderboard: ratings.leaderboard(null, 10),
-    };
+    });
   }
 
   homeData() {
     const lb = ratings.leaderboard(null, 10);
-    return {
-      stats: this.rooms.stats(),
+    return privacy.stripPrivate({
+      stats: { ...this.rooms.stats(), online: this.clients.size },
       games: this.rooms.activeGames(),
       announcements: listAnnouncements(),
       leaderboard: lb,
-    };
+      // 首页改版新增：平台数据条 + 最新对局战报（games 字段保留兼容旧入口）
+      recordsTotal: countRecords(),
+      recentBattles: recentSummaries(5),
+    });
   }
 
   /**
@@ -321,9 +375,9 @@ class Protocol {
       // 管理员：返回全部棋谱（含公共 kif-import 库与所有用户对局）
       return { records: listRecords(1000), isAdmin: true };
     }
-    // 普通用户：严格只能看自己的棋谱
+    // 普通用户：严格只能看自己的棋谱（出口过隐私白名单，PLAN §K2）
     const own = playerId ? listPlayerRecords(playerId, 50) : [];
-    return { records: own, isAdmin: false };
+    return privacy.stripPrivate({ records: own, isAdmin: false });
   }
 
   /**
@@ -336,7 +390,27 @@ class Protocol {
   }
 
   /**
+   * 踢出某身份的全部在线连接（封禁生效用，PLAN §K3）。
+   * @returns {number} 踢掉的连接数
+   */
+  kickPlayer(playerId, message = '你的账号已被管理员强制下线') {
+    const set = this.playerToClients.get(playerId);
+    if (!set) return 0;
+    let n = 0;
+    for (const clientId of [...set]) {
+      this._send(clientId, { type: 'error', data: { message } });
+      const ws = this.clients.get(clientId);
+      if (ws) {
+        try { ws.close(); n += 1; } catch (_) {}
+      }
+    }
+    return n;
+  }
+
+  /**
    * 管理员：查看指定用户数据。
+   * 追加手机号（私密字段仅管理员可见，PLAN §F）与账号注册时间。
+   * §K：追加网络信息（net）、封禁状态、管理员备注、最近登录事件——均仅此管理员出口返回。
    */
   adminUserData(userId, adminToken) {
     if (!admin.verify(adminToken)) return null;
@@ -344,7 +418,52 @@ class Protocol {
     const prof = ratings.profile(userId);
     const records = listPlayerRecords(userId, 200);
     const session = auth.load(userId) || { name: userId };
-    return { profile: prof, records, name: session.name };
+    const own = accounts.getOwnProfile(userId);
+    return {
+      profile: prof,
+      records,
+      name: session.name,
+      phone: own ? own.profile.phone : '',
+      style: own ? own.profile.style : null,
+      accountCreatedAt: own ? own.createdAt : null,
+      isAccount: !!own,
+      net: session.net || null,
+      banned: session.banned || null,
+      title: session.title || '',
+      events: audit.loginHistory(userId, 50),
+    };
+  }
+
+  /**
+   * 玩家信息卡（公开，悬停小窗数据源，PLAN §F3）。
+   * 绝不返回手机号。
+   */
+  playerCardData(playerId) {
+    if (!playerId || !/^[0-9a-f]{24}$/.test(String(playerId))) return null;
+    const session = auth.load(playerId);
+    const card = accounts.getPublicCard(playerId);
+    if (!session && !card) return null; // 未知玩家
+    const prof = ratings.profile(playerId);
+    const recent = listPlayerRecords(playerId, 10).map((r) => {
+      if (!r.playerIds || r.result === '-') return 'draw';
+      const mine = r.playerIds.b === playerId ? 'b' : 'w';
+      return r.result === mine ? 'win' : 'loss';
+    });
+    return privacy.stripPrivate({
+      id: playerId,
+      name: session ? session.name : (card ? card.username : playerId),
+      title: (session && session.title) || null,   // 用户称号（管理员编辑，PLAN §K7 追加）
+      isAccount: !!card,
+      rating: prof.rating,
+      level: prof.level,                     // 等级系统（PLAN §K7）
+      games: prof.games,
+      wins: prof.wins,
+      losses: prof.losses,
+      winRate: prof.winRate,
+      style: card ? card.style : null,       // 游客无棋风
+      createdAt: card ? card.createdAt : null,
+      recent,
+    });
   }
 
   exportData(recordId, fmt) {
@@ -361,7 +480,8 @@ class Protocol {
     const prof = ratings.profile(playerId);
     const records = require('./records').listPlayerRecords(playerId, 20);
     const session = auth.load(playerId) || { name: '无名棋士' };
-    return { profile: prof, records, name: session.name };
+    // 非管理员出口：过隐私白名单（PLAN §K2）
+    return privacy.stripPrivate({ profile: prof, records, name: session.name });
   }
 
   // ==================================================================
@@ -387,8 +507,7 @@ class Protocol {
   }
 
   _broadcastToRoomState(roomId) {
-    const state = this.rooms.getRoomStateForClient();
-    void state;
+    // 保留为空方法（避免误调崩溃）；create_room 流程已不再调用它
   }
 
   _broadcastStats() {

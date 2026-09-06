@@ -38,15 +38,14 @@
     KE:  { kind: 'KE',  row: 0, col: 5 },   // 桂
     KY:  { kind: 'KY',  row: 0, col: 6 },   // 香
     FU:  { kind: 'FU',  row: 0, col: 7 },   // 歩
-    // 成駒（row 1）
+    // 成駒（row 1）：玉 龍 馬 成金 成銀 成桂 成香 と（与图集 row 1 一一对应）
     OU2: { kind: 'OU2', row: 1, col: 0 },   // 玉（成不变）
     RY:  { kind: 'RY',  row: 1, col: 1 },   // 龍（飛成）
     UM:  { kind: 'UM',  row: 1, col: 2 },   // 馬（角成）
-    NG:  { kind: 'NG',  row: 1, col: 3 },   // 全（銀成）→ 显示成金
-    // 实际上：銀成=全，桂成=圭，香成=杏，歩成=と，4种都显示为「金」
-    NY:  { kind: 'NY',  row: 1, col: 4 },   // 圭?（取决于图集）
-    NK:  { kind: 'NK',  row: 1, col: 5 },
-    TO:  { kind: 'TO',  row: 1, col: 7 },
+    NG:  { kind: 'NG',  row: 1, col: 4 },   // 成銀（row1 col4；col3 是成金——错位会导致成銀显示成金将形）
+    NY:  { kind: 'NY',  row: 1, col: 6 },   // 成香（row1 col6）
+    NK:  { kind: 'NK',  row: 1, col: 5 },   // 成桂（row1 col5）
+    TO:  { kind: 'TO',  row: 1, col: 7 },   // と（row1 col7）
   };
 
   /**

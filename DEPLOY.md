@@ -3,7 +3,7 @@
 本平台是**单进程 Node.js 常驻服务**（Express REST + ws WebSocket 同端口），依赖：
 - 常驻进程（对局状态、WebSocket 长连接、棋钟 tick）
 - 可写文件系统（`data/` 目录落盘棋谱、会话、评级）
-- Node.js 18+ 运行时
+- Node.js 22+ 运行时（better-sqlite3 v13 硬性要求，npm install 会因 engines 不符直接报错）
 
 > ⚠️ 因此它**不是纯静态站**，部署目标必须是能运行 Node.js 常驻进程的服务器（云主机 / VPS / Docker / PaaS）。
 
@@ -17,16 +17,19 @@
 tdshogi/
 ├── package.json          # 依赖声明与 npm start 脚本
 ├── package-lock.json     # 锁定依赖版本（保证可复现）
+├── .npmrc                # better-sqlite3 预编译包镜像（服务器免编译工具链）
 ├── server.js             # 服务端入口
-├── src/                  # 服务端逻辑（12 个模块，全部需要）
-│   ├── auth.js  ratings.js  rooms.js  tournaments.js
-│   ├── game.js  records.js  announcements.js  protocol.js
-│   ├── admin.js  kif.js  coords.js  storage.js
+├── src/                  # 服务端逻辑（13 个模块，全部需要）
+│   ├── protocol.js  rooms.js  game.js  coords.js   # 对局核心
+│   ├── auth.js  accounts.js  ratings.js  records.js
+│   ├── kif.js  storage.js  tournaments.js
+│   ├── announcements.js  admin.js
 ├── public/               # 前端（静态资源，全部需要）
 │   ├── *.html            # 8 个页面
 │   ├── css/              # style.css board.css review.css
-│   ├── js/               # 12 个脚本
+│   ├── js/               # 15 个脚本（含统一棋盘组件 freeboard.js、棋子图集配置 pieces.js）
 │   └── pieces/           # 棋子图片 kinki.png ryoko.png
+├── DEPLOY.md             # 本文件（可选）
 └── README.md             # （可选）
 ```
 
@@ -56,19 +59,33 @@ rsync -av --exclude 'node_modules' --exclude '.playwright-cli' \
       --exclude '参考文件' --exclude '棋子素材' --exclude '.codebuddy' \
       ./ user@server:/opt/tdshogi/
 
-# 2. 服务器上安装依赖
+# 2. 服务器上安装依赖（仓库自带 .npmrc，无需任何 C++ 编译工具链）
 cd /opt/tdshogi
-npm install --omit=dev
+npm ci --omit=dev
+
+# 2.5 验证依赖健康（应输出 sqlite OK）
+node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(a)');console.log('sqlite OK')"
 
 # 3. 配置环境变量（推荐）
 export PORT=3000
 export DATA_DIR=/var/lib/tdshogi        # 持久数据目录（可选，默认 ./data）
-export ADMIN_PASSWORD=你的强密码        # 管理员登录密码（强烈建议修改）
-export ADMIN_SECRET=随机长字符串        # token 签名密钥
+export ADMIN_PASSWORD=你的强密码        # 管理员登录密码（不设置则使用内置密码 Cplusplus123）
+export ADMIN_SECRET=随机长字符串        # token 签名密钥（不设置则从管理密码派生）
+export TRUST_PROXY=1                    # 走 Nginx 反代时必配（1 层），否则记录到的 IP 是 127.0.0.1
+export ADMIN_ENTRY_KEY=随机长字符串     # 可选：隐藏管理后台入口（见下）
 
 # 4. 启动
 npm start
 ```
+
+**管理后台入口（普通用户不可见）：**
+
+- 导航栏的 🛡️ 入口**仅在本机已登录过管理员时显示**（token 存于该浏览器的 localStorage），
+  普通用户任何页面都看不到入口。
+- 管理员自己直接访问 `/admin.html` 即可进入登录页。
+- 更隐蔽：设置 `ADMIN_ENTRY_KEY` 后，访问 `/admin.html` 必须带 `?k=<ADMIN_ENTRY_KEY>`
+  （如 `https://站点/admin.html?k=你的key`），否则返回 404——连后台存在都不暴露。
+  该 key 只用于"找到页面"，登录仍需管理密码（服务端 `admin.verify` 鉴权不变）。
 
 **用 PM2 保持常驻：**
 
@@ -103,7 +120,7 @@ WantedBy=multi-user.target
 **用 Docker（可选）：**
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --omit=dev

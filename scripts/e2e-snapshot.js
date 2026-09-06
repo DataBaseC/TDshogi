@@ -14,7 +14,7 @@ const T = (ms) => new Promise((r) => setTimeout(r, ms));
 const gid = () => crypto.randomBytes(12).toString('hex');
 const BASE = 'http://localhost:3997';
 const WS = 'ws://localhost:3997/ws';
-const ROOT = 'D:\\Ai\\CodeBuddy\\shogiwebapp';
+const ROOT = path.resolve(__dirname, '..'); // 项目根（自动推导，避免换机器/换目录后失效）
 const DATA_DIR = path.join(ROOT, 'data', 'snap-test');
 
 let pass = 0, fail = 0;
@@ -141,6 +141,57 @@ async function main() {
   B2.send('request_state');
   const reB = await B2.wait('state');
   ok(reB.moves.length === movesBefore, 'B 恢复对局手数一致');
+
+  // ===== 恢复局治理（幽灵复活循环回归：修复「重启后新对局被旧局劫持」）=====
+  console.log('\n=== 恢复局治理 ===');
+  // (c) 玩家重连后直接开新局：旧恢复局应被放弃（对手在线 → 判负推进，保对手结算）
+  A2.send('create_room', {});
+  const newRoom = await A2.wait('room_created', 5000);
+  ok(!!newRoom, '玩家重连后开新局：旧恢复局被放弃，新房间创建成功');
+  const bOver = await B2.wait('game_over', 5000).catch(() => null);
+  ok(!!bOver, '被放弃的恢复局对在线对手正常结算（game_over）');
+  A2.close(); B2.close();
+
+  // (a) WAITING 快照不应被复活：带等待房杀服务器 → 重启 → 等待房应被清理
+  const C = mkClient('C', gid());
+  await C.connect(); await T(250);
+  C.send('create_room', {});
+  await C.wait('room_created');
+  await T(2500); // 等快照落盘
+  try { execSync(`taskkill /PID ${server.pid} /T /F 2>nul`); } catch (_) {}
+  await T(1200);
+  server = startServer();
+  ok(await waitServerUp(), '服务器重启（第 2 次）');
+  await T(500);
+  const stats2 = await (await fetch(`${BASE}/api/home`)).json();
+  ok(stats2.stats.waiting === 0, `WAITING 快照不被复活（waiting=${stats2.stats.waiting}）`);
+  C.close();
+
+  // (b) PLAYING 恢复局无人回归 → 60s 自愈判负，快照清空
+  const A3 = mkClient('A3', A.guestId);
+  const B3 = mkClient('B3', B.guestId);
+  await A3.connect(); await B3.connect(); await T(250);
+  A3.send('create_room', {});
+  const r3 = await A3.wait('room_created', 5000);
+  B3.send('join_room', { code: r3.code });
+  await B3.wait('room_joined');
+  await A3.wait('game_start'); await B3.wait('game_start');
+  const st3 = await A3.wait('state');
+  const m3 = r3.seat === st3.turn ? A3 : B3;
+  m3.send('move', { usi: st3.legalMoves[0] });
+  await T(3000); // 等快照落盘
+  try { execSync(`taskkill /PID ${server.pid} /T /F 2>nul`); } catch (_) {}
+  await T(1200);
+  server = startServer();
+  ok(await waitServerUp(), '服务器重启（第 3 次）');
+  console.log('  等待 65s 观察恢复局自愈…');
+  await T(65000); // 双方都不回归
+  const stats3 = await (await fetch(`${BASE}/api/home`)).json();
+  ok(stats3.stats.playing === 0, `无人回归的恢复局 60s 判负自愈（playing=${stats3.stats.playing}）`);
+  const hist = await (await fetch(`${BASE}/api/history?player=${encodeURIComponent(A.guestId)}`)).json();
+  const lastRec = (hist.records || [])[0];
+  ok(lastRec && lastRec.resultDetail === '接続切断', `自愈判负原因=接続切断（${lastRec && lastRec.resultDetail}）`);
+  A3.close(); B3.close();
 
   console.log(`\n========== 快照验证：${pass} 通过, ${fail} 失败 ==========`);
   // 清理

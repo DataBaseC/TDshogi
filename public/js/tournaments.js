@@ -1,10 +1,19 @@
 /**
- * tournaments.js — 赛事页：创建、加入、对阵表渲染
+ * tournaments.js — 赛事页：我要创建赛事（需登录正式账号）、报名、对阵表渲染
+ *
+ * 页面只分两段展示：进行中的赛事（open/playing）与往期赛事（finished）。
+ * 创建入口为顶部按钮：游客 → 引导登录；正式账号 → 弹窗填写后提交。
  */
 (function () {
   const guest = window.NAV.renderNav('tournaments');
   const api = window.API;
   api.connect(guest.id);
+  // 我的对局玩家 id：账号的 guest.id 是会话令牌（含点），参赛名单存的是 accountId
+  const myPlayerId = guest.id && String(guest.id).includes('.')
+    ? String(guest.id).split('.')[0]
+    : guest.id;
+  // 本窗口刚提交、还在审核中的赛事（公共列表不返回 pending，仅本地展示）
+  let myPending = [];
 
   function toast(msg) {
     const el = document.getElementById('toast');
@@ -13,14 +22,36 @@
     setTimeout(() => el.classList.remove('show'), 2500);
   }
 
+  // ---- 创建赛事 ----
+  const modalEl = document.getElementById('createModal');
+
   document.getElementById('btnCreateTournament').addEventListener('click', () => {
+    // 正式账号的 guest.id 是会话令牌（含点号）；游客是 24 hex 纯十六进制
+    if (!guest.id || !String(guest.id).includes('.')) {
+      toast('创建赛事需要登录正式账号，请先登录');
+      setTimeout(() => { location.href = 'profile.html'; }, 800);
+      return;
+    }
+    modalEl.style.display = 'flex';
+  });
+
+  document.getElementById('btnCloseCreateModal').addEventListener('click', () => {
+    modalEl.style.display = 'none';
+  });
+  modalEl.addEventListener('click', (e) => {
+    if (e.target === modalEl) modalEl.style.display = 'none';
+  });
+
+  document.getElementById('btnSubmitCreate').addEventListener('click', () => {
     const name = document.getElementById('tName').value.trim();
     const size = parseInt(document.getElementById('tSize').value, 10);
     api.send({ type: 'create_tournament', data: { name: name || '未命名赛事', size } });
   });
 
   api.on('tournament_created', (data) => {
-    toast(`赛事「${data.name}」已创建`);
+    toast(`赛事「${data.name}」创建申请已提交，等待管理员审核`);
+    modalEl.style.display = 'none';
+    if (data.status === 'pending_approval') myPending.push(data);
     loadTournaments();
   });
   api.on('tournament_joined', () => {
@@ -46,14 +77,27 @@
   }
 
   function renderList(list) {
-    const el = document.getElementById('tournamentList');
+    // open=报名中 / playing=比赛中 都属于"进行中"；finished 为往期；
+    // 本窗口刚提交的 pending_approval 合并显示为「审核中」（服务端审核通过后进入公共列表）
+    const pendingLocal = myPending.filter((p) => !list.some((t) => t.id === p.id));
+    const ongoing = [...pendingLocal, ...list.filter((t) => t.status !== 'finished')];
+    const finished = list.filter((t) => t.status === 'finished');
+    renderInto(document.getElementById('ongoingList'), ongoing, false);
+    renderInto(document.getElementById('finishedList'), finished, true);
+  }
+
+  function renderInto(el, list, isPast) {
     if (!list.length) {
-      el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">暂无赛事，创建第一个吧！</div>';
+      el.innerHTML = `<div style="color:var(--text-dim);font-size:13px;">${
+        isPast ? '还没有结束的赛事。' : '暂无进行中的赛事，点击右上角「我要创建赛事」开一个吧！'
+      }</div>`;
       return;
     }
     el.innerHTML = list.map((t) => {
-      const statusText = t.status === 'open' ? '报名中' : t.status === 'playing' ? '进行中' : '已结束';
-      const isIn = t.players.some((p) => p.id === guest.id);
+      const statusText = t.status === 'pending_approval' ? '🕐 审核中'
+        : t.status === 'open' ? '报名中'
+        : t.status === 'playing' ? '进行中' : '已结束';
+      const isIn = t.players.some((p) => p.id === myPlayerId);
       const joinBtn = t.status === 'open' && !isIn
         ? `<button class="btn btn-primary btn-sm" onclick="joinTournament('${t.id}')">加入</button>`
         : t.status === 'open' && isIn
@@ -69,9 +113,9 @@
             </div>
           </div>
           <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
-            参赛者：${t.players.map((p) => esc(p.name)).join('、') || '暂无'}
+            参赛者：${(t.players || []).map((p) => `<span data-player-id="${esc(p.id)}">${esc(p.name)}</span>`).join('、') || '暂无'}
           </div>
-          ${t.status !== 'open' ? renderBracket(t) : ''}
+          ${t.bracket && t.bracket.length ? renderBracket(t) : ''}
           ${t.status === 'finished' && t.championId ? `<div style="margin-top:12px;color:var(--gold-light);font-weight:700;">🏆 冠军：${esc(getName(t, t.championId))}</div>` : ''}
         </div>
       `;
@@ -96,7 +140,7 @@
       const nodes = bracket.slice(start, start + count);
       levels.push(nodes);
     }
-    const myId = guest.id;
+    const myId = myPlayerId;
     return `
       <div class="bracket">
         ${levels.map((levelNodes, li) => `
@@ -117,7 +161,7 @@
                   : `<div style="font-size:11px;color:var(--gold-light);margin-top:6px;">对局进行中</div>`;
                 body = `<div class="p">${esc(p1 || '?')} vs ${esc(p2 || '?')}</div>${enter}`;
               } else if (isLeaf && n.name) {
-                body = `<div class="p">${esc(n.name)}</div>`;
+                body = `<div class="p" ${n.playerId ? `data-player-id="${esc(n.playerId)}"` : ''}>${esc(n.name)}</div>`;
               } else {
                 body = `<div class="p" style="color:var(--text-dim);">待定</div>`;
               }

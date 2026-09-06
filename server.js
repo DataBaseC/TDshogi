@@ -13,8 +13,14 @@ const { WebSocketServer } = require('ws');
 const { ensureDataDirs } = require('./src/storage');
 const admin = require('./src/admin');
 const accounts = require('./src/accounts');
+const auth = require('./src/auth');
+const ratings = require('./src/ratings');
+const tournaments = require('./src/tournaments');
+const netInfo = require('./src/net');
+const audit = require('./src/audit');
 const { Protocol } = require('./src/protocol');
 
+const VERSION = require('./package.json').version;
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -22,14 +28,54 @@ ensureDataDirs();
 
 const app = express();
 app.use(express.json());
-app.use(express.static(PUBLIC_DIR));
+// 客户端信息（IP/UA）地基，PLAN §M3：供 §K 的登录记录与管理员审计使用。
+// 未配置 TRUST_PROXY 时不信任任何代理头——否则伪造 X-Forwarded-For 即可伪装 IP。
+app.set('trust proxy', netInfo.trustProxySetting());
+app.use(netInfo.attachClientInfo);
+// 管理后台入口门禁（PLAN §J5）：设置 ADMIN_ENTRY_KEY 后，访问 /admin.html 必须带 ?k=<key>，
+// 否则按 404 处理——连"后台存在"这件事都不暴露。未设置该变量时保持开放（避免把自己锁在门外）。
+// 注：这层只是入口隐蔽，真正的权限校验仍在 src/admin.js 的 verify（所有 /api/admin/* 均校验）。
+const ADMIN_ENTRY_KEY = process.env.ADMIN_ENTRY_KEY || '';
+app.use((req, res, next) => {
+  if (ADMIN_ENTRY_KEY && req.path === '/admin.html' && req.query.k !== ADMIN_ENTRY_KEY) {
+    return res.status(404).send('Not Found');
+  }
+  next();
+});
+// 静态资源禁用强缓存（协商缓存）：防止服务进程与磁盘文件版本错位时
+// 浏览器还拿着旧脚本（实机『感想战瘫痪』类问题的环境性根因）
+app.use(express.static(PUBLIC_DIR, {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 
 // REST API
 const protocol = new Protocol({ onBroadcast: () => {} });
 
-// 首页数据
+/**
+ * 统一身份解析：把客户端传来的"身份参数"解析为服务端真正认识的对局玩家 id。
+ *  - 游客：guest.id 本身即 24 hex 玩家 id，原样返回；
+ *  - 账号：guest.id 是会话令牌（形如 `<accountId>.<ts>.<sig>`，含点），
+ *    必须解析为 accountId——因为对局落盘的 playerIds / winnerId 存的是
+ *    服务端 verifyToken 后的账号 id（24 hex），若直接用 token 匹配会查不到
+ *    自己的棋谱（历史页空白 / 复盘 403 "只能复盘自己的棋谱"）。
+ * @param {string|null} raw
+ * @returns {string|null}
+ */
+function resolvePlayer(raw) {
+  if (!raw) return null;
+  if (String(raw).includes('.')) {
+    const accountId = accounts.verifyToken(raw);
+    // 解析失败（token 过期/伪造）回退原值：匹配不上自然返回空，不破坏现有行为
+    return accountId || raw;
+  }
+  return raw;
+}
+
+// 首页数据（附版本号——排障时用 curl 即可确认进程跑的是哪份代码）
 app.get('/api/home', (req, res) => {
-  res.json(protocol.homeData());
+  res.json({ ...protocol.homeData(), version: VERSION });
 });
 
 // 大厅数据（进行中对局 / 公告 / 排行）
@@ -39,7 +85,7 @@ app.get('/api/lobby', (req, res) => {
 
 // 对局状态（供历史页/观战初始加载）；权限隔离：管理员看全部，普通用户只看自己的
 app.get('/api/history', (req, res) => {
-  const playerId = req.query.player;
+  const playerId = resolvePlayer(req.query.player);
   const adminToken = req.query.adminToken || req.headers['x-admin-token'] || null;
   res.json(protocol.historyData(playerId, adminToken));
 });
@@ -60,6 +106,113 @@ app.get('/api/admin/users/:id', (req, res) => {
   res.json(data);
 });
 
+// ---------------- 用户管理写操作（PLAN §K3，全部写审计日志）----------------
+
+/**
+ * 管理写路由统一包装：admin.verify → 执行业务 → audit.adminAction 落审计。
+ * handler(req, body) 返回 {ok, action, error?, audit?, ...data}；
+ * ok=false 时返回 400 与 error。
+ */
+function adminWrite(handler) {
+  return (req, res) => {
+    const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
+    if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+    let r;
+    try {
+      r = handler(req, req.body || {}) || { ok: false, error: '无结果' };
+    } catch (err) {
+      console.error('[admin] 写操作异常:', err);
+      // 带上真实原因：吞成笼统的"服务器内部错误"会让排障无从下手（2026-09-05 备注/封禁报障教训）
+      r = { ok: false, error: `服务器内部错误: ${err.message}`, action: 'unknown' };
+    }
+    const { action, audit: detail, ...data } = r;
+    audit.adminAction({
+      adminIp: req.clientIp || null,
+      action: action || 'unknown',
+      targetId: req.params.id || null,
+      ok: !!r.ok,
+      detail: detail || null,
+    });
+    if (!r.ok) return res.status(400).json({ error: r.error || '操作失败' });
+    res.json({ ok: true, ...data });
+  };
+}
+
+// 封禁（days>0 有期，否则永久；同时踢掉该身份全部在线连接）
+app.post('/api/admin/users/:id/ban', adminWrite((req, body) => {
+  const r = auth.banPlayer(req.params.id, { reason: body.reason, days: body.days, by: 'admin' });
+  let kicked = 0;
+  if (r.ok) {
+    const untilTxt = r.banned.until ? `，至 ${new Date(r.banned.until).toLocaleString('zh-CN')}` : '';
+    kicked = protocol.kickPlayer(req.params.id, `你的账号已被封禁${r.banned.reason ? '：' + r.banned.reason : ''}${untilTxt}`);
+  }
+  return { ...r, action: 'ban', kicked };
+}));
+
+app.post('/api/admin/users/:id/unban', adminWrite((req) => {
+  const r = auth.unbanPlayer(req.params.id);
+  return { ...r, action: 'unban' };
+}));
+
+// 改名（显示名；同步进行中对局内双方看到的名字）
+app.post('/api/admin/users/:id/rename', adminWrite((req, body) => {
+  const r = auth.adminRename(req.params.id, body.name);
+  if (r.ok) {
+    try { protocol.rooms.updatePlayerName(req.params.id, r.name); } catch (_) {}
+  }
+  return { ...r, action: 'rename', audit: { to: r.name } };
+}));
+
+// 重置 ELO 与战绩
+app.post('/api/admin/users/:id/reset-rating', adminWrite((req) => {
+  const r = ratings.resetPlayer(req.params.id);
+  return { ...r, action: 'reset-rating' };
+}));
+
+// 编辑 ELO / 经验（等级随经验自动推导，PLAN §K7）
+app.post('/api/admin/users/:id/elo', adminWrite((req, body) => {
+  const r = ratings.adminSetPlayer(req.params.id, { rating: body.rating, exp: body.exp });
+  return { ...r, action: 'edit-elo', audit: { rating: body.rating, exp: body.exp } };
+}));
+
+// 重置密码（仅账号；新明文密码仅本次响应返回；同时使旧会话令牌全部失效）
+app.post('/api/admin/users/:id/reset-password', adminWrite((req, body) => {
+  const r = accounts.adminResetPassword(req.params.id, body.newPassword);
+  return { ...r, action: 'reset-password', audit: { manual: !!body.newPassword } };
+}));
+
+// 编辑资料（手机号/棋风存账号；用户称号存会话，展示为「名称（称号）」——游客账号统一）
+app.post('/api/admin/users/:id/profile', adminWrite((req, body) => {
+  let r = { ok: true, action: 'update-profile' };
+  if (body.phone !== undefined || body.style !== undefined) {
+    r = accounts.adminUpdateProfile(req.params.id, { phone: body.phone, style: body.style });
+  }
+  if (r.ok && body.title !== undefined) {
+    const tr = auth.adminSetTitle(req.params.id, body.title);
+    if (!tr.ok) r = tr;
+  }
+  return { ...r, action: 'update-profile', audit: { hasPhone: body.phone !== undefined, hasStyle: body.style !== undefined, hasTitle: body.title !== undefined } };
+}));
+
+// 删除账号（高危：body.confirm 必须为该账号用户名或 'DELETE'；棋谱保留、评级清空）
+app.delete('/api/admin/users/:id', adminWrite((req, body) => {
+  const acct = accounts.getAccount(req.params.id);
+  if (!acct) return { ok: false, error: '账号不存在（游客请直接删除会话对应记录）', action: 'delete-account' };
+  if (body.confirm !== acct.username && body.confirm !== 'DELETE') {
+    return { ok: false, error: `确认失败：请提交账号用户名「${acct.username}」或 DELETE`, action: 'delete-account' };
+  }
+  const kicked = protocol.kickPlayer(req.params.id, '你的账号已被删除');
+  const r = accounts.deleteAccount(req.params.id);
+  return { ...r, action: 'delete-account', kicked, audit: { username: r.username } };
+}));
+
+// 管理员操作审计日志（PLAN §K4「操作审计」tab 数据源）
+app.get('/api/admin/audit', (req, res) => {
+  const token = req.query.token || req.headers['x-admin-token'] || null;
+  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  res.json({ events: audit.query({ type: 'admin', limit: 200 }) });
+});
+
 // 管理员：导入 KIF 棋谱
 app.post('/api/admin/records/import', (req, res) => {
   const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
@@ -71,6 +224,37 @@ app.post('/api/admin/records/import', (req, res) => {
   res.json({ ok: true, record: result.record });
 });
 
+// ---------------- 赛事管理（管理员，见 PLAN §E） ----------------
+
+// 全量列表（含 pending_approval/rejected/cancelled）
+app.get('/api/admin/tournaments', (req, res) => {
+  const token = req.query.token || req.headers['x-admin-token'] || null;
+  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  res.json({ tournaments: tournaments.listAllTournaments() });
+});
+
+// 审核/取消动作（幂等：状态已变更返回 400）
+function tournamentAction(action) {
+  return (req, res) => {
+    const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
+    if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+    const id = req.params.id;
+    let r;
+    if (action === 'approve') r = tournaments.approveTournament(id);
+    else if (action === 'reject') r = tournaments.rejectTournament(id, req.body && req.body.reason);
+    else r = tournaments.cancelTournament(id, req.body && req.body.reason);
+    if (!r.ok) return res.status(400).json(r);
+    // 取消时解散其进行中/等待中的对局房间（房内收 room_closed）
+    if (r.matchIds && r.matchIds.length) {
+      r.dissolvedMatches = protocol.rooms.dissolveTournamentMatches(r.matchIds);
+    }
+    res.json(r);
+  };
+}
+app.post('/api/admin/tournaments/:id/approve', tournamentAction('approve'));
+app.post('/api/admin/tournaments/:id/reject', tournamentAction('reject'));
+app.post('/api/admin/tournaments/:id/cancel', tournamentAction('cancel'));
+
 // 棋谱导出（权限：owner 或管理员）
 app.get('/api/records/:id/export', (req, res) => {
   const fmt = req.query.fmt === 'csa' ? 'csa' : 'kif';
@@ -78,7 +262,7 @@ app.get('/api/records/:id/export', (req, res) => {
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
   const token = req.query.token || req.headers['x-admin-token'];
-  const guest = req.query.guest;
+  const guest = resolvePlayer(req.query.guest);
   if (!admin.verify(token) && !records.isOwner(rec, guest)) {
     return res.status(403).json({ error: '无权导出他人的棋谱' });
   }
@@ -108,7 +292,7 @@ app.get('/api/records/:id/playback', (req, res) => {
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
   const token = req.query.token || req.headers['x-admin-token'];
-  const guest = req.query.guest;
+  const guest = resolvePlayer(req.query.guest);
   if (!admin.verify(token) && !records.isOwner(rec, guest)) {
     return res.status(403).json({ error: '只能回放自己的棋谱' });
   }
@@ -118,7 +302,7 @@ app.get('/api/records/:id/playback', (req, res) => {
 // 复盘数据（完整：含书签/评论/变着）。权限：owner 或管理员。
 app.get('/api/records/:id/review', (req, res) => {
   const token = req.query.token || req.headers['x-admin-token'];
-  const guest = req.query.guest;
+  const guest = resolvePlayer(req.query.guest);
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
@@ -186,7 +370,7 @@ app.get('/api/tournaments', (req, res) => {
 
 // 个人数据
 app.get('/api/profile', (req, res) => {
-  const playerId = req.query.player;
+  const playerId = resolvePlayer(req.query.player);
   if (!playerId) return res.status(400).json({ error: '缺少 player 参数' });
   res.json(protocol.profileData(playerId));
 });
@@ -195,7 +379,7 @@ app.get('/api/profile', (req, res) => {
 // 权限：管理员可检索全部；普通用户仅检索自己的棋谱
 app.get('/api/records/search', (req, res) => {
   const token = req.query.token || req.headers['x-admin-token'] || null;
-  const player = req.query.player || null;
+  const player = resolvePlayer(req.query.player || null);
   const isAdmin = admin.verify(token);
   const q = {
     playerId: isAdmin ? (req.query.player || null) : player,
@@ -240,6 +424,34 @@ app.get('/api/me', (req, res) => {
   res.json({ ok: true, account: accounts.getAccount(accountId) });
 });
 
+// ==================================================================
+// 个人资料（PLAN §F：手机号[私密]/棋风/注册日期）
+// ==================================================================
+
+// 本人资料（含手机号私密字段；需有效令牌）
+app.get('/api/account/profile', (req, res) => {
+  const accountId = accounts.verifyToken(req.query.token || '');
+  if (!accountId) return res.status(401).json({ error: '未登录或令牌已失效' });
+  res.json({ ok: true, account: accounts.getOwnProfile(accountId) });
+});
+
+// 更新资料（phone 传空串=清除；style 需在预设枚举内）
+app.post('/api/account/profile', (req, res) => {
+  const body = req.body || {};
+  const accountId = accounts.verifyToken(body.token || '');
+  if (!accountId) return res.status(401).json({ error: '未登录或令牌已失效' });
+  const r = accounts.updateProfile(accountId, { phone: body.phone, style: body.style });
+  if (!r.ok) return res.status(400).json(r);
+  res.json({ ok: true, profile: r.profile });
+});
+
+// 玩家信息卡（公开，悬停小窗数据源；绝不返回手机号）
+app.get('/api/player-card', (req, res) => {
+  const card = protocol.playerCardData(String(req.query.id || ''));
+  if (!card) return res.status(404).json({ error: '玩家不存在' });
+  res.json(card);
+});
+
 // 服务器（同一实例承载 HTTP 与 WS）
 const server = http.createServer(app);
 
@@ -249,12 +461,22 @@ wss.on('connection', (ws, req) => {
   // 解析 guestId（从查询参数）
   const url = new URL(req.url, `http://${req.headers.host}`);
   const guestId = url.searchParams.get('guest') || null;
-  protocol.handleConnection(ws, guestId);
+  // 传入客户端 IP/UA（PLAN §K1：登录记录与管理员审计的数据来源）
+  protocol.handleConnection(ws, guestId, netInfo.clientInfo(req));
 });
 
 server.listen(PORT, () => {
-  console.log(`TDShogi server running at http://localhost:${PORT}`);
+  console.log(`TDShogi server v${VERSION} running at http://localhost:${PORT}`);
   console.log(`WebSocket listening on ws://localhost:${PORT}/ws`);
+  // 清理过期的登录/审计日志（保留期与容量上限见 src/audit.js）
+  try {
+    const pruned = audit.prune();
+    if (pruned.expired || pruned.overflow) {
+      console.log(`[audit] 清理日志：过期 ${pruned.expired} 条，超出容量 ${pruned.overflow} 条，保留 ${pruned.kept} 条`);
+    }
+  } catch (err) {
+    console.error('[audit] 日志清理失败:', err.message);
+  }
   // 恢复上次运行未结束的对局（快照重启恢复）
   const restored = protocol.rooms.restoreSnapshots();
   if (restored > 0) console.log(`[rooms] 已恢复 ${restored} 场未完成对局`);

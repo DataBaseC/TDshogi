@@ -39,6 +39,15 @@
       this.ws.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        // hello 携带服务端 identify() 的权威身份/名字 → 记下 playerId（大厅判断
+        // 「进行中对局」里哪些是自己对局用，服务端 guestId 对账号用户≠playerId），
+        // 并把权威名字写回 localStorage/导航，解决客户端与服务端名字不一致的混乱
+        if (msg.type === 'hello' && msg.data) {
+          if (msg.data.playerId) this.playerId = msg.data.playerId;
+          if (msg.data.name && global.NAV && global.NAV.updateUserName) {
+            try { global.NAV.updateUserName(msg.data.name); } catch (_) {}
+          }
+        }
         this.emit(msg.type, msg.data, msg);
       };
       this.ws.onclose = () => {
