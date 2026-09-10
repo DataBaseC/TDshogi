@@ -19,15 +19,18 @@ tdshogi/
 ├── package-lock.json     # 锁定依赖版本（保证可复现）
 ├── .npmrc                # better-sqlite3 预编译包镜像（服务器免编译工具链）
 ├── server.js             # 服务端入口
-├── src/                  # 服务端逻辑（13 个模块，全部需要）
+├── src/                  # 服务端逻辑（18 个模块，全部需要）
 │   ├── protocol.js  rooms.js  game.js  coords.js   # 对局核心
 │   ├── auth.js  accounts.js  ratings.js  records.js
 │   ├── kif.js  storage.js  tournaments.js
 │   ├── announcements.js  admin.js
+│   ├── net.js  audit.js  privacy.js                # 连接信息 / 审计日志 / 隐私脱敏
+│   ├── ratelimit.js                                # 接口与 WS 速率限制
+│   └── backup.js                                   # SQLite 自动备份（VACUUM INTO）
 ├── public/               # 前端（静态资源，全部需要）
-│   ├── *.html            # 8 个页面
+│   ├── *.html            # 9 个页面
 │   ├── css/              # style.css board.css review.css
-│   ├── js/               # 15 个脚本（含统一棋盘组件 freeboard.js、棋子图集配置 pieces.js）
+│   ├── js/               # 18 个脚本（统一棋盘 freeboard.js/board.js、设置面板 settings.js、棋子映射 piece-kinds.js）
 │   └── pieces/           # 棋子图片 kinki.png ryoko.png
 ├── DEPLOY.md             # 本文件（可选）
 └── README.md             # （可选）
@@ -190,3 +193,65 @@ server {
 2. **宝塔面板**（国内方便）— 上传文件 + Node 项目管理器
 3. **Docker**（任一云主机 / 容器平台）— 可移植
 4. **PaaS 平台**（Railway / Render / Fly.io）— 支持常驻 Node + WebSocket + 持久卷，`DATA_DIR` 指向挂载卷
+
+---
+
+## 四、备份与恢复
+
+全部数据（账号 / 游客会话 / 棋谱 / 等级分 / 赛事 / 公告 / 审计日志）都在**一个 SQLite 文件**
+`<DATA_DIR>/tdshogi.db` 里。**磁盘坏了就全没了**，所以备份不是可选项。
+
+### 4.1 自动备份（已内置，无需配置）
+
+服务启动时自动开启每日备份（`src/backup.js`）：
+
+- **时机**：启动时补一次（当天没备过才备，**反复重启不会重复备份**）+ 之后每 6 小时检查一次
+- **位置**：`<DATA_DIR>/backups/tdshogi-YYYYMMDD-HHMMSS.db`（默认 `data/backups/`）
+- **保留**：最近 14 份；另有 2GB 总量上限兜底（棋谱涨大后不会撑爆磁盘）
+- **每次备份都做 `PRAGMA integrity_check`**，校验不通过的**当场删除**——
+  宁可没有备份，也不要留一个坏文件让人以为安全
+- 失败只写日志，**绝不影响对局服务**
+
+> 为什么用 `VACUUM INTO` 而不是复制 `.db` 文件：数据库是 WAL 模式，数据分散在
+> `.db` / `.db-wal` / `.db-shm` 三个文件里，运行中直接拷贝很可能拿到**不一致的中间状态**
+> （WAL 里的新数据还没并进主库）。`VACUUM INTO` 走一次读事务取**一致性快照**，
+> 服务运行中也能安全备份，且不阻塞正在进行的对局。
+> （实测印证：本机源库文件 80KB，备份出来 100KB——多出的正是 WAL 里未合并的数据。）
+
+### 4.2 手动备份（升级 / 改数据结构前**务必执行**）
+
+```bash
+npm run backup                  # 备份一次
+npm run backup -- --list        # 查看已有备份
+npm run backup -- --keep=30     # 本次备份后保留 30 份
+```
+
+### 4.3 恢复步骤（**照顺序做，尤其第 3 步**）
+
+```bash
+# 1. 停服务（PM2 / systemd / docker stop）
+pm2 stop tdshogi
+
+# 2. 把当前库再留一份（万一是误操作，还能回来）
+mv /var/lib/tdshogi/tdshogi.db /var/lib/tdshogi/tdshogi.db.broken
+
+# 3. ⚠️ 必须同时删掉 -wal / -shm —— 它们属于"上一条"数据库，
+#    留着会让新库读到不一致的旧事务日志
+rm -f /var/lib/tdshogi/tdshogi.db-wal /var/lib/tdshogi/tdshogi.db-shm
+
+# 4. 用备份覆盖（备份是"紧凑单文件"，不需要 -wal/-shm）
+cp /var/lib/tdshogi/backups/tdshogi-20260910-212104.db /var/lib/tdshogi/tdshogi.db
+
+# 5. 启动
+pm2 start tdshogi
+```
+
+**恢复后自检**：首页「最新战报」有数据 → 随便进一局复盘 → 管理员后台用户列表正常。
+若用 `sqlite3` 命令行，可先 `PRAGMA integrity_check;`（应返回 `ok`）。
+
+### 4.4 两个容易漏的点
+
+- **`DATA_DIR` 自定义时备份目录跟着走**（`<DATA_DIR>/backups`）。别只在 `/app/data` 挂了卷、
+  却把 `DATA_DIR` 指向容器内的非持久目录——那样**库和备份都会随容器销毁一起消失**。
+- **备份与库在同一块磁盘上，防不了整盘损坏**。重要数据请定期把 `backups/` 里最新那份
+  同步到异地（对象存储 / 另一台机器）。

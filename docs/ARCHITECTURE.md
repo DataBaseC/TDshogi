@@ -39,6 +39,7 @@ shogiwebapp/
 ├── package.json         # 依赖清单（better-sqlite3 需 npm install 编译/预编译）
 ├── src/                 # 服务端（全部 CommonJS）
 │   ├── storage.js       # SQLite 存储层（kv/records/sessions/gamesnapshots 表 + 旧 JSON 迁移）
+│   ├── backup.js        # SQLite 备份（VACUUM INTO 一致性快照 + 滚动保留 + 完整性校验）
 │   ├── rooms.js         # ★ 对局状态机（房间/匹配/棋钟/观战/聊天/快照/幽灵房间清理）— ~1250 行，核心
 │   ├── protocol.js      # WS 消息路由 + REST 数据聚合 + 连接/身份管理
 │   ├── game.js          # 规则引擎封装（USI 走法、王手过滤、结果判定）

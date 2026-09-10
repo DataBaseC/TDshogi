@@ -554,6 +554,13 @@ server.listen(PORT, () => {
   console.log(`TDShogi server v${VERSION} running at http://localhost:${PORT}`);
   console.log(`WebSocket listening on ws://localhost:${PORT}/ws`);
   // 注：棋谱摘要列回填已在 storage 初始化时完成（PLAN §Q7-2，见 src/storage.js initDb）
+  // 数据库每日自动备份（PLAN §Q7-4）：全部资产在一个 SQLite 里，没有备份等于没保险。
+  // 启动时补一次（今天没备过才备）+ 每 6 小时检查；失败只记日志，绝不影响对局服务。
+  try {
+    require('./src/backup').startAutoBackup();
+  } catch (err) {
+    console.error('[backup] 自动备份启动失败:', err.message);
+  }
   // 清理过期的登录/审计日志（保留期与容量上限见 src/audit.js）
   try {
     const pruned = audit.prune();

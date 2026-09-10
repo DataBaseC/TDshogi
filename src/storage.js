@@ -506,6 +506,7 @@ function listRecordFiles(exts = ['.json']) {
 
 module.exports = {
   DATA_DIR,
+  DB_PATH, // src/backup.js 需要（避免在别处重复推导路径）
   RECORDS_DIR,
   SESSIONS_DIR,
   ensureDataDirs,
