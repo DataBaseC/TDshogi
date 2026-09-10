@@ -957,15 +957,30 @@ class RoomManager {
   // ==================================================================
   // 观战
   // ==================================================================
-  spectate(clientId, roomId, playerId) {
-    const room = this._room(roomId);
-    if (!room) return { ok: false, error: '对局不存在' };
-    // 私人房间不开放观战（PLAN §T2）。
-    // 例外：本连接正是该房选手时放行——下面的「座位回位」路径要允许他们自己进来（含复盘）。
+  /**
+   * 观战。
+   * @param {string} roomIdOrCode 房间 id **或** 6 位房间码（大厅「观战」按钮只拿得到码）
+   * @param {string} [password] 私人房间的观战密码（PLAN §T2）
+   */
+  spectate(clientId, roomIdOrCode, playerId, password) {
+    let room = this._room(roomIdOrCode);
+    if (!room) {
+      // 也接受房间码：统一解析成 roomId，后面的所有键值一律用 room.id
+      const id = this.byCode.get(String(roomIdOrCode || '').trim().toUpperCase());
+      if (id) room = this._room(id);
+    }
+    if (!room) return { ok: false, error: '对局不存在或房间码错误' };
+    const roomId = room.id;
+    // 私人房间观战（PLAN §T2）：**凭密码放行**——房主把「房间码 + 密码」给谁，就等于邀请了谁。
+    // 例外：本连接正是该房选手时直接放行（下面的「座位回位」路径要允许他们自己进来，含终局复盘）。
     const seatInfoNow = this.clientToPlayer.get(clientId);
     const seatedHere = !!(seatInfoNow && seatInfoNow.roomId === roomId);
-    if (room.isPrivate && !seatedHere) {
-      return { ok: false, error: '这是私人房间，不开放观战' };
+    if (room.isPrivate && !seatedHere && !roomPassword.verify(room.passwordHash, password)) {
+      return {
+        ok: false,
+        needPassword: true, // 结构化标志：前端据此提示输入密码
+        error: password ? '房间密码错误' : '这是私人房间，需要密码才能观战',
+      };
     }
     // 座位回位（PLAN §H）：本连接 playerId 命中本房间座位 → 回到座位（对局中/复盘中皆可），不进观战席
     const seatInfo = this.clientToPlayer.get(clientId);

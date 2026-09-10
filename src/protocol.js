@@ -219,11 +219,14 @@ class Protocol {
         break;
       }
       case 'spectate': {
-        const res = r.spectate(clientId, data && data.roomId, player.playerId);
+        // roomId 也可传 6 位房间码；password 用于私人房间观战（PLAN §T2）
+        const res = r.spectate(clientId, data && (data.roomId || data.code), player.playerId, data && data.password);
         if (res.ok) {
           this._send(clientId, { type: 'spectating', data: { roomId: res.roomId, seat: res.seat || null, rebind: !!res.rebind } });
           const state = r.getRoomStateForClient(clientId);
           this._send(clientId, { type: 'state', data: state });
+        } else if (res.needPassword) {
+          this._send(clientId, { type: 'error', data: { message: res.error, needPassword: true } });
         } else {
           this._error(clientId, res.error);
         }

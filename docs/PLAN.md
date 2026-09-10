@@ -668,6 +668,29 @@ grep 复核：8 个纯管理接口全部走 `adminOnly`、7 处条件判断改�
 **验证**：`node --check` 全过、`npm run lint` 0 error、`npm test` **66 项全绿**（58 → 66）。
 **⚠️ 服务端改动需重启进程**；前端刷新即可。
 
+#### §T2 补充：私人房「凭密码观战」（2026-09-10 用户确认）
+
+用户决定：**知道密码的朋友可以观战**（原实现是一律拒绝观战）。
+
+| 位置 | 改动 |
+|---|---|
+| `src/rooms.js` `spectate()` | 签名加 `password`；**也可传 6 位房间码**（大厅「观战」按钮只拿得到码）；密码正确即放行；缺失/错误回 `needPassword: true` |
+| `src/protocol.js` | `spectate` 透传 `password`（`data.roomId \|\| data.code`）；`needPassword` 结构化回传 |
+| `public/lobby.html` | 「加入房间」卡片加 **「👁 观战（用房间码）」** 按钮（复用房间码 + 密码框） |
+| `public/js/lobby.js` | 观战按钮：校验房间码 → 密码存 `sessionStorage` → 发 `spectate {code, password}` |
+| `public/js/play.js` | `spectate` 分支从 `sessionStorage` 取密码随连接提交（**取完即删**）；被拒且 `needPassword` 时提示后**回大厅**（本页无密码框，否则用户干等在空白对局页） |
+
+**为什么密码走 sessionStorage 而不是 URL**：观战授权不跨连接——大厅那次 `spectate` 成功后跳转到
+`play.html` 是**新连接**，必须重新带上密码；而放进 URL 会让密码留在**浏览器历史与服务端访问日志**里。
+取完即删，避免残留被下一次观战误用。
+
+**仍未开放的两项**（保留"私人"语义）：私人房**不进大厅观战列表**、**不参与随机观战**。
+「凭房间码 + 密码观战」是私人房唯一的观战入口。
+
+**赛事房间确认未受任何影响**：`isPrivate` 只在普通建房（`type:'room'`）时写入，
+赛事房（`createTournamentMatch`）没有这个字段 → 三处过滤 `!r.isPrivate` 对它恒为 `true`：
+**照常出现在观战列表、照常可随机观战、照常可直接观战**（比赛本就该公开给人看）。
+
 ## §K 用户详细信息（IP/隐私）与管理员数据管理 — ✅ 已实施，待实测
 
 > 需求：加 IP 等详细信息（**仅管理员可见**）；**管理员可管理用户的任何数据**。

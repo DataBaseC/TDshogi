@@ -719,6 +719,11 @@
   });
   api.on('error', (data) => {
     if (data && data.message) toast(data.message);
+    // 私人房观战需要密码（PLAN §T2）：本页没有密码输入框 → 提示后回大厅的
+    // 「👁 观战」入口补填密码（那里有房间码与密码框）。否则用户只会停在一片空白对局页。
+    if (data && data.needPassword) {
+      setTimeout(() => { location.href = 'lobby.html'; }, 1200);
+    }
   });
   // 同身份在别处登录：本页被顶替，提示并停止操作
   api.on('replaced', () => {
@@ -776,7 +781,14 @@
   const roomParam = params.get('room');
   function enterRoom() {
     if (isSpectate) {
-      api.send({ type: 'spectate', data: { roomId: roomParam } });
+      // 私人房间观战密码（PLAN §T2）：由大厅放进 sessionStorage，随本连接提交。
+      // 取完即删——避免残留在会话里被下一次观战误用。
+      let pw = '';
+      try {
+        pw = window.sessionStorage.getItem('tdshogi_spectate_pw') || '';
+        if (pw) window.sessionStorage.removeItem('tdshogi_spectate_pw');
+      } catch (_) { /* 隐私模式下 sessionStorage 可能不可用，忽略即可 */ }
+      api.send({ type: 'spectate', data: { roomId: roomParam, password: pw } });
     } else if (isTournamentJoin) {
       // 赛事对局：玩家主动进入（建局时可能不在线）
       api.send({ type: 'join_tournament_match', data: { roomId: roomParam } });

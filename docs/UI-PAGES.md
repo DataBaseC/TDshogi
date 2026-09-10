@@ -39,7 +39,8 @@
 
 1. ⚔️ 快速匹配：`quick_match` / `cancel_match`；等待动画 `.match-wait`
 2. 🏠 创建房间：4 种时制下拉 → `create_room`；成功显示房间码 + 复制按钮（`game_start` 时自动跳转 play 页）
-3. 🔑 加入房间：6 位码输入框（支持回车提交）→ `join_room`
+3. 🔑 加入房间：6 位码输入框（支持回车提交）→ `join_room`；下方另有 **「👁 观战（用房间码）」** → `spectate {code, password}`
+   （PLAN §T2：私人房凭「房间码 + 密码」观战；密码经 `sessionStorage` 带到 play 页，**不落 URL**，避免留在浏览器历史与服务端访问日志）
 
 底部列表来自 `GET /api/lobby` 的 `games`，5s 轮询；每张 game-card 点击进入对局——点击者是该局选手（`g.playerIds` 命中 hello 下发的本机 playerId）则跳 `play.html?room=<roomId>`（走 request_state 回位到选手座位），否则才带 `spectate=1` 观战进入；meta 显示房间码/类型/手数/观战人数（§R4：`spectatorCount` 由服务端按 playerId 去重，列表按观众数降序「热门优先」，同人数保持服务端原序）。
 

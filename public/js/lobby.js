@@ -46,6 +46,19 @@
     const password = document.getElementById('joinPassword').value.trim();
     api.send({ type: 'join_room', data: { code, password } });
   });
+
+  // ---- 凭房间码观战（PLAN §T2）----
+  // 私人房：房间码 + 密码 = 房主的邀请；赛事房/普通房：直接进
+  document.getElementById('btnSpectateRoom').addEventListener('click', () => {
+    const code = document.getElementById('joinCode').value.trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return toast('请输入 6 位有效房间码');
+    const password = document.getElementById('joinPassword').value.trim();
+    // 密码必须随「跳到 play 页的那个新连接」一起过去（授权不跨连接）。
+    // 放 sessionStorage 而非 URL：避免密码留在浏览器历史与服务端访问日志里。
+    if (password) window.sessionStorage.setItem('tdshogi_spectate_pw', password);
+    else window.sessionStorage.removeItem('tdshogi_spectate_pw');
+    api.send({ type: 'spectate', data: { code, password } });
+  });
   // 回车直接加入（房间码 / 密码框内均可）
   ['joinCode', 'joinPassword'].forEach((id) => {
     document.getElementById(id).addEventListener('keydown', (e) => {
