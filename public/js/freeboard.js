@@ -348,6 +348,11 @@
     _handleHandPointerDown(e, color) {
       if (!this.interactive || !this.model) return;
       if (!this._dragEnabled()) return; // §S3：触屏默认不拖拽（点选两步打入）
+      // 视角翻转后，监听器闭包捕获的 color 会与当前左右驹台不符
+      // （setViewpoint 只交换配色标记、不重建监听器）→ 以元素上的 dataset.fbColor 为准纠正，
+      // 避免「拖下方驹台却按对面身份打子」。§S6 复盘翻转与 §R1 观战翻转共用此修正。
+      const holder = e.currentTarget;
+      if (holder && holder.dataset && holder.dataset.fbColor) color = holder.dataset.fbColor;
       if (!this._canPickHand(color)) return; // 非手番方持驹禁拖
       const wrap = e.target.closest('.hand-piece');
       if (!wrap) return;
