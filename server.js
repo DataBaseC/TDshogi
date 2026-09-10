@@ -18,6 +18,7 @@ const ratings = require('./src/ratings');
 const tournaments = require('./src/tournaments');
 const netInfo = require('./src/net');
 const audit = require('./src/audit');
+const rateLimit = require('./src/ratelimit');
 const { Protocol } = require('./src/protocol');
 
 const VERSION = require('./package.json').version;
@@ -32,6 +33,11 @@ app.use(express.json());
 // 未配置 TRUST_PROXY 时不信任任何代理头——否则伪造 X-Forwarded-For 即可伪装 IP。
 app.set('trust proxy', netInfo.trustProxySetting());
 app.use(netInfo.attachClientInfo);
+// 速率限制（PLAN §Q7）：/api 全局兜底（宽松，默认 600 次/分钟/IP），
+// 登录与重查询在各自路由上再叠加更严的档位。
+// ⚠️ 限流键为 clientIp（遵守 TRUST_PROXY）——反代部署若未配置 TRUST_PROXY，
+//    所有请求会被视作同一个 IP，务必按 DEPLOY.md 配置。
+app.use('/api', rateLimit.expressMiddleware(rateLimit.api));
 // 管理后台入口门禁（PLAN §J5）：设置 ADMIN_ENTRY_KEY 后，访问 /admin.html 必须带 ?k=<key>，
 // 否则按 404 处理——连"后台存在"这件事都不暴露。未设置该变量时保持开放（避免把自己锁在门外）。
 // 注：这层只是入口隐蔽，真正的权限校验仍在 src/admin.js 的 verify（所有 /api/admin/* 均校验）。
@@ -83,15 +89,18 @@ app.get('/api/lobby', (req, res) => {
   res.json(protocol.lobbyData());
 });
 
-// 对局状态（供历史页/观战初始加载）；权限隔离：管理员看全部，普通用户只看自己的
-app.get('/api/history', (req, res) => {
-  const playerId = resolvePlayer(req.query.player);
+// 全量棋谱（管理后台"全部棋谱"专供）：**仅管理员**。
+// 此前允许 ?player=<任意 id> 查询，而游客 id 在大厅/观战页是公开的
+// → 任何人可枚举他人棋谱（PLAN §Q7）。普通用户的检索一律走 WS `record_search`
+// （连接握手时已由 identify() 绑定身份，服务端强制按该身份过滤）。
+app.get('/api/history', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
   const adminToken = req.query.adminToken || req.headers['x-admin-token'] || null;
-  res.json(protocol.historyData(playerId, adminToken));
+  if (!admin.verify(adminToken)) return res.status(403).json({ error: '无管理员权限' });
+  res.json(protocol.historyData(adminToken));
 });
 
 // 管理员：全部用户数据
-app.get('/api/admin/users', (req, res) => {
+app.get('/api/admin/users', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
   const token = req.query.token || req.headers['x-admin-token'] || null;
   const data = protocol.adminUsersData(token);
   if (!data) return res.status(403).json({ error: '无管理员权限' });
@@ -207,7 +216,7 @@ app.delete('/api/admin/users/:id', adminWrite((req, body) => {
 }));
 
 // 管理员操作审计日志（PLAN §K4「操作审计」tab 数据源）
-app.get('/api/admin/audit', (req, res) => {
+app.get('/api/admin/audit', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
   const token = req.query.token || req.headers['x-admin-token'] || null;
   if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
   res.json({ events: audit.query({ type: 'admin', limit: 200 }) });
@@ -436,14 +445,32 @@ app.get('/api/profile', (req, res) => {
   res.json(protocol.profileData(playerId));
 });
 
-// 棋谱检索：?query=关键词&player=&movesMin=&movesMax=&result=&opening=前N手(逗号分隔)&limit=
-// 权限：管理员可检索全部；普通用户仅检索自己的棋谱
-app.get('/api/records/search', (req, res) => {
+// 棋谱检索（REST 版，保留给管理后台/外部工具）：
+//   ?query=关键词&player=&movesMin=&movesMax=&result=&opening=前N手(逗号分隔)&limit=
+// 权限（PLAN §Q7 越权修复）：
+//   - 管理员（adminToken）→ 可检索全部，或按 player 指定任一人
+//   - 非管理员 → player 参数**必须是可验证的账号令牌**，且只能查该令牌自己的棋谱
+//   - 游客 → 一律 403（游客 id 无法自证身份），前端改走 WS `record_search`
+app.get('/api/records/search', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
   const token = req.query.token || req.headers['x-admin-token'] || null;
-  const player = resolvePlayer(req.query.player || null);
   const isAdmin = admin.verify(token);
+  const raw = req.query.player || null;
+
+  let playerId = null;
+  if (isAdmin) {
+    playerId = raw ? resolvePlayer(raw) : null; // 管理员：可传 id，也可传账号令牌
+  } else {
+    const accountId = raw ? accounts.verifyToken(raw) : null;
+    if (!accountId) {
+      return res.status(403).json({
+        error: '无权检索：请使用页面内的棋谱检索（已按你的登录身份过滤）',
+      });
+    }
+    playerId = accountId; // 只允许查令牌自身的棋谱，忽略请求者可能夹带的其他 id
+  }
+
   const q = {
-    playerId: isAdmin ? (req.query.player || null) : player,
+    playerId,
     movesMin: req.query.movesMin != null ? parseInt(req.query.movesMin, 10) : undefined,
     movesMax: req.query.movesMax != null ? parseInt(req.query.movesMax, 10) : undefined,
     result: req.query.result || undefined,
@@ -451,9 +478,6 @@ app.get('/api/records/search', (req, res) => {
     query: req.query.query || undefined,
     limit: req.query.limit != null ? parseInt(req.query.limit, 10) : 100,
   };
-  if (!isAdmin && !player) {
-    return res.status(403).json({ error: '请先登录或指定玩家' });
-  }
   res.json({ records: require('./src/records').searchRecords(q), isAdmin });
 });
 
@@ -462,7 +486,7 @@ app.get('/api/records/search', (req, res) => {
 // ==================================================================
 
 // 注册：{username, password, guestId?}（guestId 用于游客升级保留数据）
-app.post('/api/register', (req, res) => {
+app.post('/api/register', rateLimit.expressMiddleware(rateLimit.auth), (req, res) => {
   const { username, password, guestId } = req.body || {};
   const r = accounts.register(username, password, guestId || null);
   if (!r.ok) return res.status(400).json({ error: r.error });
@@ -470,7 +494,7 @@ app.post('/api/register', (req, res) => {
 });
 
 // 登录：{username, password}
-app.post('/api/login', (req, res) => {
+app.post('/api/login', rateLimit.expressMiddleware(rateLimit.auth), (req, res) => {
   const { username, password } = req.body || {};
   const r = accounts.login(username, password);
   if (!r.ok) return res.status(401).json({ error: r.error });
@@ -529,6 +553,7 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, () => {
   console.log(`TDShogi server v${VERSION} running at http://localhost:${PORT}`);
   console.log(`WebSocket listening on ws://localhost:${PORT}/ws`);
+  // 注：棋谱摘要列回填已在 storage 初始化时完成（PLAN §Q7-2，见 src/storage.js initDb）
   // 清理过期的登录/审计日志（保留期与容量上限见 src/audit.js）
   try {
     const pruned = audit.prune();

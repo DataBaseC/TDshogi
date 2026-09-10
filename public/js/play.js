@@ -33,6 +33,10 @@
   let originalPositions = null;   // 原谱各手局面缓存
   let pendingDemoPromo = null;    // 感想战升变选择
   let spectatorViewpoint = 'b';   // 观战视角（PLAN §R1）：仅观战者生效，可切 'b' / 'w'
+  // 感想战「自由摆棋」模式（本地草稿，不入谱不同步）。
+  // 注：此前漏写声明 → 赋值时创建了**隐式全局 `window.freeMode`**（非严格模式不报错），
+  // 属跨脚本污染隐患（PLAN §P2 eslint 抓出）。必须在此显式声明。
+  let freeMode = false;
 
   // 时间控制预设（与服务端 TIME_CONTROLS 对应）
   const TIME_CONTROLS = {
@@ -58,24 +62,32 @@
     return isPlayer ? (mySeat === 'w' ? 'w' : 'b') : spectatorViewpoint;
   }
 
-  function render(state) {
-    const players = state.players || {};
+  /**
+   * 玩家栏渲染（名字 / ELO / 悬停信息卡所需的 data-player-id）。
+   *
+   * ⚠️ 必须独立成函数：终局时 `api.on('state')` 走的是 `enterDemo(state); return;`
+   * ——**跳过了 render()**。此前玩家栏只写在 render() 里，于是「重进到一个已结束的房间」
+   * 的人（首个 state 就是 FINISHED）玩家栏从未被渲染：显示占位符，且双方
+   * `data-player-id` 为空导致悬停信息卡失效。
+   * 这正是「退出再进来后看不到双方 id」的根因，重进者才中招、一直在页面上的人不受影响。
+   */
+  function renderPlayerBars(st) {
+    const players = st.players || {};
     const viewpoint = currentViewpoint();
-    // 视角布局：上方=对面，下方=自己；左侧持驹=对面，右侧持驹=自己
+    // 视角布局：上方=对面，下方=自己
     const oppSeat = viewpoint === 'b' ? 'w' : 'b';
     const mySeatX = viewpoint === 'b' ? 'b' : 'w';
 
     // 上方（对面）玩家栏
     const opp = players[oppSeat];
-    const oppDisconnected = opp && opp.connected === false && state.status === 'PLAYING';
+    const oppDisconnected = opp && opp.connected === false && st.status === 'PLAYING';
     $('topName').textContent = (opp && opp.name) || (oppSeat === 'b' ? '先手' : '後手');
     $('topName').setAttribute('data-player-id', (opp && opp.id) || ''); // 悬停信息卡
-    $('topRating').textContent = opp ? `ELO ${opp.rating}` : '';
     $('topRating').textContent = oppDisconnected
       ? '⚠️ 断线 · 60秒内未重连将判你获胜'
       : (opp ? `ELO ${opp.rating}` : '');
     $('topPlayerBar').classList.toggle('disconnected', !!oppDisconnected);
-    $('topPlayerBar').classList.toggle('active', state.turn === oppSeat && !oppDisconnected);
+    $('topPlayerBar').classList.toggle('active', st.turn === oppSeat && !oppDisconnected);
 
     // 下方（自己）玩家栏：名字优先显示自己账号名（localStorage），对手用服务端名
     const me = players[mySeatX];
@@ -83,7 +95,12 @@
     $('bottomName').textContent = myName;
     $('bottomName').setAttribute('data-player-id', (me && me.id) || '');
     $('bottomRating').textContent = me ? `ELO ${me.rating}` : '';
-    $('bottomPlayerBar').classList.toggle('active', state.turn === mySeatX);
+    $('bottomPlayerBar').classList.toggle('active', st.turn === mySeatX);
+  }
+
+  function render(state) {
+    const viewpoint = currentViewpoint();
+    renderPlayerBars(state);
 
     // 房间信息 + 时间控制
     const tcName = TIME_CONTROLS[state.timeControl] ? TIME_CONTROLS[state.timeControl].name : '';
@@ -508,6 +525,9 @@
   }
 
   function enterDemo(st) {
+    // 终局分支会在 api.on('state') 里 enterDemo 后直接 return（不跑 render），
+    // 所以玩家栏必须在这里补渲染一次，否则重进者永远看不到双方名字与 id
+    renderPlayerBars(st);
     if (reviewActive && fb) { applyDemoMode(); updateDemoUI(); return; }
     reviewActive = true;
     freeMode = false;

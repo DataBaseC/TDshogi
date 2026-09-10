@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "lint": "eslint .",
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=22"
@@ -17,5 +19,8 @@
     "express": "^4.19.0",
     "shogi.js": "^5.4.0",
     "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.10.0"
   }
 }

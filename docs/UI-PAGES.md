@@ -40,7 +40,7 @@
 2. 🏠 创建房间：4 种时制下拉 → `create_room`；成功显示房间码 + 复制按钮（`game_start` 时自动跳转 play 页）
 3. 🔑 加入房间：6 位码输入框（支持回车提交）→ `join_room`
 
-底部列表来自 `GET /api/lobby` 的 `games`，5s 轮询；每张 game-card 点击进入对局——点击者是该局选手（`g.playerIds` 命中 hello 下发的本机 playerId）则跳 `play.html?room=<roomId>`（走 request_state 回位到选手座位），否则才带 `spectate=1` 观战进入；meta 显示房间码/类型/手数。
+底部列表来自 `GET /api/lobby` 的 `games`，5s 轮询；每张 game-card 点击进入对局——点击者是该局选手（`g.playerIds` 命中 hello 下发的本机 playerId）则跳 `play.html?room=<roomId>`（走 request_state 回位到选手座位），否则才带 `spectate=1` 观战进入；meta 显示房间码/类型/手数/观战人数（§R4：`spectatorCount` 由服务端按 playerId 去重，列表按观众数降序「热门优先」，同人数保持服务端原序）。
 
 ## 3. play.html（对局页）— `js/play.js`（核心页面）
 
@@ -70,8 +70,9 @@
 
 **职责**：自己的对局检索 + 列表入口。
 
-- `GET /api/records/search?player=<guest.id>&query=&opening=&movesMin=&movesMax=&result=`
-  （服务端把 token 解析为 accountId；普通用户只能搜自己，管理员可全库）
+- **WS `record_search {query,opening,movesMin,movesMax,result}`** → 回 `record_search_result {records}`
+  （PLAN §Q7：身份由 WS 握手时绑定，服务端**强制按该连接身份过滤**；客户端不传也不可指定 playerId。
+  旧的 REST `/api/records/search?player=` 与 `/api/history?player=` 现仅管理员可用）
 - 条件含义：query=选手名关键词 / opening=前N手 USI（逗号分隔）/ moves=区间如 `30-80` / result=b|w|-
 - 列表项点击 → `review.html?id=<recordId>`；回车即检索
 

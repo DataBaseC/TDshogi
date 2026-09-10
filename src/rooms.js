@@ -14,7 +14,7 @@
 'use strict';
 
 const { newGame, STARTING_SFEN } = require('./game');
-const { saveRecord, getRecord } = require('./records');
+const { saveRecord } = require('./records');
 const ratings = require('./ratings');
 const { genId } = require('./auth');
 const tournaments = require('./tournaments');
@@ -1320,9 +1320,28 @@ class RoomManager {
           w: r.players.w ? r.players.w.playerId : null,
         },
         moveCount: r.game.moves.length,
+        // 观战人数（PLAN §R4：大厅展示 + 热门排序）
+        spectatorCount: this.spectatorCount(r),
         type: r.status === 'FINISHED' ? 'reviewing' : r.type,
         createdAt: r.createdAt,
       }));
+  }
+
+  /**
+   * 观战人数（PLAN §R4）。**按 playerId 去重**——同一身份开多个窗口只算一个观众，
+   * 口径与对局页的观众列表（_spectatorList）保持一致。
+   * 只做计数、不查资料，供大厅 5 秒轮询的列表接口使用。
+   */
+  spectatorCount(room) {
+    const specs = this.spectatorsByRoom.get(room.id);
+    if (!specs || !specs.size) return 0;
+    if (!this.playerRegistry) return specs.size;
+    const seen = new Set();
+    for (const cid of specs) {
+      const info = this.playerRegistry(cid);
+      if (info && info.playerId) seen.add(info.playerId);
+    }
+    return seen.size;
   }
 
   getRoomStateForClient(clientId) {

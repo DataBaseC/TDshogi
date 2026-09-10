@@ -50,7 +50,8 @@ shogiwebapp/
 │   ├── announcements.js       # 系统公告
 │   ├── net.js                 # 客户端 IP/UA 解析（反代信任）
 │   ├── audit.js               # 登录与管理员操作事件日志
-│   └── privacy.js             # 隐私字段出口白名单（stripPrivate）
+│   ├── privacy.js             # 隐私字段出口白名单（stripPrivate）
+│   └── ratelimit.js           # 内存限流：登录防爆破 / REST 防刷 / WS 防洪泛（§Q7）
 ├── public/                    # 前端（静态，无构建步骤）
 │   ├── index/lobby/play/history/gallery/review/tournaments/profile/admin .html
 │   ├── css/                   # style.css（主题+响应式）/ board.css / review.css
@@ -72,6 +73,7 @@ npm install
 npm start          # 默认 http://localhost:3000
 npm run dev        # --watch 自动重启
 npm test           # 单元测试（纯函数，无需起服）
+npm run lint       # eslint 静态检查
 ```
 
 环境要求：**Node.js 22+**（better-sqlite3 v13 硬性要求）。无需 C++ 编译工具链——
@@ -172,7 +174,9 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 单一 SQLite 库 `data/tdshogi.db`（WAL 模式，`storage.js` 提供 kv 兼容层）：
 
 - `kv`：评级 / 账号 / 赛事 / 公告 / 会话（`sessions/<id>.json`）/ 管理配置 / 事件日志（`events/<ts>-<rand>`）
-- `records`：每局棋谱（局面、走法、耗时、玩家、结果、书签/评论/变着、可见性与展示 meta）
+- `records`：每局棋谱。`data` 列存完整 JSON（局面、走法、耗时、书签/评论/变着、可见性与展示 meta），
+  另有**标量摘要列**（playerB/playerW/nameB/nameW/result/moveCount/opening/pub/…）+ 索引——
+  列表与检索只读摘要列、不解析整谱（老库首次启动自动补列与回填）
 - `gamesnapshots`：进行中对局快照，重启自动恢复未完成对局
 
 首次启动会把旧版 JSON 迁移入库并改名 `.bak`。
@@ -180,7 +184,10 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 ## 开发与测试
 
 - **单元测试**：`npm test`（`tests/*.test.js`，Node 内置 `node --test`，纯函数不需起服）。
-  当前覆盖棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换、坐标换算、初始盘面
+  当前 **34 项**：棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换与视角切换、坐标换算、初始盘面，
+  以及 `game.js` 规则引擎 14 项（开局合法着法 30、王手放置禁止、升变区、吃子进驹台…）
+- **静态检查**：`npm run lint`（eslint；`no-undef` 正是"路由层漏 require 导致接口 500"那类事故的克星）
+- **CI**：`.github/workflows/ci.yml`（语法检查 + lint + 单测 + e2e 冒烟）
 - **e2e 回归**：`scripts/e2e-*.js`（10 套件），需先起服再跑；由维护者手工执行
 - **文档**：`docs/PLAN.md`（路线图）/ `docs/ARCHITECTURE.md`（架构）/ `docs/UI-PAGES.md`（页面地图）
 
@@ -189,7 +196,8 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 限制：仅平手（无駒落ち让子）、无 AI 对战、赛事仅单败淘汰、游客 id 无密码保护。
 
 方向：接入 USI 引擎（人机对战）、锦标赛（多轮/循环）、駒落ち、i18n、
-内容运营（棋谱广场栏目化）、赛事前台与自动化、PWA、接口速率限制与越权治理。
+内容运营（棋谱广场栏目化）、赛事前台与自动化、PWA。
+（棋谱越权治理与接口速率限制已于 2026-09 完成，见 `docs/PLAN.md` §Q7）
 
 ## License
 

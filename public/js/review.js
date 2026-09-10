@@ -210,10 +210,15 @@
     document.getElementById('rvCursor').textContent = `${cursor} / ${review.moves.length}`;
 
     // 玩家栏：复盘默认先手视角，上方=后手，下方=先手
+    // §F3 悬停信息卡：**必须设置 data-player-id**（reviewData 已返回 playerIds）。
+    // 此前只设了 textContent，复盘页的悬停卡从未生效——与对局页「重进看不到 id」是两个独立缺陷。
     const names = review.names || ['先手', '後手'];
+    const pids = review.playerIds || {};
     document.getElementById('topName').textContent = names[1] || '後手';
+    document.getElementById('topName').setAttribute('data-player-id', pids.w || '');
     document.getElementById('topRating').textContent = '';
     document.getElementById('bottomName').textContent = names[0] || '先手';
+    document.getElementById('bottomName').setAttribute('data-player-id', pids.b || '');
     document.getElementById('bottomRating').textContent = '';
     document.getElementById('topClock').textContent = '';
     document.getElementById('bottomClock').textContent = '';

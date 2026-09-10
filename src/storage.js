@@ -44,12 +44,36 @@ function getDb() {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    -- 「摘要列」方案（PLAN §Q7-2 性能）：
+    -- data 里存的是整谱（含 100+ 手 moves），列表/检索若都走 data 就必须逐条 JSON.parse，
+    -- 单进程 Node 下会**同步阻塞**主线程（连带卡住对局广播）。故把列表/检索要用的字段
+    -- 冗余成标量列 + 索引，查询只读这些列、完全不碰 data。
+    -- 老库缺列由 ensureRecordColumns() 用 ALTER TABLE 补齐，再由 backfillRecordSummaries() 回填。
     CREATE TABLE IF NOT EXISTS records (
-      id        TEXT PRIMARY KEY,
-      data      TEXT NOT NULL,
-      createdAt INTEGER
+      id           TEXT PRIMARY KEY,
+      data         TEXT NOT NULL,
+      createdAt    INTEGER,
+      playerB      TEXT,    -- playerIds.b（先手 id）
+      playerW      TEXT,    -- playerIds.w（后手 id）
+      nameB        TEXT,
+      nameW        TEXT,
+      result       TEXT,    -- 'b' | 'w' | '-' | null
+      resultDetail TEXT,
+      moveCount    INTEGER,
+      opening      TEXT,    -- 前 N 手 USI 逗号串（定式检索）
+      pub          INTEGER, -- visibility='public' ? 1 : 0
+      visibility   TEXT,
+      source       TEXT,
+      timeControl  TEXT,
+      rated        INTEGER,
+      winnerId     TEXT,
+      durationSec  INTEGER,
+      meta         TEXT     -- 广场展示信息（JSON 串）
     );
     CREATE INDEX IF NOT EXISTS idx_records_createdAt ON records(createdAt);
+    -- ⚠️ 摘要列索引**不能**在这里建：老库中 CREATE TABLE IF NOT EXISTS 不会补列，
+    -- 直接 CREATE INDEX ON records(playerB) 会报 "no such column"。
+    -- 这三条索引统一由紧随其后的 ensureRecordColumns() 负责（先 ALTER 补列、再建索引）。
     CREATE TABLE IF NOT EXISTS sessions (
       id   TEXT PRIMARY KEY,
       data TEXT NOT NULL
@@ -61,7 +85,39 @@ function getDb() {
     );
   `);
   migrateLegacyJson();
+  // 老库补列（幂等）——必须早于任何写/读摘要列的语句
+  ensureRecordColumns();
+  // 存量棋谱摘要列回填（幂等，仅首次扫描）。放这里而非 server 启动处：
+  // initDb 由 getDb() 惰性触发且只执行一次，能保证**任何入口**（含脚本/测试）都已回填。
+  try {
+    const filled = backfillRecordSummaries();
+    if (filled) console.log(`[storage] 已为 ${filled} 条存量棋谱回填摘要列（列表/检索不再解析整谱）`);
+  } catch (err) {
+    console.error('[storage] 棋谱摘要列回填失败:', err.message);
+  }
   return db;
+}
+
+/** 摘要列清单：ALTER TABLE 逐列补齐（SQLite 无 ADD COLUMN IF NOT EXISTS，故查 PRAGMA） */
+const RECORD_SUMMARY_COLUMNS = [
+  ['playerB', 'TEXT'], ['playerW', 'TEXT'], ['nameB', 'TEXT'], ['nameW', 'TEXT'],
+  ['result', 'TEXT'], ['resultDetail', 'TEXT'], ['moveCount', 'INTEGER'], ['opening', 'TEXT'],
+  ['pub', 'INTEGER'], ['visibility', 'TEXT'], ['source', 'TEXT'], ['timeControl', 'TEXT'],
+  ['rated', 'INTEGER'], ['winnerId', 'TEXT'], ['durationSec', 'INTEGER'], ['meta', 'TEXT'],
+];
+
+/** 给已存在的老库补摘要列与索引（幂等，可重复调用） */
+function ensureRecordColumns() {
+  const d = getDb();
+  const cols = new Set(d.prepare('PRAGMA table_info(records)').all().map((c) => c.name));
+  for (const [name, type] of RECORD_SUMMARY_COLUMNS) {
+    if (!cols.has(name)) d.exec(`ALTER TABLE records ADD COLUMN ${name} ${type}`);
+  }
+  d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_records_playerB ON records(playerB);
+    CREATE INDEX IF NOT EXISTS idx_records_playerW ON records(playerW);
+    CREATE INDEX IF NOT EXISTS idx_records_pub ON records(pub, createdAt);
+  `);
 }
 
 // ---------------- 旧 JSON 数据一次性迁移 ----------------
@@ -172,16 +228,161 @@ function getRecordById(id) {
   return row ? JSON.parse(row.data) : null;
 }
 
-function putRecord(rec) {
-  getDb().prepare('INSERT OR REPLACE INTO records (id, data, createdAt) VALUES (?, ?, ?)')
-    .run(rec.id, JSON.stringify(rec), rec.createdAt || Date.now());
+/** 定式指纹取多少手（检索用前 N 手匹配；超出部分回退 JSON 比对，见 searchRecords） */
+const OPENING_N = 10;
+
+/** 取整谱前 N 手 USI 逗号串（无棋谱返回 null） */
+function openingOf(moves) {
+  if (!Array.isArray(moves) || !moves.length) return null;
+  return moves.slice(0, OPENING_N).join(',');
 }
 
+/** 从棋谱对象抽出摘要列的值（写入与回填共用，保证两条路径口径一致） */
+function summaryValues(rec) {
+  const p = rec.playerIds || {};
+  const names = rec.names || [];
+  return {
+    playerB: p.b || null,
+    playerW: p.w || null,
+    nameB: names[0] || null,
+    nameW: names[1] || null,
+    result: rec.result || null,
+    resultDetail: rec.resultDetail || null,
+    moveCount: Array.isArray(rec.moves) ? rec.moves.length : 0,
+    opening: openingOf(rec.moves),
+    pub: rec.visibility === 'public' ? 1 : 0,
+    visibility: rec.visibility === 'public' ? 'public' : 'private',
+    source: rec.source || null,
+    timeControl: rec.timeControl || null,
+    rated: rec.rated === false ? 0 : 1,
+    winnerId: rec.winnerId || null,
+    durationSec: rec.durationSec || null,
+    meta: rec.meta ? JSON.stringify(rec.meta) : null,
+  };
+}
+
+/** 摘要行 → 对外的轻量棋谱对象（字段与旧完整记录兼容，仅不含 moves） */
+function rowToSummary(r) {
+  let meta = null;
+  if (r.meta) { try { meta = JSON.parse(r.meta); } catch (_) { meta = null; } }
+  return {
+    id: r.id,
+    names: [r.nameB || '先手', r.nameW || '後手'],
+    playerIds: { b: r.playerB || null, w: r.playerW || null },
+    result: r.result,
+    resultDetail: r.resultDetail,
+    moveCount: r.moveCount || 0,
+    // 展示仍用前 4 手（opening 列存前 OPENING_N 手，供检索前缀匹配）
+    opening: r.opening ? r.opening.split(',').slice(0, 4).join(',') : '',
+    createdAt: r.createdAt,
+    rated: !!r.rated,
+    visibility: r.visibility || 'private',
+    isPublic: r.visibility === 'public',
+    source: r.source,
+    timeControl: r.timeControl,
+    winnerId: r.winnerId,
+    durationSec: r.durationSec,
+    meta,
+  };
+}
+
+const SUMMARY_SELECT = `SELECT id, playerB, playerW, nameB, nameW, result, resultDetail,
+  moveCount, opening, createdAt, rated, visibility, source, timeControl, winnerId,
+  durationSec, meta FROM records`;
+
+function putRecord(rec) {
+  const v = summaryValues(rec);
+  getDb().prepare(`INSERT OR REPLACE INTO records
+    (id, data, createdAt, playerB, playerW, nameB, nameW, result, resultDetail,
+     moveCount, opening, pub, visibility, source, timeControl, rated, winnerId, durationSec, meta)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      rec.id, JSON.stringify(rec), rec.createdAt || Date.now(),
+      v.playerB, v.playerW, v.nameB, v.nameW, v.result, v.resultDetail,
+      v.moveCount, v.opening, v.pub, v.visibility, v.source, v.timeControl,
+      v.rated, v.winnerId, v.durationSec, v.meta
+    );
+}
+
+/**
+ * 完整棋谱列表（含 moves）——**仅在确实需要整谱时使用**。
+ * 列表 / 检索类场景请改用 listSummaries()，否则会逐条解析整谱（PLAN §Q7-2）。
+ */
 function listRecords(limit = 500) {
   const rows = getDb()
     .prepare('SELECT data FROM records ORDER BY createdAt DESC, id DESC LIMIT ?')
     .all(limit);
   return rows.map((r) => JSON.parse(r.data));
+}
+
+/**
+ * 摘要列表（PLAN §Q7-2）：只读标量列，完全不触碰 data 里的整谱。
+ * @param {{playerId?:string|null, pub?:boolean|null, limit?:number, offset?:number}} opts
+ */
+function listSummaries({ playerId = null, pub = null, limit = 100, offset = 0 } = {}) {
+  const conds = [];
+  const params = [];
+  if (playerId) {
+    conds.push('(playerB = ? OR playerW = ?)');
+    params.push(playerId, playerId);
+  }
+  if (pub !== null && pub !== undefined) {
+    conds.push('pub = ?');
+    params.push(pub ? 1 : 0);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const rows = getDb()
+    .prepare(`${SUMMARY_SELECT} ${where} ORDER BY createdAt DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...params, Math.max(1, limit), Math.max(0, offset));
+  return rows.map(rowToSummary);
+}
+
+/** 摘要总数（分页用；比拉全量再取 length 便宜得多） */
+function countSummaries({ playerId = null, pub = null } = {}) {
+  const conds = [];
+  const params = [];
+  if (playerId) {
+    conds.push('(playerB = ? OR playerW = ?)');
+    params.push(playerId, playerId);
+  }
+  if (pub !== null && pub !== undefined) {
+    conds.push('pub = ?');
+    params.push(pub ? 1 : 0);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM records ${where}`).get(...params).n;
+}
+
+/**
+ * 为存量棋谱回填摘要列（幂等）：以 moveCount IS NULL 判定"尚未回填"。
+ * 老库首次启动会扫描全部棋谱一次（一次性成本），之后不再执行。
+ * @returns {number} 本次回填条数
+ */
+function backfillRecordSummaries() {
+  const d = getDb();
+  const rows = d.prepare('SELECT id, data FROM records WHERE moveCount IS NULL').all();
+  if (!rows.length) return 0;
+  const upd = d.prepare(`UPDATE records SET
+    playerB=@playerB, playerW=@playerW, nameB=@nameB, nameW=@nameW, result=@result,
+    resultDetail=@resultDetail, moveCount=@moveCount, opening=@opening, pub=@pub,
+    visibility=@visibility, source=@source, timeControl=@timeControl, rated=@rated,
+    winnerId=@winnerId, durationSec=@durationSec, meta=@meta WHERE id=@id`);
+  const tx = d.transaction((list) => {
+    for (const r of list) {
+      let rec;
+      try { rec = JSON.parse(r.data); } catch (_) { rec = null; }
+      // 数据损坏也写入占位值——否则每次启动都会重复扫描同一条
+      upd.run(rec
+        ? { ...summaryValues(rec), id: r.id }
+        : {
+          playerB: null, playerW: null, nameB: null, nameW: null, result: null, resultDetail: null,
+          moveCount: 0, opening: null, pub: 0, visibility: 'private', source: null, timeControl: null,
+          rated: 1, winnerId: null, durationSec: null, meta: null, id: r.id,
+        });
+    }
+  });
+  tx(rows);
+  return rows.length;
 }
 
 /**
@@ -198,43 +399,54 @@ function searchRecords(q = {}) {
   const conds = [];
   const params = [];
   if (q.playerId) {
-    conds.push("(json_extract(data, '$.playerIds.b') = ? OR json_extract(data, '$.playerIds.w') = ?)");
+    conds.push('(playerB = ? OR playerW = ?)');
     params.push(q.playerId, q.playerId);
   }
+  if (q.pub !== null && q.pub !== undefined) {
+    conds.push('pub = ?');
+    params.push(q.pub ? 1 : 0);
+  }
   if (Number.isFinite(q.movesMin)) {
-    conds.push('json_array_length(json_extract(data, \'$.moves\')) >= ?');
+    conds.push('moveCount >= ?');
     params.push(q.movesMin);
   }
   if (Number.isFinite(q.movesMax)) {
-    conds.push('json_array_length(json_extract(data, \'$.moves\')) <= ?');
+    conds.push('moveCount <= ?');
     params.push(q.movesMax);
   }
   if (q.result) {
-    conds.push("json_extract(data, '$.result') = ?");
+    conds.push('result = ?');
     params.push(q.result);
   }
   if (q.opening) {
     // 开局特征：前 N 手完全匹配（USI 序列）
     const seq = String(q.opening).split(',').map((s) => s.trim()).filter(Boolean);
     if (seq.length) {
-      // 用 SQL 判断 moves 数组前 N 个元素
-      const n = seq.length;
-      const checks = seq.map((_, i) => `json_extract(data, '$.moves[' || ${i} || ']') = ?`).join(' AND ');
-      conds.push(`json_array_length(json_extract(data, '$.moves')) >= ? AND (${checks})`);
-      params.push(n, ...seq);
+      const pat = seq.join(',');
+      if (seq.length <= OPENING_N) {
+        // opening 列已存前 OPENING_N 手 → 前缀匹配即可（快路径，不解析 JSON）
+        conds.push('(opening = ? OR opening LIKE ?)');
+        params.push(pat, `${pat},%`);
+      } else {
+        // 超出入库长度：回退逐手比对（慢路径，极少触发）
+        const checks = seq.map((_, i) => `json_extract(data, '$.moves[' || ${i} || ']') = ?`).join(' AND ');
+        conds.push(`json_array_length(json_extract(data, '$.moves')) >= ? AND (${checks})`);
+        params.push(seq.length, ...seq);
+      }
     }
   }
   if (q.query) {
+    // 关键词：优先匹配双方名（标量列）；走法片段搜索仍需扫 data，故放在最后
     const kw = `%${String(q.query)}%`;
-    conds.push("(json_extract(data, '$.names[0]') LIKE ? OR json_extract(data, '$.names[1]') LIKE ? OR data LIKE ?)");
+    conds.push('(nameB LIKE ? OR nameW LIKE ? OR data LIKE ?)');
     params.push(kw, kw, kw);
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const limit = Math.min(q.limit || 100, 500);
   const rows = getDb()
-    .prepare(`SELECT data FROM records ${where} ORDER BY createdAt DESC, id DESC LIMIT ${limit}`)
+    .prepare(`${SUMMARY_SELECT} ${where} ORDER BY createdAt DESC, id DESC LIMIT ${limit}`)
     .all(...params);
-  return rows.map((r) => JSON.parse(r.data));
+  return rows.map(rowToSummary);
 }
 
 function sessionExists(id) {
@@ -307,6 +519,9 @@ module.exports = {
   getRecordById,
   putRecord,
   listRecords,
+  listSummaries,
+  countSummaries,
+  backfillRecordSummaries,
   searchRecords,
   countRecords,
   sessionExists,

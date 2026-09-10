@@ -1,0 +1,62 @@
+# TDShogi 无构建步骤，CI 只做「语法/静态检查 + 单元测试 + e2e 冒烟」。
+# e2e 套件需要真实起服（默认 3100），故单独一个 job，失败不阻塞前两项的结论。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-and-unit:
+    name: 静态检查 + 单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # .npmrc 设了 ignore-scripts=true：better-sqlite3 走预编译产物，无需 C++ 工具链
+      - name: 安装依赖
+        run: npm ci
+      - name: 语法检查（全部服务端 + 前端脚本）
+        run: |
+          fail=0
+          for f in server.js src/*.js public/js/*.js scripts/*.js tests/*.js; do
+            node --check "$f" || { echo "语法错误: $f"; fail=1; }
+          done
+          exit $fail
+      - name: eslint（no-undef 等）
+        run: npm run lint
+      - name: 单元测试
+        run: npm test
+
+  e2e:
+    name: e2e 冒烟（起服 3100）
+    runs-on: ubuntu-latest
+    needs: static-and-unit
+    # e2e 脚本对环境较敏感（端口/时序），失败仅作提示，不卡主流程
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: 启动服务
+        run: |
+          PORT=3100 ADMIN_PASSWORD=admin123 node server.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3100/api/home > /dev/null && break
+            sleep 1
+          done
+      - name: 运行 e2e 套件
+        run: |
+          for f in scripts/e2e-*.js; do
+            echo "=== $f ==="
+            node "$f" || echo "!! $f 失败（不阻塞）"
+          done
+      - name: 失败时输出服务端日志
+        if: failure()
+        run: tail -n 100 server.log

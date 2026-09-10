@@ -24,10 +24,11 @@ const admin = require('./admin');
 const ratings = require('./ratings');
 const audit = require('./audit');
 const privacy = require('./privacy');
+const ratelimit = require('./ratelimit');
 const { RoomManager } = require('./rooms');
 const tournaments = require('./tournaments');
-const { listRecords, listPlayerRecords, getRecord, exportRecord, recentSummaries, isPublic } = require('./records');
-const { countRecords } = require('./storage');
+const { listPlayerRecords, getRecord, exportRecord, recentSummaries, searchRecords } = require('./records');
+const { countRecords, listSummaries } = require('./storage');
 const { listAnnouncements } = require('./announcements');
 
 class Protocol {
@@ -85,6 +86,7 @@ class Protocol {
       playerId: session.id,
       name: session.name,
       guestId: session.id,
+      ip: meta.ip || null, // 供 WS 侧按 IP 限流（PLAN §Q7，如 admin_login 防爆破）
     });
     // 同一身份可多窗口并存（同浏览器多标签），全部登记，不互相顶替
     if (!this.playerToClients.has(session.id)) this.playerToClients.set(session.id, new Set());
@@ -130,6 +132,15 @@ class Protocol {
   }
 
   _onMessage(clientId, raw) {
+    // 连接级消息速率限制（PLAN §Q7）：正常对局远低于阈值，只拦「脚本刷消息」。
+    // 超限时静默丢弃 + 节流提示（提示本身也限流，否则错误响应会形成新的洪泛）。
+    const rl = ratelimit.wsMsg.hit(clientId);
+    if (!rl.allowed) {
+      if (ratelimit.wsNotice.hit(clientId).allowed) {
+        this._error(clientId, '消息过于频繁，已限流');
+      }
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -268,8 +279,18 @@ class Protocol {
         break;
       }
       case 'admin_login': {
+        // 防爆破（PLAN §Q7）：按 **IP** 计（同一 IP 的多个连接共享额度，比按连接更有效）；
+        // 登录成功即清零，不影响管理员正常进出。
+        const info = this.playerRegistry.get(clientId);
+        const key = (info && info.ip) || clientId;
+        const rlA = ratelimit.adminLogin.hit(key);
+        if (!rlA.allowed) {
+          this._error(clientId, `尝试过于频繁，请 ${Math.ceil(rlA.retryAfterMs / 1000)} 秒后再试`);
+          break;
+        }
         const res = admin.login(data && data.password);
         if (res.ok) {
+          ratelimit.adminLogin.reset(key);
           // 记录该连接的管理员 token（存客户端）
           this._send(clientId, { type: 'admin_logged_in', data: { token: res.token } });
         } else {
@@ -330,6 +351,26 @@ class Protocol {
         else this._send(clientId, { type: 'demo_init', data: res.demo });
         break;
       }
+      // 棋谱检索（PLAN §Q7）：**身份只认握手时 identify() 的结果**，客户端传的 playerId 一律忽略。
+      // 原因：游客 id 在大厅/观战页是公开的，若按客户端传值查即可枚举他人棋谱（旧 REST 接口的越权点）。
+      case 'record_search': {
+        const d = data || {};
+        const asInt = (v) => {
+          const n = parseInt(v, 10);
+          return Number.isFinite(n) ? n : undefined;
+        };
+        const q = {
+          playerId: player.playerId,
+          query: typeof d.query === 'string' && d.query.trim() ? d.query.trim() : undefined,
+          opening: typeof d.opening === 'string' && d.opening.trim() ? d.opening.trim() : undefined,
+          result: (d.result === 'b' || d.result === 'w' || d.result === '-') ? d.result : undefined,
+          movesMin: asInt(d.movesMin),
+          movesMax: asInt(d.movesMax),
+          limit: Math.min(Math.max(asInt(d.limit) || 100, 1), 200),
+        };
+        this._send(clientId, { type: 'record_search_result', data: { records: searchRecords(q) } });
+        break;
+      }
       default:
         this._error(clientId, `未知消息类型: ${type}`);
     }
@@ -364,23 +405,21 @@ class Protocol {
   }
 
   /**
-   * 历史对局数据（权限隔离）：
-   *  - 管理员（携带有效 token）→ 返回全部棋谱
-   *  - 普通用户 → 只能返回自己的棋谱；未提供 playerId 且非管理员返回空
-   * @param {string|null} playerId 请求方玩家 id
+   * 全量棋谱（管理后台「全部棋谱」数据源）。
+   *
+   * ⚠️ PLAN §Q7：此出口**仅限管理员**。此前支持按任意 playerId 查询，
+   * 而游客 id 在大厅列表 / 观战页 / 悬停卡里都是公开的 →
+   * 任何人拿到他人的 id 就能枚举其全部棋谱。
+   * 普通用户的检索已迁到 WS `record_search`（身份由连接握手时绑定并强制过滤），
+   * 因此这里**不再提供非管理员分支**。
    * @param {string|null} adminToken 管理员 token
+   * @returns {{records:Array, isAdmin:true}|null} 非管理员返回 null
    */
-  historyData(playerId, adminToken) {
-    if (admin.verify(adminToken)) {
-      // 管理员：返回全部棋谱（含公共 kif-import 库与所有用户对局）
-      return { records: listRecords(1000), isAdmin: true };
-    }
-    // 普通用户：自己的棋谱 + 广场公开棋谱（§L：公开谱在历史页同样可见）
-    const own = playerId ? listPlayerRecords(playerId, 50) : [];
-    const seen = new Set(own.map((r) => r.id));
-    const pub = listRecords(300).filter((r) => isPublic(r) && !seen.has(r.id));
-    const merged = [...own, ...pub].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 100);
-    return privacy.stripPrivate({ records: merged, isAdmin: false });
+  historyData(adminToken) {
+    if (!admin.verify(adminToken)) return null;
+    // 含公共 kif-import 库与所有用户对局。
+    // PLAN §Q7-2：列表只需摘要 —— 旧实现 listRecords(1000) 会解析 1000 份整谱，阻塞主线程。
+    return { records: listSummaries({ limit: 1000 }), isAdmin: true };
   }
 
   /**

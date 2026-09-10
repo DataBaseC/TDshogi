@@ -11,7 +11,12 @@
 'use strict';
 
 const { Shogi, Color } = require('shogi.js');
-const { putRecord, getRecordById, listRecords: dbListRecords, searchRecords: dbSearch } = require('./storage');
+const {
+  putRecord, getRecordById,
+  listRecords: dbListRecords,
+  listSummaries: dbListSummaries,
+  searchRecords: dbSearch,
+} = require('./storage');
 const { parseUsiMove, usiSquareToXY } = require('./coords');
 const { KIND_NAME } = require('./game');
 
@@ -148,27 +153,24 @@ function getRecord(id) {
   }
 }
 
+/**
+ * 某玩家的对局列表（**摘要**，不含整谱 moves）。
+ * PLAN §Q7-2：改走摘要列 + playerB/playerW 索引。旧实现是 `listRecords(500)` 全量拉取后
+ * 内存 filter —— 每次都要解析 500 份整谱，单进程 Node 下会同步阻塞主线程（连带卡住对局广播）。
+ */
 function listPlayerRecords(playerId, limit = 50) {
-  return listRecords(500)
-    .filter((r) => r.playerIds && (r.playerIds.b === playerId || r.playerIds.w === playerId))
-    .slice(0, limit);
+  try {
+    return dbListSummaries({ playerId, limit });
+  } catch (_) {
+    return [];
+  }
 }
 
 /**
- * 最新对局轻量摘要（首页"最新战报"轮询用）：
- * 不携带 moves 全量数组，避免每次轮询都传输整谱。
+ * 最新对局轻量摘要（首页"最新战报"轮询用）：直接读摘要列，不解析整谱。
  */
 function recentSummaries(limit = 5) {
-  return listRecords(limit).map((r) => ({
-    id: r.id,
-    names: r.names || [],
-    result: r.result,
-    resultDetail: r.resultDetail,
-    moveCount: Array.isArray(r.moves) ? r.moves.length : 0,
-    createdAt: r.createdAt,
-    rated: !!r.rated,
-    playerIds: r.playerIds || {}, // 悬停信息卡定位用（PLAN §F3）
-  }));
+  return dbListSummaries({ limit });
 }
 
 /**
@@ -177,15 +179,8 @@ function recentSummaries(limit = 5) {
  * @returns {Array} 匹配的棋谱（附带 opening 开局特征）
  */
 function searchRecords(q = {}) {
-  const rows = dbSearch(q);
-  return rows.map((r) => ({ ...r, opening: openingName(r) }));
-}
-
-/** 开局特征：前 4 手 USI 序列（作定式指纹展示） */
-function openingName(rec) {
-  const moves = rec.moves || [];
-  if (!moves.length) return '';
-  return moves.slice(0, Math.min(4, moves.length)).join(',');
+  // storage 侧已返回摘要（含 moveCount / opening），无需再解析整谱（PLAN §Q7-2）
+  return dbSearch(q);
 }
 
 // ======================================================================
@@ -405,7 +400,8 @@ function isPublic(rec) {
 function listPublic({ tag = '', query = '', page = 1, limit = 20 } = {}) {
   const p = Math.max(1, parseInt(page, 10) || 1);
   const n = Math.min(60, Math.max(1, parseInt(limit, 10) || 20));
-  let rows = listRecords(1000).filter(isPublic);
+  // PLAN §Q7-2：改读摘要列（不解析整谱）。公开谱是管理员精选，数量有限。
+  let rows = dbListSummaries({ pub: true, limit: 1000 }).filter(isPublic);
   if (tag) {
     const t = String(tag).trim().toLowerCase();
     rows = rows.filter((r) => ((r.meta && r.meta.tags) || []).some((x) => String(x).toLowerCase() === t));
@@ -443,7 +439,8 @@ function publicSummary(r) {
     names: r.names || ['先手', '後手'],
     result: r.result,
     resultDetail: r.resultDetail,
-    moveCount: Array.isArray(r.moves) ? r.moves.length : 0,
+    // 摘要对象自带 moveCount；兼容传入完整记录（含 moves）的旧调用
+    moveCount: typeof r.moveCount === 'number' ? r.moveCount : (Array.isArray(r.moves) ? r.moves.length : 0),
     createdAt: r.createdAt,
     timeControl: r.timeControl || null,
     playerIds: r.playerIds || {},

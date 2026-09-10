@@ -133,7 +133,7 @@
       const res = r.result === 'b' ? `${names[0]} 胜` : r.result === 'w' ? `${names[1]} 胜` : (r.resultDetail || '和棋');
       return `
         <div class="record-item">
-          <div style="font-size:13px;">${esc(names[0])} vs ${esc(names[1])} <span style="color:var(--text-dim);font-size:11px;">（${(r.moves||[]).length}手）</span></div>
+          <div style="font-size:13px;">${esc(names[0])} vs ${esc(names[1])} <span style="color:var(--text-dim);font-size:11px;">（${r.moveCount || 0}手）</span></div>
           <div class="r-result result-win">${esc(res)}</div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${new Date(r.createdAt).toLocaleString('zh-CN')}</div>
           <div style="display:flex;gap:6px;margin-top:6px;">
@@ -298,7 +298,7 @@
         ${recs.length ? recs.map((r) => {
           const names = r.names || ['先手', '後手'];
           const res = r.result === 'b' ? `${names[0]}胜` : r.result === 'w' ? `${names[1]}胜` : (r.resultDetail || '和棋');
-          return `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid rgba(128,128,128,0.15);">${esc(names[0])} vs ${esc(names[1])} — ${esc(res)}（${(r.moves||[]).length}手）</div>`;
+          return `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid rgba(128,128,128,0.15);">${esc(names[0])} vs ${esc(names[1])} — ${esc(res)}（${r.moveCount || 0}手）</div>`;
         }).join('') : '<div style="color:var(--text-dim);font-size:12px;">暂无对局</div>'}
       `;
       document.getElementById('userDetailModal').style.display = 'flex';
@@ -314,7 +314,7 @@
     try {
       await adminPost(`/api/admin/users/${id}/profile`, { phone, style, title });
       toast('资料已保存');
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 
@@ -325,7 +325,7 @@
     try {
       await adminPost(`/api/admin/users/${id}/elo`, { rating, exp });
       toast('ELO/经验已保存');
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 
@@ -335,7 +335,7 @@
     try {
       await adminPost(`/api/admin/users/${id}/rename`, { name: name.trim() });
       toast('已改名（对局内对手即时可见）');
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 
@@ -344,7 +344,7 @@
     try {
       await adminPost(`/api/admin/users/${id}/reset-rating`, {});
       toast('已重置评级与战绩');
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 
@@ -367,7 +367,7 @@
     try {
       const r = await adminPost(`/api/admin/users/${id}/ban`, { reason, days });
       toast(`已封禁${r.kicked ? `（踢下线 ${r.kicked} 个连接）` : ''}`);
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 
@@ -376,7 +376,7 @@
     try {
       await adminPost(`/api/admin/users/${id}/unban`, {});
       toast('已解封');
-      loadUsers(); viewUser(id);
+      loadUsers(); window.viewUser(id);
     } catch (e) { toast(e.message); }
   };
 

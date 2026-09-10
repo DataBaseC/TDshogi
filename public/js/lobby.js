@@ -86,10 +86,15 @@
       el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">当前没有进行中的对局</div>';
       return;
     }
-    // 显示房间码 + 对局类型 + 走子数，便于区分重名玩家；名字带悬停信息卡
-    el.innerHTML = games.map((g) => {
+    // §R4 热门优先：观众多的排前面（Array.sort 稳定，同人数保持服务端原序）。
+    // 注意：渲染与点击绑定必须共用同一个数组（list），否则点击会张冠李戴。
+    const list = [...games].sort((a, b) => (b.spectatorCount || 0) - (a.spectatorCount || 0));
+    // 显示房间码 + 对局类型 + 走子数 + 观战人数，便于区分重名玩家；名字带悬停信息卡
+    el.innerHTML = list.map((g) => {
       const typeName = g.type === 'reviewing' ? '🎤 复盘中' : g.type === 'quick' ? '快速匹配' : g.type === 'tournament' ? '赛事' : '房间对局';
       const pid = g.playerIds || {};
+      const sc = g.spectatorCount || 0;
+      const spec = sc > 0 ? ` · 👁 <b style="color:var(--gold-light);">${sc}</b> 人观战` : ' · 观战';
       return `
       <div class="game-card" data-room="${esc(g.roomId)}">
         <div class="players">
@@ -97,14 +102,14 @@
           <span class="vs">vs</span>
           <span data-player-id="${esc(pid.w || '')}">${esc(g.players.w || '後手')}</span>
         </div>
-        <div class="meta">房间 ${esc(g.code)} · ${typeName} · ${g.moveCount} 手 · 观战</div>
+        <div class="meta">房间 ${esc(g.code)} · ${typeName} · ${g.moveCount} 手${spec}</div>
       </div>
     `;
     }).join('');
     // 点击卡片进入对局：自己是该局选手 → 不带 spectate（走 request_state 由服务端按
     // playerId 回位到选手座位）；否则才以观战身份进入。playerId 在 hello 时由服务端下发。
     el.querySelectorAll('.game-card').forEach((card, i) => {
-      const g = games[i];
+      const g = list[i];
       card.addEventListener('click', () => {
         const mine = api.playerId && g.playerIds && (g.playerIds.b === api.playerId || g.playerIds.w === api.playerId);
         location.href = `play.html?room=${encodeURIComponent(g.roomId)}${mine ? '' : '&spectate=1'}`;

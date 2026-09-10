@@ -228,14 +228,18 @@ function migrateGuestData(guestId, accountId) {
       delete ratings[guestId];
       writeJson('ratings.json', ratings);
     }
-    // 2. 对局记录（playerIds / winnerId 替换）—— 遍历 SQLite records 表
-    const { listRecords: dbList, putRecord } = require('./storage');
-    for (const rec of dbList(100000)) {
+    // 2. 对局记录（playerIds / winnerId 替换）
+    //    PLAN §Q7-2：先用摘要列 playerB/playerW 的索引**只取受影响的棋谱**，再逐条读整谱改写。
+    //    旧实现 dbList(100000) 会把全表整谱都解析一遍（游客升级账号时明显卡顿）。
+    const storage = require('./storage');
+    for (const s of storage.listSummaries({ playerId: guestId, limit: 100000 })) {
+      const rec = storage.getRecordById(s.id);
+      if (!rec) continue;
       let changed = false;
       if (rec.playerIds && rec.playerIds.b === guestId) { rec.playerIds.b = accountId; changed = true; }
       if (rec.playerIds && rec.playerIds.w === guestId) { rec.playerIds.w = accountId; changed = true; }
       if (rec.winnerId === guestId) { rec.winnerId = accountId; changed = true; }
-      if (changed) putRecord(rec);
+      if (changed) storage.putRecord(rec);
     }
     // 3. 游客会话 → 账号会话（保留名字/创建时间）
     const s = require('./storage').getSessionById(guestId);

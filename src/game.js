@@ -30,8 +30,6 @@ const KIND_NAME = {
 const RAW_TO_DROP = { FU: 'P', KY: 'L', KE: 'N', GI: 'S', KI: 'G', KA: 'B', HI: 'R' };
 const DROP_TO_KIND = { P: 'FU', L: 'KY', N: 'KE', S: 'GI', G: 'KI', B: 'KA', R: 'HI' };
 
-const KING_POSITIONS = {}; // color -> {x,y} 缓存，走子后失效
-
 function cloneBoard(shi) {
   const s = new Shogi();
   s.initializeFromSFENString(shi.toSFENString());
@@ -97,9 +95,12 @@ function candidateMovesFrom(shi, x, y, piece, legalOnly = true) {
     if (canPromote) {
       const promoteMv = { type: 'move', from: xyToUsiSquare(x, y), to: toSq, promote: true };
       if (!legalOnly || isMoveLegal(shi, promoteMv)) out.push(moveToUsi(promoteMv));
-      // 不成（无路可走时强制升变除外——move 会自动升变，但我们这里手动区分）
-      const nonPromoteMv = { type: 'move', from: xyToUsiSquare(x, y), to: toSq, promote: false };
-      if (!legalOnly || isMoveLegal(shi, nonPromoteMv)) out.push(moveToUsi(nonPromoteMv));
+      // 「不成」仅在非强制升变时提供（R-b）：歩/香到底线、桂到最下两段必须升变，
+      // 否则会出现「选了不成、实际仍自动升变」的名不副实选项。
+      if (!mustPromote(rawKind, m.to.y, color)) {
+        const nonPromoteMv = { type: 'move', from: xyToUsiSquare(x, y), to: toSq, promote: false };
+        if (!legalOnly || isMoveLegal(shi, nonPromoteMv)) out.push(moveToUsi(nonPromoteMv));
+      }
     } else {
       const mv = { type: 'move', from: xyToUsiSquare(x, y), to: toSq, promote: false };
       if (!legalOnly || isMoveLegal(shi, mv)) out.push(moveToUsi(mv));
@@ -112,6 +113,25 @@ function inPromotionZone(y, color) {
   // 先手（Black）推进方向是 y 减小（朝 9 段），升变区为 y<=3（1、2、3 行/段）
   // 后手（White）推进方向是 y 增大，升变区为 y>=7
   return color === Color.Black ? y <= 3 : y >= 7;
+}
+
+/**
+ * 走到该位置后是否**必须升变**（不提供「不成」选项）。
+ *
+ * 依据（PLAN §P1-待确认 R-b，2026-09-10 用户确认）：
+ * 歩 / 香 到达最底线、桂 到达最下两段时，未升变则该棋子再无任何合法移动，
+ * 正式规则要求强制升变。shogi.js 的 `move(..., false)` 对这种情况会**静默自动升变**，
+ * 因此若在此处仍提供「不成」，前端会显示一个名不副实的选项（选了实际还是升变）。
+ *
+ * @param {string} rawKind 升变前的棋种（FU/KY/KE/…）
+ * @param {number} toY 目标格段号（1=最上段）
+ * @param {Color} color 走子方
+ */
+function mustPromote(rawKind, toY, color) {
+  const last = color === Color.Black ? 1 : 9; // 先手底线 y=1，后手底线 y=9
+  if (rawKind === 'FU' || rawKind === 'KY') return toY === last;
+  if (rawKind === 'KE') return color === Color.Black ? toY <= 2 : toY >= 8;
+  return false;
 }
 
 class Game {
@@ -207,6 +227,17 @@ class Game {
   applyMove(usi) {
     let mv;
     try { mv = parseUsiMove(usi); } catch (_) { return { ok: false, error: '无法解析走法' }; }
+    // 强制升变校验（R-b）：歩/香 到底线、桂 到最下两段时必须带 '+'。
+    // 防御性校验——正常前端只会发候选走法（已过滤过），此处拦的是手工构造的 USI。
+    if (mv.type === 'move' && !mv.promote) {
+      const from = usiSquareToXY(mv.from);
+      const to = usiSquareToXY(mv.to);
+      const piece = this.shogi.get(from.x, from.y);
+      if (piece && piece.color === this.shogi.turn
+        && mustPromote(Piece.unpromote(piece.kind), to.y, piece.color)) {
+        return { ok: false, error: '该棋子走到此位置必须升变' };
+      }
+    }
     // 合法性校验（含王手过滤）
     if (!isMoveLegal(this.shogi, mv)) {
       return { ok: false, error: '非法走法' };
@@ -235,42 +266,40 @@ class Game {
   updateResult() {
     const color = this.shogi.turn; // 当前轮到的一方
     const opp = oppositeColor(color);
-    const myKing = findKing(this.shogi, color);
-    const oppKing = findKing(this.shogi, opp);
 
-    // 对方王被吃（不可能在合法棋中出现，但兜底）
-    if (!oppKing) {
+    // 对方王被吃（不可能在合法棋中出现，纯兜底）
+    if (!findKing(this.shogi, opp)) {
       this.result = color === Color.Black ? 'b' : 'w';
       this.resultDetail = '詰み';
       return;
     }
-
-    // 当前方是否被将死：被将且无合法着法
-    if (this.shogi.isCheck(color)) {
-      if (this.legalMovesUsi().length === 0) {
-        this.result = opp === Color.Black ? 'b' : 'w';
-        this.resultDetail = '詰み';
-        return;
-      }
-    }
-
-    // 入玉 / 持将棋：己方王未死但无合法着法（困毙）
-    if (!myKing) {
-      // 王被吃则判负
-      this.result = color === Color.Black ? 'w' : 'b';
+    // 己方王被吃（同上，纯兜底）
+    if (!findKing(this.shogi, color)) {
+      this.result = opp === Color.Black ? 'b' : 'w';
       this.resultDetail = '詰み';
       return;
     }
+
+    // 无任何合法着法 → **当前方判负**（对手胜）：
+    //  - 被将 = 詰み（将死）
+    //  - 未被将却无步可走 = 困毙，同样判负（国际象棋才是和棋）
+    // ⚠️ 困毙此前误判为和棋并记 '入玉'（PLAN §P1-待确认 R-a，2026-09-10 用户确认修正）
     if (this.legalMovesUsi().length === 0) {
-      this.result = '-';
-      this.resultDetail = '入玉';
+      this.result = opp === Color.Black ? 'b' : 'w';
+      this.resultDetail = this.shogi.isCheck(color) ? '詰み' : '困毙';
       return;
     }
 
-    // 千日手：局面重复 4 次
-    if (this.isFourfoldRepetition()) {
-      this.result = '-';
-      this.resultDetail = '千日手';
+    // 千日手（R-c）：普通千日手判和；**连续王手千日手判王手方负**
+    const rep = this.detectRepetition();
+    if (rep.repeated) {
+      if (rep.perpCheckBy) {
+        this.result = rep.perpCheckBy === 'b' ? 'w' : 'b';
+        this.resultDetail = '連続王手の千日手';
+      } else {
+        this.result = '-';
+        this.resultDetail = '千日手';
+      }
       return;
     }
 
@@ -279,19 +308,30 @@ class Game {
   }
 
   /**
-   * 判断是否出现千日手（同一局面+同一手番+同一持驹重复 4 次）。
-   * 通过重放走法并哈希每步局面。
+   * 千日手判定（PLAN §P1-待确认 R-c，2026-09-10 用户确认按正式规则）。
+   *
+   * 局面 key 含手番与持驹（SFEN 去掉手数字段），同一 key 出现 4 次即千日手成立。
+   * 在此基础上区分：
+   *  - 这 4 次之间的走子里，**同一方每一步都在将军**（另一方不满足）→ 连续王手千日手
+   *  - 否则为普通千日手
+   *
+   * @returns {{repeated:boolean, perpCheckBy:('b'|'w'|null)}} perpCheckBy = 连续王手的那一方
    */
-  isFourfoldRepetition() {
-    const seen = new Map();
+  detectRepetition() {
     const replay = new Shogi();
-    replay.initializeFromSFENString(this.startSfen);
+    try {
+      replay.initializeFromSFENString(this.startSfen);
+    } catch (_) {
+      return { repeated: false, perpCheckBy: null };
+    }
     const keyOf = (shi) => shi.toSFENString().replace(/ \d+$/, ''); // 去掉手数字段
-    for (let i = 0; i <= this.moves.length; i++) {
-      const key = keyOf(replay);
-      seen.set(key, (seen.get(key) || 0) + 1);
-      if (i === this.moves.length) break;
+    const positions = new Map(); // key -> [{ index }]（出现位置）
+    const steps = [];            // 第 i 步：{ mover, gaveCheck }
+    positions.set(keyOf(replay), [{ index: 0 }]);
+
+    for (let i = 0; i < this.moves.length; i++) {
       const mv = parseUsiMove(this.moves[i]);
+      const mover = replay.turn === Color.Black ? 'b' : 'w';
       try {
         if (mv.type === 'drop') {
           const to = usiSquareToXY(mv.to);
@@ -302,10 +342,37 @@ class Game {
           replay.move(from.x, from.y, to.x, to.y, mv.promote);
         }
       } catch (_) {
-        return false;
+        return { repeated: false, perpCheckBy: null };
       }
+      // 走完后手番交给对方 → 对方若被将，说明这一步是将军
+      const gaveCheck = replay.isCheck(replay.turn);
+      steps.push({ mover, gaveCheck });
+      const key = keyOf(replay);
+      if (!positions.has(key)) positions.set(key, []);
+      positions.get(key).push({ index: i + 1 });
     }
-    return [...seen.values()].some((n) => n >= 4);
+
+    for (const list of positions.values()) {
+      if (list.length < 4) continue;
+      const first = list[0].index;   // 首次出现（步数位置）
+      const fourth = list[3].index;  // 第 4 次出现
+      const movesBy = { b: 0, w: 0 };
+      const checksBy = { b: 0, w: 0 };
+      for (let i = first; i < fourth; i++) {
+        const s = steps[i];
+        if (!s) continue;
+        movesBy[s.mover] += 1;
+        if (s.gaveCheck) checksBy[s.mover] += 1;
+      }
+      const perpB = movesBy.b > 0 && checksBy.b === movesBy.b;
+      const perpW = movesBy.w > 0 && checksBy.w === movesBy.w;
+      // 仅当「一方每步都将军、另一方不是」才认定为连续王手；双方都满足（罕见）按普通千日手处理
+      let perpCheckBy = null;
+      if (perpB && !perpW) perpCheckBy = 'b';
+      else if (perpW && !perpB) perpCheckBy = 'w';
+      return { repeated: true, perpCheckBy };
+    }
+    return { repeated: false, perpCheckBy: null };
   }
 
   /**

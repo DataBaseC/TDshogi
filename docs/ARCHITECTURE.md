@@ -113,14 +113,19 @@ chat{text} → rooms.chat：校验在房间 → 2s/条节流 → _broadcast 房�
 | 表 | 用途 | 键 |
 |---|---|---|
 | `kv` | 通用键值：ratings/tournaments/accounts/announcements/admin | key（文件名） |
-| `records` | 棋谱（含书签/评论/变着 JSON） | id，索引 createdAt |
+| `records` | 棋谱：`data` 存整谱 JSON（含书签/评论/变着），另有一组**标量摘要列**（PLAN §Q7-2） | id（主键）；索引 createdAt / playerB / playerW / (pub, createdAt) |
 | `sessions` | 游客/账号会话 | id |
 | `gamesnapshots` | 进行中对局快照（重启恢复） | roomId |
 
 ### 4.2 设计要点
 - **兼容层**：`readJson(name)`/`writeJson(name)` 映射到 kv 表——业务模块（ratings/tournaments/accounts 等）几乎零改动；`listJsonByPrefix(prefix)` 按前缀枚举 kv（会话列表的唯一数据源，auth.listSessions 用它）
 - **首次启动自动迁移**旧 `data/*.json` 与 `data/records/*.json` 入库，原文件改 `.bak`
-- **JSON 函数检索**：`searchRecords` 用 SQLite `json_extract`/`json_array_length` 实现条件组合查询（开局/手数/结果/关键词）
+- **摘要列检索（PLAN §Q7-2）**：`records` 除 `data`（整谱）外，另存一组标量摘要列
+  （`playerB/playerW/nameB/nameW/result/resultDetail/moveCount/opening/pub/...`）+ 索引。
+  `listSummaries` / `countSummaries` / `searchRecords` **只读标量列、不解析整谱**——
+  旧实现是「拉一批 data → 逐条 `JSON.parse`」，单进程下会同步阻塞主线程（连带卡住对局广播）。
+  `opening` 存前 10 手供前缀匹配；仅「走法片段关键词」仍需扫 `data`。
+  老库由 `ensureRecordColumns()` + `backfillRecordSummaries()` 自动补列回填（幂等，随 `getDb()` 首次初始化）
 - WAL 模式（读写并发友好）+ synchronous=NORMAL
 
 ---
@@ -315,10 +320,17 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
   require('../public/js/piece-kinds.js');
   require('../public/js/freeboard.js');
   ```
-- 当前覆盖（18 项）：`tests/piece-kinds.test.js`（映射互逆自检、成駒还原含「吃馬得角」回归、
-  别名杏/圭/全、打子符号双向、NAME_TO_KEY 全覆盖）+ `tests/freeboard.test.js`
-  （坐标换算、初始盘面 40 枚、走子、升变、吃子进驹台、打子扣减与归零移除）
-- 扩充优先级：`game.js` 规则引擎 → `records.js` KIF/CSA 与评论 → `coords.js` → `privacy.js` / `net.js`
+- 当前覆盖（**39 项**，2026-09-10）：
+  - `tests/piece-kinds.test.js`：映射互逆自检、成駒还原（含「吃馬得角」回归）、别名杏/圭/全、打子符号双向、NAME_TO_KEY 全覆盖
+  - `tests/freeboard.test.js`：坐标换算、初始盘面 40 枚、走子、升变、吃子进驹台、打子扣减与归零移除、§R1 视角切换（配色交换 / 清选中）
+  - `tests/game.test.js`（2026-09-10 新增 19 项）：初始局面、坐标映射、**开局合法着法 = 30**、走子、非法着法拒绝、
+    打子无持驹拒绝、升变区与升变执行、**王手放置禁止**、吃子进驹台、持驹顺序、认输、SFEN 解析，
+    以及**规则边界 5 项**（困毙判负 / 歩与桂强制升变 / 普通千日手判和 / 连续王手千日手判王手方负）
+    —— 这 5 项由用户 2026-09-10 拍板后实现（见 PLAN「§P1 规则边界修正」）。
+    仍待实现：持将棋点数判定（入玉宣言法 24 点）
+- 静态检查：`npm run lint`（eslint 扁平配置，分 Node / 浏览器两套 globals；`no-undef` 已在首跑抓出
+  `play.js` 的隐式全局 `freeMode` 等 18 个 error）；CI 见 `.github/workflows/ci.yml`
+- 扩充优先级：`records.js` KIF/CSA 与评论 → `coords.js` → `privacy.js` / `net.js` / `ratelimit.js`
 
 ---
 
@@ -327,6 +339,7 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
 - 环境变量：`PORT` / `DATA_DIR` / `ADMIN_PASSWORD`（未配置时内置密码 `Cplusplus123`）/ `ADMIN_SECRET`（未配置时从管理密码派生）/ `SESSION_SECRET` / `SNAPSHOT_INTERVAL_MS`
 - 网络与审计（PLAN §M3）：`TRUST_PROXY`（反代层数，`0`|`1`|`true`；**未配置时不信任 XFF**，直连部署保持默认即可）/ `AUDIT_MAX_EVENTS`（默认 5000）/ `AUDIT_RETENTION_DAYS`（默认 90）
 - 后台入口（PLAN §J5）：`ADMIN_ENTRY_KEY`（可选；设置后 `/admin.html` 须带 `?k=<key>`，否则 404。导航 🛡️ 入口仅本机持有 admin token 时显示）
+- 速率限制（PLAN §Q7）：`RATE_LIMIT_DISABLED=1` 关闭全部限流（本地压测/排障用）；`RATE_LIMIT_DEBUG=1` 打印过期桶清理日志。限流键为 `clientIp`，**遵守 `TRUST_PROXY`**
 - 依赖安装：仓库 `.npmrc` 设了 `ignore-scripts=true`（better-sqlite3 v13 走 tarball 内置预编译，无需任何 C++ 工具链；排障见 DEPLOY.md）
 - 数据：单文件 `data/tdshogi.db`（备份 = 复制该文件；迁移前旧文件为 .bak）
 - 常驻：PM2 / systemd / Docker；WebSocket 需 Nginx 反代 `Upgrade` 头
@@ -337,6 +350,9 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
 ## 10. 已知边界与演进方向
 
 - **单进程局限**：对局状态在内存，横向扩展需 Redis 外置（当前快照恢复覆盖"重启不丢局"）
-- **安全**：`/api/history?player=` 越权（游客体系无密码，id 可枚举）仍未修；会话令牌存 localStorage（XSS 风险）
+- **安全**：~~`/api/history?player=` 越权（游客体系无密码，id 可枚举）~~ ✅ 2026-09-10 已修（PLAN §Q7）：
+  `/api/history` 已收归管理员专用，用户的棋谱检索改走 WS `record_search`（连接握手时绑定的身份强制过滤，
+  客户端传 playerId 也无效）；`/api/records/search` 的非管理员分支要求可验证的账号令牌。
+  仍待处理：接口速率限制、会话令牌存 localStorage（XSS 面）
 - **玩法缺口**：无 AI 对战、无駒落ち（让子）、无 i18n（仅中文界面）
 - **性能**：每步 `_pushState` 全量推状态，长对局/多观战者时带宽随人数线性增长（可优化为增量推送）
