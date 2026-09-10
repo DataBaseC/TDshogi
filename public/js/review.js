@@ -27,15 +27,9 @@
     return h;
   }
 
-  function toast(msg) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2500);
-  }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function toast(msg) { return window.UI.toast(msg); }
+  function esc(s) { return window.UI.esc(s); }
 
   if (!recordId) {
     document.getElementById('loading').style.display = 'none';

@@ -7,12 +7,8 @@
   const api = window.API;
   api.connect(guest.id);
 
-  function toast(msg) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2500);
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function toast(msg) { return window.UI.toast(msg); }
 
   // ==================================================================
   // 账号：会话令牌检测（令牌以 '.' 分隔，游客 id 为 24 hex）
@@ -66,9 +62,8 @@
     } catch (_) { /* 令牌失效等情况静默 */ }
   }
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   document.getElementById('btnSaveProfile').addEventListener('click', async () => {
     const phone = document.getElementById('editPhone').value.trim();
@@ -233,9 +228,8 @@
     }).join('');
   }
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   loadProfile();
 })();

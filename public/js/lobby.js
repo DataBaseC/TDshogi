@@ -6,12 +6,8 @@
   const api = window.API;
   api.connect(guest.id);
 
-  function toast(msg) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2500);
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function toast(msg) { return window.UI.toast(msg); }
 
   // ---- 快速匹配 ----
   document.getElementById('btnQuickMatch').addEventListener('click', () => {
@@ -116,9 +112,8 @@
       });
     });
   }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   loadGames();
   setInterval(loadGames, 5000);

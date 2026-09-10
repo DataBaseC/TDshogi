@@ -58,7 +58,7 @@ shogiwebapp/
 ├── public/              # 前端（静态）
 │   ├── *.html           # 9 页面：index/lobby/play/history/gallery/review/tournaments/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
-│   └── js/              # 19 个脚本：settings.js(用户设置中心·须先于 nav.js) api.js(WS封装) nav.js board.js pieces.js(图集配置)
+│   └── js/              # 20 个脚本：settings.js(用户设置中心·须最先) util.js(公共工具 $/esc/toast) api.js(WS封装) nav.js board.js pieces.js(图集配置)
 │   │                      piece-kinds.js(棋种映射单一来源+自检)
 │   │                      freeboard.js(统一棋盘组件 play/demo-rules/free/review 四模式)
 │   │                      play.js(对局页编排) play-clock.js(棋钟·仅 play.html 加载) gallery.js sound.js …

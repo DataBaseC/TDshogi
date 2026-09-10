@@ -278,6 +278,36 @@ public/js/
 
 → `npm test` **58 项全绿**（46 → 58）。
 
+### 5.3.2 公共工具收敛（`util.js`，2026-09-10）
+
+**问题（grep 实证）**：三段工具函数被**逐字复制**到各页面脚本——
+
+| 函数 | 副本数 | 分布 |
+|---|---|---|
+| `esc` | **11** | lobby / tournaments / hovercard / home / history / review / gallery / profile（**同一文件里定义了两次**）/ admin / **play.js（改名为 `escHtml`）** |
+| `toast` | 8 | lobby / tournaments / home / review / gallery / profile / play / admin |
+| `$` | 3 | home / play / play-clock |
+
+**为什么这不只是"代码重复"**：`esc` 是 **XSS 防护函数**。抄了 11 份，意味着将来补一个转义字符
+要改 11 处，**漏一处就是那个页面的 XSS 漏洞**——不报错、页面照常工作，只是安静地等一个恶意昵称。
+
+**做法**
+- 新增 `public/js/util.js`（`window.UI = { $, esc, toast }`），在 `settings.js` 之后、
+  `nav.js` 之前引入（9 个页面统一加一行）
+- 各页面把**本地实现**改为**一行转发**：`function esc(s) { return window.UI.esc(s); }`
+  - **函数名与位置都不变** → 所有调用点零改动；`play.js` 的 `escHtml` 也保留原名
+  - ⚠️ 刻意**不写成 `const { esc } = window.UI`**：`const` 不提升，而原实现是函数声明（会提升）。
+    若某文件在定义之前就调用了它，`const` 会 TDZ 报错。转发写法**没有时序风险**
+- `toast` 顺手加了 `if (!el) return`（原实现找不到 `#toast` 会直接抛错，提示失败不该拖垮整页）
+
+**验证**：用**实现特征**（`'&amp;', '<': '&lt;'`）而非函数名 grep →
+全项目只剩 `util.js` 一处实现；`window.UI.` 命中 11 个文件、9 个页面全部引入 `util.js`；
+`node --check` 全过、lint 0 error、`npm test` 58 项全绿。
+
+> ⚠️ **漏改一个页面 = 那个页面直接挂掉（`esc is not a function`）**。本轮靠两点兜住：
+> ① 9 个页面结构一致、统一插入（old_str 唯一）；② 改完按**实现特征**而非**函数名**复核——
+> 正是这一步抓出了 `play.js` 里改名为 `escHtml` 的第 11 份副本（按名字搜是搜不到的）。
+
 **每步独立提交**（本项目已有 git 基线 `v1.3.1`），任何一步出问题都能 `git revert` 单步。
 
 ### 5.4 拆分带来的新成本（诚实记录）

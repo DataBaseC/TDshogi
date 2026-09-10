@@ -12,15 +12,9 @@
   const api = window.API;
   api.connect(guest.id);
 
-  const $ = (id) => document.getElementById(id);
-
-  // Toast
-  function toast(msg) {
-    const el = $('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2500);
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发，避免"抄多份、改一处漏九处"
+  const $ = (id) => window.UI.$(id);
+  function toast(msg) { return window.UI.toast(msg); }
 
   // 随机观战
   $('btnRandomWatch').addEventListener('click', () => {
@@ -129,9 +123,8 @@
     }).join('');
   }
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   loadHome();
   setInterval(loadHome, 5000);  // 数据条/排行/公告/战报定时刷新

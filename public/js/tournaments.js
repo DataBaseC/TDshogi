@@ -15,12 +15,8 @@
   // 本窗口刚提交、还在审核中的赛事（公共列表不返回 pending，仅本地展示）
   let myPending = [];
 
-  function toast(msg) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2500);
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function toast(msg) { return window.UI.toast(msg); }
 
   // ---- 创建赛事 ----
   const modalEl = document.getElementById('createModal');
@@ -177,9 +173,8 @@
     api.send({ type: 'join_tournament', data: { id } });
   };
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   loadTournaments();
   setInterval(loadTournaments, 5000);  // 轮询：检测新对局安排/对阵推进

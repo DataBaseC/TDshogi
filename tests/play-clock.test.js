@@ -26,6 +26,8 @@ function makeEl(id) {
   };
 }
 global.document = { getElementById: (id) => (els[id] || (els[id] = makeEl(id))) };
+// play-clock.js 的 $ 是转发到 window.UI.$（实现统一在 util.js）——测试里给个最小替身
+global.UI = { $: (id) => global.document.getElementById(id), esc: (s) => s, toast: () => {} };
 
 const sounds = [];
 global.window = global;               // play-clock.js 里用 window.Sound / window.PlayClock

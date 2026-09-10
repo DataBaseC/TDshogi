@@ -30,7 +30,8 @@
   let lastTickSecond = -1;  // 读秒音效：记录上次"嗒"的秒数（跨秒触发）
   let timer = null;
 
-  function $(id) { return document.getElementById(id); }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function $(id) { return window.UI.$(id); }
 
   function fmtClock(ms, isByoyomi) {
     const sec = Math.max(0, Math.ceil(ms / 1000));

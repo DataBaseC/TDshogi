@@ -42,13 +42,9 @@
     '10sec': { name: '10秒快棋' },
   };
 
-  const $ = (id) => document.getElementById(id);
-
-  function toast(msg) {
-    $('toast').textContent = msg;
-    $('toast').classList.add('show');
-    setTimeout(() => $('toast').classList.remove('show'), 2500);
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发，避免"抄多份、改一处漏九处"
+  const $ = (id) => window.UI.$(id);
+  function toast(msg) { return window.UI.toast(msg); }
 
   // ==================================================================
   // 渲染
@@ -563,9 +559,8 @@
     fb.setLegalTargets(demoInfo.legalTargetsBySq || {});
   }
 
-  function escHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：与全站同一份实现（原函数名 escHtml 保留，调用点不动）
+  function escHtml(s) { return window.UI.esc(s); }
 
   function renderDemoMoveList() {
     const el = $('moveList');

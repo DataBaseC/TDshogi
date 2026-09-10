@@ -13,9 +13,8 @@
   const guest = window.NAV.renderNav('history');
   window.API.connect(guest.id);
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
+  // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
+  function esc(s) { return window.UI.esc(s); }
 
   function resultText(r, names) {
     if (r.result === 'b') return { text: `${names[0]} 胜`, cls: 'result-win' };
