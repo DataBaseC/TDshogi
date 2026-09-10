@@ -124,6 +124,9 @@ function saveRecord(data) {
     timeControl: data.timeControl || null,
     createdAt: data.createdAt || now,
     durationSec: data.durationSec || null,
+    // §L 公开棋谱广场：默认私有；meta 为展示用可编辑信息（管理员维护）
+    visibility: data.visibility === 'public' ? 'public' : 'private',
+    meta: data.meta || null,
   };
   putRecord(record);
   return record;
@@ -219,11 +222,16 @@ function exportKif(rec) {
   ];
   const jpMoves = movesToKif(rec.startSfen || DEFAULT_SFEN, rec.moves || []);
   const times = rec.moveTimes || [];
+  // §L：导出手数评论（KIF 标准注释行以 * 开头，置于对应手之后；旧字符串评论同样兼容）
+  const comments = normalizeComments(rec);
   let cum = 0;
   jpMoves.forEach((m, i) => {
     const spent = Number(times[i]) || 0;
     cum += spent;
     lines.push(`${i + 1}   ${m}   (${spentFmt(spent)}/${totalFmt(cum)})`);
+    for (const c of (comments[i + 1] || [])) {
+      lines.push(`*${String(c.text).replace(/[\r\n]/g, ' ')}`);
+    }
   });
   const n = (rec.moves || []).length;
   if (rec.resultDetail === '投了') {
@@ -370,8 +378,165 @@ function importKif(text) {
   return { ok: true, record };
 }
 
+// ======================================================================
+// §L 公开棋谱广场：可见性 / 展示信息 / 评论模型升级
+// ======================================================================
+
+/**
+ * 可见性判定（§L2）：管理员、谱主、以及已公开的棋谱可看。
+ * @param {object} rec 棋谱
+ * @param {{playerId?:string|null, isAdmin?:boolean}} ctx
+ */
+function canView(rec, ctx = {}) {
+  if (!rec) return false;
+  if (ctx.isAdmin) return true;
+  if (rec.visibility === 'public') return true;
+  return isOwner(rec, ctx.playerId);
+}
+
+function isPublic(rec) {
+  return !!(rec && rec.visibility === 'public');
+}
+
+/**
+ * 公开棋谱列表（§L4）：按置顶优先、时间倒序。
+ * @param {{tag?:string, query?:string, page?:number, limit?:number}} opts
+ */
+function listPublic({ tag = '', query = '', page = 1, limit = 20 } = {}) {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const n = Math.min(60, Math.max(1, parseInt(limit, 10) || 20));
+  let rows = listRecords(1000).filter(isPublic);
+  if (tag) {
+    const t = String(tag).trim().toLowerCase();
+    rows = rows.filter((r) => ((r.meta && r.meta.tags) || []).some((x) => String(x).toLowerCase() === t));
+  }
+  if (query) {
+    const q = String(query).trim().toLowerCase();
+    rows = rows.filter((r) => {
+      const names = (r.names || []).join(' ').toLowerCase();
+      const meta = r.meta || {};
+      const title = String(meta.title || '').toLowerCase();
+      const event = String(meta.event || '').toLowerCase();
+      return names.includes(q) || title.includes(q) || event.includes(q);
+    });
+  }
+  const total = rows.length;
+  const sorted = rows.sort((a, b) => {
+    const fa = (a.meta && a.meta.featured) ? 1 : 0;
+    const fb = (b.meta && b.meta.featured) ? 1 : 0;
+    return fb - fa || (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  const slice = sorted.slice((p - 1) * n, p * n);
+  return {
+    total,
+    page: p,
+    limit: n,
+    records: slice.map(publicSummary),
+  };
+}
+
+/** 列表项轻量摘要（不含 moves，省带宽） */
+function publicSummary(r) {
+  const meta = r.meta || {};
+  return {
+    id: r.id,
+    names: r.names || ['先手', '後手'],
+    result: r.result,
+    resultDetail: r.resultDetail,
+    moveCount: Array.isArray(r.moves) ? r.moves.length : 0,
+    createdAt: r.createdAt,
+    timeControl: r.timeControl || null,
+    playerIds: r.playerIds || {},
+    meta: {
+      title: meta.title || '',
+      event: meta.event || '',
+      round: meta.round || '',
+      playedOn: meta.playedOn || '',
+      tags: meta.tags || [],
+      description: meta.description || '',
+      featured: !!meta.featured,
+      nameOverrides: meta.nameOverrides || null,
+      resultNote: meta.resultNote || '',
+    },
+  };
+}
+
+/**
+ * 设置公开/私有（§L4，管理员）。
+ */
+function setVisibility(id, visibility) {
+  const r = getRecord(id);
+  if (!r) return { ok: false, error: '棋谱不存在' };
+  const v = visibility === 'public' ? 'public' : 'private';
+  if (r.visibility === v) return { ok: false, error: '可见性未变化' };
+  r.visibility = v;
+  writeRecord(r);
+  return { ok: true, visibility: v };
+}
+
+/** 允许管理员编辑的展示字段（§L1） */
+const META_FIELDS = ['title', 'event', 'round', 'playedOn', 'tags', 'description', 'featured', 'nameOverrides', 'resultNote'];
+
+/**
+ * 编辑展示信息（§L4，管理员）。只写允许字段，未传的不动。
+ * @param {string} id
+ * @param {object} patch
+ */
+function setMeta(id, patch = {}) {
+  const r = getRecord(id);
+  if (!r) return { ok: false, error: '棋谱不存在' };
+  const meta = { ...(r.meta || {}) };
+  for (const k of META_FIELDS) {
+    if (patch[k] === undefined) continue;
+    if (k === 'tags') {
+      if (!Array.isArray(patch[k])) return { ok: false, error: 'tags 需为数组' };
+      meta.tags = patch[k].map((t) => String(t).trim().slice(0, 20)).filter(Boolean).slice(0, 10);
+    } else if (k === 'featured') {
+      meta.featured = !!patch[k];
+    } else if (k === 'nameOverrides') {
+      meta.nameOverrides = patch[k] || null;
+    } else {
+      meta[k] = String(patch[k]).trim().slice(0, 120);
+    }
+  }
+  meta.updatedAt = Date.now();
+  r.meta = meta;
+  writeRecord(r);
+  return { ok: true, meta };
+}
+
+/**
+ * 评论归一化（§L3）：旧格式 { moveNo: '文本' } → { moveNo: [{id, authorId, authorName, text, ts}] }。
+ * 读时兼容、写时转新结构（懒迁移，存量数据无需脚本处理）。
+ */
+function normalizeComments(rec) {
+  const src = (rec && rec.comments) || {};
+  const out = {};
+  for (const [key, val] of Object.entries(src)) {
+    if (Array.isArray(val)) {
+      out[key] = val.filter((c) => c && c.text);
+    } else if (typeof val === 'string' && val.trim()) {
+      out[key] = [{
+        id: `legacy-${key}`,
+        authorId: null,
+        authorName: null,
+        text: val.trim(),
+        ts: rec.createdAt || Date.now(),
+        editedBy: null,
+        editedAt: null,
+      }];
+    }
+  }
+  return out;
+}
+
+function genCommentId() {
+  return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
 /**
  * 读取某棋谱的完整复盘数据（含书签/评论/变着）。
+ * §L：附带 visibility/meta，评论统一为数组形态（旧字符串自动包装）。
  */
 function reviewData(id) {
   const r = getRecord(id);
@@ -387,8 +552,10 @@ function reviewData(id) {
     playerIds: r.playerIds || {},
     createdAt: r.createdAt,
     bookmarks: r.bookmarks || [],
-    comments: r.comments || {},
+    comments: normalizeComments(r),
     variations: r.variations || {},
+    visibility: r.visibility || 'private',
+    meta: r.meta || null,
   };
 }
 
@@ -404,17 +571,56 @@ function toggleBookmark(id, moveNo, on) {
   return { ok: true, bookmarks: r.bookmarks };
 }
 
-function setComment(id, moveNo, text) {
+/**
+ * 写评论（§L3 升级）：
+ *  - 不带 commentId：新增一条（authorId/authorName 由调用方从会话解析后传入）
+ *  - 带 commentId + text：编辑该条（记录 editedBy/editedAt）
+ *  - 带 commentId + 空 text：删除该条
+ * 权限（本人自己的评论 / 管理员）由调用方（server.js）判定后传入 force=true。
+ * @returns {{ok, comments?, error?}} comments 为归一化后的数组形态
+ */
+function setComment(id, moveNo, text, opts = {}) {
   if (!Number.isInteger(moveNo) || moveNo < 0) return { ok: false, error: '手数非法' };
   const r = getRecord(id);
   if (!r) return { ok: false, error: '棋谱不存在' };
-  const comments = { ...(r.comments || {}) };
-  const t = (text || '').trim();
-  if (!t) delete comments[moveNo];
-  else comments[moveNo] = t;
+  const comments = normalizeComments(r);
+  const list = comments[moveNo] ? [...comments[moveNo]] : [];
+  const t = String(text || '').trim();
+
+  if (opts.commentId) {
+    const idx = list.findIndex((c) => c.id === opts.commentId);
+    if (idx < 0) return { ok: false, error: '评论不存在' };
+    if (!opts.force && list[idx].authorId && list[idx].authorId !== opts.authorId) {
+      return { ok: false, error: '只能编辑自己的评论' };
+    }
+    if (t) {
+      list[idx] = {
+        ...list[idx],
+        text: t,
+        editedBy: opts.force ? (opts.authorId || null) : null,
+        editedAt: Date.now(),
+      };
+    } else {
+      list.splice(idx, 1);
+    }
+  } else {
+    if (!t) return { ok: false, error: '评论不能为空' };
+    list.push({
+      id: genCommentId(),
+      authorId: opts.authorId || null,
+      authorName: opts.authorName || null,
+      text: t,
+      ts: Date.now(),
+      editedBy: null,
+      editedAt: null,
+    });
+  }
+
+  if (list.length) comments[moveNo] = list;
+  else delete comments[moveNo];
   r.comments = comments;
   writeRecord(r);
-  return { ok: true, comments: r.comments };
+  return { ok: true, comments };
 }
 
 function addVariation(id, parent, move) {
@@ -463,4 +669,13 @@ module.exports = {
   setComment,
   addVariation,
   isOwner,
+  // §L 公开棋谱广场
+  canView,
+  isPublic,
+  listPublic,
+  publicSummary,
+  setVisibility,
+  setMeta,
+  META_FIELDS,
+  normalizeComments,
 };

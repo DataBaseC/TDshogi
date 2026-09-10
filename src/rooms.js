@@ -140,7 +140,7 @@ class RoomManager {
     st.roomType = room.type;
     st.seat = null;
     // 观战者名单（对局页右列观众列表，PLAN §G v7）
-    st.spectators = this._spectatorNames(room);
+    st.spectators = this._spectatorList(room);   // §R：带 id/等级的对象数组（按人去重）
     st.moveTimes = room.moveTimes || [];  // 每手耗时（秒）——棋谱列表与 KIF 时间
     // 感想战演示状态（仅终局后携带，重连/观战初载即可拿到推演谱与合法走法，PLAN §G）
     if (room.status === 'FINISHED' && room.demo) {
@@ -755,12 +755,20 @@ class RoomManager {
     }
     this._lastChatTs = this._lastChatTs || {};
     this._lastChatTs[clientId] = now;
-    // 发言者名字
+    // 发言者身份：玩家用座位名；观战者用其会话真名（旧实现一律显示"观众"，互动体验差）
     const seat = this.clientToPlayer.get(clientId);
-    const name = seat && room.players[seat.seat] ? room.players[seat.seat].name : '观众';
+    let name = '观众';
+    let role = 'spectator';
+    if (seat && room.players[seat.seat]) {
+      name = room.players[seat.seat].name;
+      role = seat.seat === 'b' ? 'player-b' : 'player-w';
+    } else {
+      const info = this.playerRegistry ? this.playerRegistry(clientId) : null;
+      if (info && info.name) name = info.name;
+    }
     this._broadcast(roomId, {
       type: 'chat',
-      data: { name, text: msg, ts: now },
+      data: { name, text: msg, ts: now, role },
     });
     return { ok: true };
   }
@@ -1408,20 +1416,39 @@ class RoomManager {
   // 感想战演示行棋（PLAN §G）
   // ==================================================================
 
-  /** 观战者名单（对局页观众列表用） */
-  _spectatorNames(room) {
+  /**
+   * 观战者名单（对局页观众列表用，PLAN §R）。
+   * 修复两处体验缺陷：
+   *  1. 旧实现只给名字 → 前端无法做悬停卡片、无法区分同名、无法展示等级
+   *  2. 同一身份开多个窗口观战会被重复计数 → 现按 playerId 去重
+   * @returns {Array<{id:string, name:string, rating:number, level:number}>}
+   */
+  _spectatorList(room) {
     const specs = this.spectatorsByRoom.get(room.id) || new Set();
-    const out = [];
+    const map = new Map();
     for (const cid of specs) {
       const info = this.playerRegistry ? this.playerRegistry(cid) : null;
-      out.push((info && info.name) || '观众');
+      if (!info || !info.playerId) continue;
+      if (map.has(info.playerId)) continue; // 同人多窗口只算一个观众
+      const prof = ratings.profile(info.playerId);
+      map.set(info.playerId, {
+        id: info.playerId,
+        name: info.name || '观众',
+        rating: prof.rating,
+        level: prof.level,
+      });
     }
-    return out;
+    return [...map.values()];
+  }
+
+  /** 兼容旧调用：只要名字数组 */
+  _spectatorNames(room) {
+    return this._spectatorList(room).map((s) => s.name);
   }
 
   /** 观战者名单变动广播（对局页观众列表实时更新） */
   _broadcastSpectators(room) {
-    this._broadcast(room.id, { type: 'spectator_update', data: { spectators: this._spectatorNames(room) } });
+    this._broadcast(room.id, { type: 'spectator_update', data: { spectators: this._spectatorList(room) } });
   }
 
   _hostSeat(room) {

@@ -16,6 +16,16 @@
   const recordId = params.get('id');
   // 管理员访问他人棋谱：携带 adminToken（服务端校验通过则放行）
   const adminToken = params.get('adminToken') || '';
+  // 管理员可编辑对局信息、公开设置与任意评论（真正的鉴权在服务端 admin.verify）
+  const isAdmin = !!adminToken;
+  let editingCommentId = null;   // 正在编辑的评论 id（null = 新增）
+
+  /** 统一请求头：管理员带上 x-admin-token */
+  function authHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    if (adminToken) h['x-admin-token'] = adminToken;
+    return h;
+  }
 
   function toast(msg) {
     const el = document.getElementById('toast');
@@ -64,9 +74,119 @@
     positions = pb.positions || [];
     cursor = 0;
     render();
+    initPermissionUI();
     document.getElementById('loading').style.display = 'none';
     document.getElementById('review').style.display = 'block';
   }
+
+  /**
+   * §M6：统一的棋盘组件（review 只读模式）。
+   * 浏览时渲染局面与上一步高亮；自由摆放时切 free 模式，不再重建实例。
+   */
+  function ensureFb() {
+    if (fb) return fb;
+    fb = new window.FreeBoard({
+      board,
+      viewpoint: 'b',
+      interactive: false,
+      mode: 'review',
+      hands: {
+        my: document.getElementById('myHandPieces'), myColor: 'b',
+        opp: document.getElementById('oppHandPieces'), oppColor: 'w',
+      },
+    });
+    fb.attach();
+    // 绑定一次驹台拖拽（interactive=false 时不会触发，自由摆放开启后生效）
+    fb.bindHands(document.getElementById('myHandPieces'), 'b', document.getElementById('oppHandPieces'), 'w');
+    return fb;
+  }
+
+  /** 当前手的落点格（用于上一步高亮）：打子取落点，普通走子取 to */
+  function lastMoveSq() {
+    if (!cursor) return null;
+    const usi = review.moves[cursor - 1];
+    if (!usi) return null;
+    return /^[PLNSGBR]\*/.test(usi) ? usi.slice(2) : usi.slice(2, 4);
+  }
+
+  /**
+   * §L：权限相关的 UI 呈现
+   *  - 公开棋谱 + 非管理员 → 只读（隐藏书签/评论/变着/自由摆放）
+   *  - 管理员 → 显示「对局信息与展示设置」面板
+   */
+  function initPermissionUI() {
+    const isPub = review.visibility === 'public';
+    const readonly = isPub && !isAdmin;
+    ['btnBookmark', 'btnComment', 'btnVariation', 'btnFreePlace'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = readonly ? 'none' : '';
+    });
+    if (isAdmin) {
+      const p = document.getElementById('adminPanel');
+      p.style.display = 'block';
+      fillAdminForm();
+    }
+  }
+
+  function fillAdminForm() {
+    const m = review.meta || {};
+    document.getElementById('adTitle').value = m.title || '';
+    document.getElementById('adEvent').value = m.event || '';
+    document.getElementById('adRound').value = m.round || '';
+    document.getElementById('adPlayedOn').value = m.playedOn || '';
+    document.getElementById('adTags').value = (m.tags || []).join(', ');
+    document.getElementById('adNameB').value = (m.nameOverrides && m.nameOverrides.b) || '';
+    document.getElementById('adNameW').value = (m.nameOverrides && m.nameOverrides.w) || '';
+    document.getElementById('adResultNote').value = m.resultNote || '';
+    document.getElementById('adDesc').value = m.description || '';
+    document.getElementById('adFeatured').checked = !!m.featured;
+    document.getElementById('adVisibility').value = review.visibility || 'private';
+  }
+
+  // 保存对局信息（管理员）
+  document.getElementById('btnSaveMeta').addEventListener('click', async () => {
+    const val = (id) => document.getElementById(id).value.trim();
+    const body = {
+      title: val('adTitle'),
+      event: val('adEvent'),
+      round: val('adRound'),
+      playedOn: val('adPlayedOn'),
+      tags: val('adTags').split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean),
+      description: val('adDesc'),
+      nameOverrides: { b: val('adNameB'), w: val('adNameW') },
+      resultNote: val('adResultNote'),
+      featured: document.getElementById('adFeatured').checked,
+    };
+    try {
+      const r = await fetch(`/api/admin/records/${recordId}/meta`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+      }).then((res) => res.json());
+      if (r.ok) {
+        review.meta = r.meta;
+        toast('对局信息已保存');
+        render();
+      } else toast(r.error || '保存失败');
+    } catch (_) { toast('网络错误'); }
+  });
+
+  // 应用可见性（管理员）
+  document.getElementById('btnSaveVisibility').addEventListener('click', async () => {
+    const visibility = document.getElementById('adVisibility').value;
+    try {
+      const r = await fetch(`/api/admin/records/${recordId}/visibility`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ visibility }),
+      }).then((res) => res.json());
+      if (r.ok) {
+        review.visibility = r.visibility;
+        document.getElementById('adTip').textContent = r.visibility === 'public' ? '已公开（广场可见）' : '已设为私有';
+        toast(r.visibility === 'public' ? '已公开到棋谱广场' : '已设为私有');
+        initPermissionUI();
+        render();
+      } else {
+        document.getElementById('adTip').textContent = r.error || '操作失败';
+      }
+    } catch (_) { toast('网络错误'); }
+  });
 
   function resultText(r) {
     const n = r.names || ['先手', '後手'];
@@ -77,12 +197,16 @@
   }
 
   function render() {
-    // 顶部元信息
-    document.getElementById('rvNameB').textContent = (review.names || ['先手'])[0];
-    document.getElementById('rvNameW').textContent = (review.names || ['先手', '後手'])[1];
-    document.getElementById('rvResult').textContent = resultText(review);
+    // 顶部元信息（§L：管理员可为展示覆盖双方名/结果说明，与广场卡片保持一致）
+    const ov = (review.meta && review.meta.nameOverrides) || null;
+    document.getElementById('rvNameB').textContent = (ov && ov.b) || (review.names || ['先手'])[0];
+    document.getElementById('rvNameW').textContent = (ov && ov.w) || (review.names || ['先手', '後手'])[1];
+    const title = (review.meta && review.meta.title) || '';
+    const extra = [(review.meta && review.meta.event) || '', (review.meta && review.meta.round) || ''].filter(Boolean).join(' ');
+    document.getElementById('rvResult').textContent = [resultText(review), (review.meta && review.meta.resultNote) ? `（${review.meta.resultNote}）` : ''].filter(Boolean).join('');
     document.getElementById('rvMoves').textContent = `${review.moves.length} 手`;
-    document.getElementById('rvDate').textContent = new Date(review.createdAt).toLocaleString('zh-CN');
+    document.getElementById('rvDate').textContent = [extra, new Date(review.createdAt).toLocaleString('zh-CN')].filter(Boolean).join(' · ');
+    document.title = title ? `${title} · 复盘 · TDShogi` : '复盘 · TDShogi';
     document.getElementById('rvCursor').textContent = `${cursor} / ${review.moves.length}`;
 
     // 玩家栏：复盘默认先手视角，上方=后手，下方=先手
@@ -94,15 +218,15 @@
     document.getElementById('topClock').textContent = '';
     document.getElementById('bottomClock').textContent = '';
 
-    // 棋盘（先手视角）；自由摆放模式由 FreeBoard 接管渲染
+    // 棋盘（先手视角）：§M6 —— 浏览与自由摆放都走 FreeBoard，
+    // 浏览用 review 只读模式（自动带上一步高亮与统一持驹渲染），不再走裸 board.render
     const pos = positions[cursor];
     if (pos) {
-      if (freeMode && fb) { fb.render(); } else {
-        board.render({ board: pos.board, turn: cursor % 2 === 0 ? 'b' : 'w' }, {}, 'b');
-        // 持驹区：先手视角，左侧=后手(w)，右侧=先手(b)
-        const hands = pos.hands || {};
-        window.renderHands(document.getElementById('oppHandPieces'), hands, 'w', null, 'b');
-        window.renderHands(document.getElementById('myHandPieces'), hands, 'b', null, 'b');
+      ensureFb();
+      if (freeMode && fb) {
+        fb.render();
+      } else {
+        fb.setModel({ board: pos.board, hands: pos.hands || {} }, lastMoveSq());
       }
     }
 
@@ -131,6 +255,20 @@
         <span class="rv-no">${no}</span>
         <span class="rv-mv${cursor === no ? ' cursor' : ''}${isBookmarked(no) ? ' bookmark' : ''}${hasComment(no) ? ' has-comment' : ''}${hasVariation(no) ? ' has-var' : ''}" data-no="${no}">${mark} ${text}${timeTxt}</span>
       </div>`);
+      // §L：评论直接展示在手数下方（旧格式位置），管理员可就地编辑/删除
+      const cs = (review.comments && review.comments[no]) || [];
+      if (cs.length) {
+        html.push(`<div class="rv-comments">${cs.map((c) => `
+          <div class="rv-comment">
+            <span class="rv-comment-who">💬 ${esc(c.authorName || '解说')}</span>
+            <span class="rv-comment-text">${esc(c.text)}</span>
+            ${c.editedAt ? '<span class="rv-comment-edited">（已编辑）</span>' : ''}
+            ${isAdmin ? `<span class="rv-comment-ops">
+              <button class="btn btn-ghost btn-sm" onclick="rvEditComment(${no}, '${c.id}')">✏️</button>
+              <button class="btn btn-ghost btn-sm" onclick="rvDeleteComment(${no}, '${c.id}')">🗑</button>
+            </span>` : ''}
+          </div>`).join('')}</div>`);
+      }
     }
     el.innerHTML = html.join('');
     el.querySelectorAll('.rv-mv').forEach((node) => {
@@ -203,7 +341,9 @@
   }
 
   function isBookmarked(no) { return (review.bookmarks || []).includes(no); }
-  function hasComment(no) { return !!(review.comments && review.comments[no]); }
+  // §L3：comments 已升级为数组形态（旧字符串由服务端 normalizeComments 兼容）
+  function commentsAt(no) { return (review.comments && review.comments[no]) || []; }
+  function hasComment(no) { return commentsAt(no).length > 0; }
   function hasVariation(no) { return !!(review.variations && review.variations[no] && review.variations[no].length); }
 
   function renderAnnotations() {
@@ -214,8 +354,10 @@
     // 评论展示
     const cm = document.getElementById('rvComments');
     const cmInput = document.getElementById('rvCommentInput');
-    if (cm.style.display !== 'none') {
-      cmInput.value = hasComment(no) ? review.comments[no] : '';
+    // 编辑态才回填内容；新增态保持为空（comments 现在是数组，不能当字符串用）
+    if (cm.style.display !== 'none' && editingCommentId) {
+      const hit = commentsAt(no).find((c) => c.id === editingCommentId);
+      cmInput.value = hit ? hit.text : '';
     }
   }
 
@@ -260,29 +402,62 @@
     } else toast(r.error || '操作失败');
   });
 
-  // 评论
+  // ---- 评论（§L3）：展示在手数下方，新增/编辑/删除统一走 /api/records/:id/comment ----
   const commentPanel = document.getElementById('rvComments');
+  const commentInput = document.getElementById('rvCommentInput');
+
+  /** 打开评论面板：commentId 为空 = 新增 */
+  function openCommentPanel(no, commentId = null) {
+    if (!no) return toast('初始局面无法评论');
+    cursor = no;
+    editingCommentId = commentId;
+    const hit = commentId ? commentsAt(no).find((c) => c.id === commentId) : null;
+    commentInput.value = hit ? hit.text : '';
+    commentPanel.style.display = 'block';
+    commentPanel.scrollIntoView({ block: 'nearest' });
+    commentInput.focus();
+    render();
+  }
+
+  // 管理员就地编辑 / 删除（手数列表里的按钮）
+  window.rvEditComment = (no, cid) => openCommentPanel(no, cid);
+  window.rvDeleteComment = async (no, cid) => {
+    if (!confirm('删除这条评论？')) return;
+    await postComment(no, '', cid);
+  };
+
   document.getElementById('btnComment').addEventListener('click', () => {
     if (!cursor) return toast('初始局面无法评论');
-    commentPanel.style.display = commentPanel.style.display === 'none' ? 'block' : 'none';
-    if (commentPanel.style.display === 'block') {
-      document.getElementById('rvCommentInput').value = hasComment(cursor) ? review.comments[cursor] : '';
-      document.getElementById('rvCommentInput').focus();
-    }
-  });
-  document.getElementById('btnCancelComment').addEventListener('click', () => { commentPanel.style.display = 'none'; });
-  document.getElementById('btnSaveComment').addEventListener('click', async () => {
-    const text = document.getElementById('rvCommentInput').value;
-    const r = await fetch(`/api/records/${recordId}/comment`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guest: guest.id, moveNo: cursor, text }),
-    }).then((res) => res.json());
-    if (r.ok) {
-      review.comments = r.comments;
+    if (commentPanel.style.display === 'block' && !editingCommentId) {
       commentPanel.style.display = 'none';
-      render();
-      toast('评论已保存');
-    } else toast(r.error || '操作失败');
+      return;
+    }
+    openCommentPanel(cursor, null);
+  });
+  document.getElementById('btnCancelComment').addEventListener('click', () => {
+    commentPanel.style.display = 'none';
+    editingCommentId = null;
+  });
+
+  async function postComment(moveNo, text, commentId = null) {
+    const body = { guest: guest.id, moveNo, text };
+    if (commentId) body.commentId = commentId;
+    try {
+      const r = await fetch(`/api/records/${recordId}/comment`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+      }).then((res) => res.json());
+      if (r.ok) {
+        review.comments = r.comments;
+        commentPanel.style.display = 'none';
+        editingCommentId = null;
+        render();
+        toast(commentId ? (String(text).trim() ? '评论已更新' : '评论已删除') : '评论已保存');
+      } else toast(r.error || '操作失败');
+    } catch (_) { toast('网络错误'); }
+  }
+
+  document.getElementById('btnSaveComment').addEventListener('click', () => {
+    postComment(cursor, commentInput.value, editingCommentId);
   });
 
   // 变着
@@ -315,14 +490,10 @@
   function startFreePlace() {
     const pos = positions[cursor];
     if (!pos) return toast('局面尚未加载');
-    if (fb) fb.destroy();
-    fb = new window.FreeBoard({
-      board,
-      viewpoint: 'b',
-      interactive: true,
-      hands: { my: document.getElementById('myHandPieces'), myColor: 'b', opp: document.getElementById('oppHandPieces'), oppColor: 'w' },
-    });
-    fb.attach();
+    // §M6：复用同一个 FreeBoard 实例，切模式即可（不再 destroy + new，避免双实例与重复绑定）
+    ensureFb();
+    fb.setMode('free');
+    fb.setInteractive(true);
     fb.startFrom({ board: pos.board, hands: pos.hands || { b: [], w: [] } });
     freeMode = true;
     document.getElementById('btnFreePlace').classList.add('active');
@@ -332,7 +503,11 @@
 
   function stopFreePlace() {
     freeMode = false;
-    if (fb) { fb.detach(); fb.destroy(); fb = null; }
+    // 回到 review 只读模式（保留实例，翻页继续用）
+    if (fb) {
+      fb.setMode('review');
+      fb.setInteractive(false);
+    }
     document.getElementById('btnFreePlace').classList.remove('active');
     document.getElementById('btnUndoFree').style.display = 'none';
     render();

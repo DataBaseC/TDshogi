@@ -32,6 +32,7 @@
   let demoCursor = 0;             // 联合谱浏览位置
   let originalPositions = null;   // 原谱各手局面缓存
   let pendingDemoPromo = null;    // 感想战升变选择
+  let spectatorViewpoint = 'b';   // 观战视角（PLAN §R1）：仅观战者生效，可切 'b' / 'w'
 
   // 时间控制预设（与服务端 TIME_CONTROLS 对应）
   const TIME_CONTROLS = {
@@ -52,9 +53,14 @@
   // ==================================================================
   // 渲染
   // ==================================================================
+  /** 当前棋盘视角：对局者固定自己视角；观战者可切换（PLAN §R1） */
+  function currentViewpoint() {
+    return isPlayer ? (mySeat === 'w' ? 'w' : 'b') : spectatorViewpoint;
+  }
+
   function render(state) {
     const players = state.players || {};
-    const viewpoint = mySeat === 'w' ? 'w' : 'b'; // 后手视角
+    const viewpoint = currentViewpoint();
     // 视角布局：上方=对面，下方=自己；左侧持驹=对面，右侧持驹=自己
     const oppSeat = viewpoint === 'b' ? 'w' : 'b';
     const mySeatX = viewpoint === 'b' ? 'b' : 'w';
@@ -88,6 +94,12 @@
     const spectator = !isPlayer;
     $('spectatorTag').style.display = spectator ? 'inline' : 'none';
     $('btnResign').style.display = spectator ? 'none' : 'inline';
+    // §R1：视角切换按钮仅观战者可见，文字反映当前视角
+    const vpBtn = $('btnViewpoint');
+    if (vpBtn) {
+      vpBtn.style.display = spectator ? 'inline' : 'none';
+      vpBtn.textContent = viewpoint === 'b' ? '🔄 视角·先手' : '🔄 视角·後手';
+    }
 
     // 棋钟初始 + 读秒
     if (state.clock) {
@@ -103,6 +115,7 @@
 
     // 感想战中：棋盘由推演谱渲染（state 推送仅更新横幅/时钟等周边）
     if (reviewActive && fb) {
+      fb.setViewpoint(viewpoint); // §R1：观战者在感想战中也能切视角
       if (state.status === 'FINISHED') { applyDemoMode(); }
       updateDemoUI();
       return;
@@ -110,13 +123,19 @@
 
     // 棋盘渲染与交互统一交给 FreeBoard 组件（PLAN §G v6）
     ensureBoard(viewpoint);
-    fb.setModel({ board: state.board, hands: state.hands }, state.lastMove, { check: state.check ? [findKingSq(state, state.turn)] : [] });
+    fb.setViewpoint(viewpoint); // §R1：切换观战视角（内部同视角则空转）
+    fb.setModel({ board: state.board, hands: state.hands }, state.lastMove);
+    // §J2：王手格此前作为第三个参数传给 setModel 被丢弃，改用专门的 setCheck
+    fb.setCheck(state.check ? [findKingSq(state, state.turn)] : []);
     fb.setLegalTargets(state.legalTargetsBySq || {});
     fb.setTurn(state.turn); // 手番方持驹才可点选（打子符号与颜色无关，防误选对手驹台）
     const canMove = isPlayer && state.status === 'PLAYING' && mySeat === state.turn;
     fb.setInteractive(canMove);
     fb.render();
     renderMoveList(state);
+    // 观众列表：进场时用 state 快照初始化（此前只有 spectator_update 才渲染，
+    // 导致刚进入的观战者一直看到"暂无观众"，直到有人进出才更新）
+    if (state.spectators) renderSpectators(state.spectators);
 
     // 胜负横幅
     if (state.result) {
@@ -354,6 +373,13 @@
     // 赛事对局退出回赛事页，其余回大厅
     location.href = (state && state.roomType === 'tournament') ? 'tournaments.html' : 'lobby.html';
   });
+  // §R1：观战视角切换（先手 ⇄ 后手）。仅观战者可用——对局者固定自己视角。
+  $('btnViewpoint').addEventListener('click', () => {
+    if (isPlayer) return;
+    spectatorViewpoint = spectatorViewpoint === 'b' ? 'w' : 'b';
+    if (state) render(state);
+    else if (fb) fb.setViewpoint(spectatorViewpoint);
+  });
 
   function showResult(st) {
     const names = st.players || {};
@@ -456,15 +482,20 @@
     lastTickTs = Date.now();
     updateClocks();
   });
-  // 观战者名单（对局页右列观众列表，PLAN §G v7）
+  // 观战者名单（对局页右列观众列表，PLAN §R）
+  // 兼容两种形态：字符串数组（旧）与 {id,name,rating,level}（新）
   function renderSpectators(list) {
     const countEl = $('spectatorCount');
     const el = $('spectatorList');
     if (!el) return;
-    const names = list || [];
-    if (countEl) countEl.textContent = names.length;
-    el.innerHTML = names.length
-      ? names.map((n) => '<div style="padding:3px 0;">👤 ' + escHtml(n) + '</div>').join('')
+    const items = (list || []).map((s) => (typeof s === 'string' ? { name: s } : (s || {})));
+    if (countEl) countEl.textContent = items.length;
+    el.innerHTML = items.length
+      ? items.map((s) => {
+        const attrs = s.id ? ` data-player-id="${escHtml(s.id)}"` : '';
+        const lv = (s.level !== undefined && s.level !== null) ? ` <span style="color:var(--gold-light);font-size:11px;">Lv.${s.level}</span>` : '';
+        return `<div style="padding:3px 0;">👤 <span${attrs} class="spectator-name">${escHtml(s.name || '观众')}</span>${lv}</div>`;
+      }).join('')
       : '<div style="color:var(--text-dim);font-size:12px;">暂无观众</div>';
   }
   api.on('spectator_update', (d) => renderSpectators(d.spectators || []));
@@ -481,7 +512,7 @@
     reviewActive = true;
     freeMode = false;
     selected = null; targets = [];
-    ensureBoard(mySeat === 'w' ? 'w' : 'b');
+    ensureBoard(currentViewpoint());
     demoInfo = st.demo || { moves: [], kif: [], baseIndex: (state.moves || []).length, baseCount: (state.moves || []).length, legalTargetsBySq: {}, legalMoves: [], turn: 'b', demonstratorSeat: null, demonstratorName: null };
     demoCursor = demoEdge();
     $('demoBar').style.display = 'flex';
@@ -756,7 +787,11 @@
   if ($('btnChatSend')) $('btnChatSend').addEventListener('click', sendChat);
   if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
   api.on('chat', (data) => {
-    if (data) appendChat({ name: data.name, text: data.text });
+    // §R：观战者发言带 👁 标识（服务端已用其会话真名，不再一律显示"观众"）
+    if (data) {
+      const mark = data.role === 'spectator' ? '👁 ' : '';
+      appendChat({ name: mark + (data.name || ''), text: data.text });
+    }
   });
   // 观战者进入时系统提示（rebind=选手掉线重进回位，不算观战）
   api.on('spectating', (data) => {

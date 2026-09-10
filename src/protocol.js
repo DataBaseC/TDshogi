@@ -26,7 +26,7 @@ const audit = require('./audit');
 const privacy = require('./privacy');
 const { RoomManager } = require('./rooms');
 const tournaments = require('./tournaments');
-const { listRecords, listPlayerRecords, getRecord, exportRecord, recentSummaries } = require('./records');
+const { listRecords, listPlayerRecords, getRecord, exportRecord, recentSummaries, isPublic } = require('./records');
 const { countRecords } = require('./storage');
 const { listAnnouncements } = require('./announcements');
 
@@ -375,9 +375,12 @@ class Protocol {
       // 管理员：返回全部棋谱（含公共 kif-import 库与所有用户对局）
       return { records: listRecords(1000), isAdmin: true };
     }
-    // 普通用户：严格只能看自己的棋谱（出口过隐私白名单，PLAN §K2）
+    // 普通用户：自己的棋谱 + 广场公开棋谱（§L：公开谱在历史页同样可见）
     const own = playerId ? listPlayerRecords(playerId, 50) : [];
-    return privacy.stripPrivate({ records: own, isAdmin: false });
+    const seen = new Set(own.map((r) => r.id));
+    const pub = listRecords(300).filter((r) => isPublic(r) && !seen.has(r.id));
+    const merged = [...own, ...pub].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 100);
+    return privacy.stripPrivate({ records: merged, isAdmin: false });
   }
 
   /**

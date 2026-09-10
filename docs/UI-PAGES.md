@@ -55,6 +55,9 @@
 
 渲染要点：
 - `state` 消息全量驱动；`seat`/`isPlayer` 区分玩家观战
+- **视角**：`currentViewpoint()` 统一决定——对局者固定自己视角，观战者可在先手/后手间切换
+  （顶部「🔄 视角·先手/後手」按钮，仅观战者可见；PLAN §R1）。切换走 `FreeBoard.setViewpoint()`，
+  只翻转 viewpoint 与驹台配色、不换 DOM，并清选中
 - 走子：选己方棋子/驹台子 → 服务端下发的 `legalTargetsBySq[from]` 渲染目标 → 点目标格出招；成/不成双选时弹升变浮层
 - 棋钟本地 500ms tick + 服务端 `clock` 校准；读秒 ≤10s 每秒播嗒声
 - 音效触发判据：`moves.length` 增加 && 棋子总数减少 → 吃子音
@@ -72,6 +75,16 @@
 - 条件含义：query=选手名关键词 / opening=前N手 USI（逗号分隔）/ moves=区间如 `30-80` / result=b|w|-
 - 列表项点击 → `review.html?id=<recordId>`；回车即检索
 
+## 4.5 gallery.html（棋谱广场）— `js/gallery.js`（PLAN §L，2026-09 新增）
+
+**职责**：展示管理员设为**公开**的棋谱（赛事名局、经典对局），任何人可浏览与复盘。
+
+- 数据源 `GET /api/gallery?q=&tag=&page=&limit=`（服务端只返回 `visibility=public`，摘要不含 moves）
+- 布局：搜索框（双方名/标题/赛事）+ 标签下拉（从首屏记录提取）+ 卡片列表 + 分页（20/页）
+- 卡片：置顶标题（⭐ 标题）、双方名（管理员可用 `nameOverrides` 覆盖展示名）、结果 + 手数、
+  赛事·轮次·日期、简介、标签徽标
+- 点击卡片 → `review.html?id=<recordId>`（公开谱免登录复盘）
+
 ## 5. review.html（复盘器）— `js/review.js`
 
 **职责**：单谱复盘（似感想战界面）。能力：
@@ -80,7 +93,17 @@
 - 前进/后退/跳首/跳末，当前手滚动居中
 - 书签 toggle / 评论（写删）/ 变着（在任意手数挂备选着法）
 - 数据：`GET /api/records/:id/playback`（局面序列）+ `/review`（完整标注数据）；写操作 POST bookmark/comment/variation（body 带 `guest`）
-- 权限：owner 或管理员（管理员经 admin.html 跳入时带 `&adminToken=`）
+- 权限：owner 或管理员（管理员经 admin.html 跳入时带 `&adminToken=`）；**公开棋谱任何人可复盘**
+- **棋盘渲染（PLAN §M6 已统一）**：浏览与自由摆放**共用同一个 FreeBoard 实例**——
+  浏览走 `review` 只读模式（`ensureFb()` + `setModel(..., lastMoveSq())`，自动带上一步/王手高亮与统一持驹），
+  自由摆放切 `free` 模式后切回（不再 destroy/new）
+- **§L 变更**：
+  - 评论**展示在手数下方**（`💬 作者 文本（已编辑）`），管理员就地 ✏️ 编辑 / 🗑 删除；
+    「当前手」面板仅用于新增或编辑输入
+  - **公开谱 + 非管理员 = 只读**：隐藏书签/评论/变着/自由摆放按钮
+  - 带 `adminToken` 进入时显示「管理员：对局信息与展示设置」面板（标题/赛事/轮次/日期/标签/简介/
+    双方名覆盖/结果说明/置顶）+ 可见性下拉（私有一公开）
+  - 顶部元信息优先展示 `meta.nameOverrides` / `meta.resultNote`（与广场卡片一致）
 
 > 规划中（见 PLAN §G）：新增「✋ 自由摆放」开关——在当前浏览局面上自由摆子推演（草稿性质，不入谱）。
 

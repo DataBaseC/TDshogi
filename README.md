@@ -1,308 +1,195 @@
 # TDShogi 在线将棋对战平台
 
-轻量级在线将棋对战平台，参考 [81Dojo](https://81dojo.com) 与 [lishogi](https://lishogi.org) 的功能形态设计，采用 **Node.js + Express + ws** 单进程部署，无数据库依赖，棋子为程序化生成的 SVG 矢量木棋子。
+轻量级在线将棋对战平台，参考 [81Dojo](https://81dojo.com) 与 [lishogi](https://lishogi.org) 的功能形态设计。
+**Node.js + Express + ws 单进程**，数据落在单一 SQLite 库，棋子使用自定义木棋子图片素材（`public/pieces/`）。
 
 ## 特性
 
-- 游客免注册即可开始对局（`localStorage` 持久化），可在个人页注册账号保留数据
-- 账号系统：用户名+密码注册/登录（scrypt 加盐哈希，无数据库依赖），游客升级账号自动迁移对局/评级/棋谱
-- 在线人人对战（服务端权威规则判定）+ 实时观战
-- 好友房间（6 位房间码邀请）+ 快速匹配
-- 随机观战（一键进入进行中的对局）
-- ELO 评级系统（参考 81Dojo R300 形态，起始 1500，K=32）
-- 单败淘汰赛事（4/8/16 人）
-- 棋谱自动保存 + **日本标准 KIF / CSA 格式导出**
-- 棋谱回放（感想战式）
-- 和风 × 现代深色 UI，�木暖色棋盘 + 金色点缀
-- 自生成 SVG 木棋子（无外部图片素材）
+**对局**
+- 游客免注册即可开局（`localStorage` 持久化），可在个人页注册账号保留数据（游客升级自动迁移对局/评级/棋谱）
+- 账号系统：用户名 + 密码（scrypt 加盐哈希 + HMAC 会话令牌）
+- 在线人人对战（**服务端权威规则判定**）+ 实时观战 + 随机观战
+- 好友房间（6 位房间码）+ 快速匹配 + 房间聊天
+- 四种时制：`10:00`（10 分包干）/ `15+60` / `10+30` / `10sec`（0+10 每手读秒）
+- 终局自动进入**感想战**：按规则推演、分支变化、待った、演示权交接、自由摆棋
+- 断线 60 秒重连宽限；中途退出/掉线判负并标记 `接続切断`
+
+**棋谱**
+- 自动保存，支持**日本标准 KIF / CSA** 导出（含每手耗时；KIF 带手数评论）、KIF 批量导入
+- 复盘器：日式/USI 切换、书签、评论、变着、自由摆放
+- **棋谱广场**：管理员可将棋谱设为公开（赛事名局等），访客免登录浏览与复盘
+
+**社区与运营**
+- ELO 评级（起始 1500，K=32）+ 排行榜
+- **等级系统**：每日登录 +2 经验、完成一局 +1；`L→L+1` 需 `2^(L+1)` 经验（0→1:2、1→2:4…），封顶 64 级
+- 单败淘汰赛事（4/8/16 人）+ 创建审核流
+- 选手信息悬停小窗、用户称号
+- **管理后台**：用户管理（登录 IP/UA、封禁、改名、重置 ELO/密码、编辑资料、删除账号）、
+  赛事审核、棋谱导入、对局信息与评论编辑、操作审计
+- 移动端适配（棋盘竖排、触控拖拽、尺寸自适应）
 
 ## 目录结构
 
 ```
 shogiwebapp/
-├── package.json
-├── server.js                  # 入口：Express + ws 同端口
-├── src/
-│   ├── coords.js              # USI 坐标 ↔ shogi.js (x,y) 转换
-│   ├── game.js                # 基于 shogi.js 的规则封装（王手过滤、升变、判定）
-│   ├── rooms.js               # 房间 / 匹配 / 对局状态机 / 棋钟
-│   ├── protocol.js            # WebSocket 消息路由 + REST 适配
-│   ├── records.js             # 棋谱落盘 + 日本标准 KIF/CSA 导出/导入判定
-│   ├── tournaments.js         # 单败淘汰赛
-│   ├── ratings.js             # ELO 积分与排行榜
+├── package.json / package-lock.json
+├── server.js                  # 入口：Express(REST) + ws 同端口
+├── src/                       # 服务端 16 模块（CommonJS）
+│   ├── storage.js             # SQLite 存储层（kv/records/sessions/gamesnapshots）
+│   ├── rooms.js               # ★ 对局状态机：房间/匹配/棋钟/观战/聊天/快照/感想战
+│   ├── protocol.js            # WS 消息路由 + REST 数据聚合
+│   ├── game.js                # 规则引擎封装（shogi.js + 王手过滤/升变/判定）
+│   ├── coords.js              # USI 坐标 ↔ shogi.js (x,y)
+│   ├── records.js             # 棋谱读写 + KIF/CSA 导出 + 复盘标注 + 公开广场
+│   ├── kif.js                 # KIF 解析（导入）
+│   ├── ratings.js             # ELO 评级 + 等级（exp/level）
+│   ├── tournaments.js         # 单败淘汰赛事
+│   ├── accounts.js            # 账号（注册/登录/令牌/升级迁移）
+│   ├── auth.js                # 游客会话（kv sessions/<id>.json）
+│   ├── admin.js               # 管理员鉴权（HMAC 令牌）
 │   ├── announcements.js       # 系统公告
-│   ├── auth.js                # 游客会话
-│   └── storage.js             # JSON 文件存储工具
-├── public/
-│   ├── index.html             # 首页（随机观战/公告/排行榜）
-│   ├── lobby.html             # 对战大厅
-│   ├── play.html              # 对局页（对战 + 观战）
-│   ├── history.html           # 棋谱管理 + 回放 + KIF/CSA 导出
-│   ├── tournaments.html       # 赛事
-│   ├── profile.html           # 个人页
-│   ├── css/style.css          # 全局和风深色主题
-│   ├── css/board.css          # 棋盘样式
-│   └── js/
-│       ├── api.js             # WS / REST 封装
-│       ├── nav.js             # 全局导航渲染
-│       ├── board.js           # SVG 棋子 + 棋盘渲染 + 走子交互
-│       ├── home.js / lobby.js / play.js / history.js / tournaments.js / profile.js
-└── data/                      # 运行时生成（gitignore）
-    ├── records/               # 棋谱 JSON
-    ├── sessions/              # 游客会话
-    ├── ratings.json
-    ├── tournaments.json
-    └── announcements.json
+│   ├── net.js                 # 客户端 IP/UA 解析（反代信任）
+│   ├── audit.js               # 登录与管理员操作事件日志
+│   └── privacy.js             # 隐私字段出口白名单（stripPrivate）
+├── public/                    # 前端（静态，无构建步骤）
+│   ├── index/lobby/play/history/gallery/review/tournaments/profile/admin .html
+│   ├── css/                   # style.css（主题+响应式）/ board.css / review.css
+│   ├── pieces/                # 木棋子图片素材（kinki.png / ryoko.png）
+│   └── js/                    # 17 个脚本
+│       ├── api.js nav.js board.js pieces.js piece-kinds.js
+│       ├── freeboard.js       # ★ 统一棋盘组件（play/demo-rules/free/review 四模式）
+│       ├── home lobby play history gallery review tournaments profile admin .js
+│       ├── hovercard.js sound.js
+├── tests/                     # 单元测试（node --test，纯函数、不起服）
+├── scripts/                   # e2e 回归套件与工具脚本（需起服）
+└── data/                      # 运行时生成（gitignore）：tdshogi.db
 ```
 
 ## 快速开始
 
-### 环境要求
-
-- Node.js 22+（依赖 better-sqlite3 v13 的硬性要求；22/24 实测通过）
-- npm 9+
-- 现代浏览器（Chrome / Edge / Firefox）
-
-> 无需 Python / Visual Studio / gcc 等 C++ 编译工具链：better-sqlite3 v13 的 tarball
-> 自带全平台预编译二进制（`prebuilds/*.node`），项目根 `.npmrc` 已设置 `ignore-scripts=true`
-> 阻止 npm 对它做无谓且易失败的本地编译（详见下文「常见问题」）。
-
-### 安装与启动
-
 ```bash
-# 1. 安装依赖
 npm install
-
-# 2. 启动服务器（默认端口 3000）
-npm start
-
-# 3. 访问
-open http://localhost:3000
+npm start          # 默认 http://localhost:3000
+npm run dev        # --watch 自动重启
+npm test           # 单元测试（纯函数，无需起服）
 ```
 
-### 常见问题：npm install 报 node-gyp / gyp ERR find VS 失败
+环境要求：**Node.js 22+**（better-sqlite3 v13 硬性要求）。无需 C++ 编译工具链——
+仓库根 `.npmrc` 的 `ignore-scripts=true` 阻止 npm 对自带预编译二进制的包做无谓的 `node-gyp rebuild`。
 
-`better-sqlite3` 包内带 `binding.gyp` 且未声明 install 脚本，npm 默认会自动执行
-`node-gyp rebuild`，在缺少 MSVC 工具链（Windows）或 build-essential（Linux）的机器上
-整体安装失败。修复方式由仓库根目录 `.npmrc` 的 `ignore-scripts=true` 自动生效。
-
-验证安装是否健康：
+若 `npm install` 报 node-gyp / gyp ERR，检查 `.npmrc` 是否被改坏；验证依赖健康：
 
 ```bash
 node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(a)');console.log('sqlite OK')"
 ```
 
-若手动加过 `--ignore-scripts=false` 或改坏了 `.npmrc`，恢复即可。
-注意：本项目所有依赖均不需要生命周期脚本；若未来引入需要编译/postinstall 的依赖，
-需重新评估该配置。
+## 环境变量
 
-### 自定义端口
-
-```bash
-PORT=8080 npm start
-```
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PORT` | 3000 | 监听端口 |
+| `DATA_DIR` | `./data` | 数据目录（部署请指向持久目录） |
+| `ADMIN_PASSWORD` | `Cplusplus123` | 管理密码（**务必修改**） |
+| `ADMIN_SECRET` | 由密码派生 | 管理员令牌签名密钥 |
+| `SESSION_SECRET` | 内置 | 账号会话令牌签名密钥 |
+| `SNAPSHOT_INTERVAL_MS` | 30000 | 对局快照间隔 |
+| `TRUST_PROXY` | `0` | 反代层数（`1`=一层 Nginx，`true`=全信任）。**走反代必须配，否则 IP 全是 127.0.0.1** |
+| `ADMIN_ENTRY_KEY` | 空 | 设置后 `/admin.html` 需带 `?k=<key>`，否则 404（隐藏后台入口） |
+| `AUDIT_MAX_EVENTS` | 5000 | 事件日志容量上限 |
+| `AUDIT_RETENTION_DAYS` | 90 | 事件日志保留天数 |
 
 ## 部署
 
-### 单机直接运行
+支持 PM2 / systemd / Docker / Nginx 反代，详见 `DEPLOY.md`。要点：
 
-```bash
-npm start
-```
+- **单文件备份**：复制 `data/tdshogi.db` 即可还原全部数据
+- **WebSocket 需反代放行**：Nginx 要带 `Upgrade` / `Connection` 头
+- **走反代必配 `TRUST_PROXY=1`**，并加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
+- **服务端任何改动都必须重启进程**，前端静态资源已设 `no-cache` 协商缓存
+- 部署包：`npm run` 无打包脚本，用 bsdtar 打（Windows 自带 `tar.exe`）：
+  ```bash
+  tar -a -c -f tdshogi-deploy.zip package.json package-lock.json server.js .npmrc DEPLOY.md README.md src public
+  ```
 
-### 使用 PM2（推荐生产）
-
-```bash
-# 安装 PM2
-npm install -g pm2
-
-# 启动
-pm2 start server.js --name tdshogi
-
-# 设置开机自启
-pm2 startup
-pm2 save
-
-# 查看状态
-pm2 status
-pm2 logs tdshogi
-```
-
-### 使用 systemd（Linux）
-
-创建 `/etc/systemd/system/tdshogi.service`：
-
-```ini
-[Unit]
-Description=TDShogi shogi server
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/tdshogi
-ExecStart=/usr/bin/node server.js
-Restart=on-failure
-User=www-data
-Environment=PORT=3000
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启用：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now tdshogi
-sudo systemctl status tdshogi
-```
-
-### 使用 Nginx 反向代理
-
-```nginx
-server {
-    listen 80;
-    server_name shogi.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 86400;
-    }
-}
-```
-
-### Docker
-
-```dockerfile
-FROM node:22-alpine
-WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
-COPY . .
-EXPOSE 3000
-ENV PORT=3000
-CMD ["node", "server.js"]
-```
-
-```bash
-docker build -t tdshogi .
-docker run -d --name tdshogi -p 3000:3000 -v $(pwd)/data:/app/data tdshogi
-```
-
-## REST API
+## REST API（主要）
 
 | 路径 | 方法 | 说明 |
-|------|------|------|
-| `/api/home` | GET | 首页数据（公告 + 排行榜 + 统计 + 进行中对局） |
-| `/api/lobby` | GET | 对战大厅数据 |
-| `/api/history?player=<id>` | GET | 某玩家的对局记录 |
-| `/api/records/:id/export?fmt=kif\|csa` | GET | 导出棋谱（下载） |
-| `/api/records/:id/playback` | GET | 回放数据（中间局面） |
-| `/api/tournaments` | GET | 赛事列表 |
-| `/api/profile?player=<id>` | GET | 个人战绩与评级 |
-| `/api/register` | POST | 注册账号 `{username, password, guestId?}`（guestId 用于游客升级迁移数据） |
-| `/api/login` | POST | 登录 `{username, password}`，返回会话令牌 |
-| `/api/me?token=<token>` | GET | 校验会话令牌，返回账号信息 |
+|---|---|---|
+| `/api/home` `/api/lobby` | GET | 首页 / 大厅数据（含 version，排障可查进程版本） |
+| `/api/history?player=` | GET | 自己的棋谱 + 广场公开棋谱 |
+| `/api/gallery?q=&tag=&page=` | GET | 棋谱广场（公开棋谱列表） |
+| `/api/records/:id/playback` `/review` | GET | 回放 / 完整复盘数据（公开谱免登录） |
+| `/api/records/:id/export?fmt=kif\|csa` | GET | 导出（KIF 含手数评论） |
+| `/api/records/:id/{bookmark,comment,variation}` | POST | 写标注（评论支持编辑/删除，公开谱仅管理员） |
+| `/api/records/search` | GET | 棋谱检索（按选手/手数/结果/开局） |
+| `/api/tournaments` | GET | 赛事列表（已过滤未审核/已拒/已取消） |
+| `/api/profile?player=` | GET | 个人战绩与等级 |
+| `/api/register` `/api/login` `/api/me` | POST/GET | 账号体系 |
+| `/api/account/profile` | GET/POST | 本人资料（手机号私密/棋风） |
+| `/api/player-card?id=` | GET | 选手信息卡（公开，不含手机号/IP） |
+| `/api/admin/users[/:id]` | GET | 用户列表 / 详情（含登录 IP、封禁状态、登录记录） |
+| `/api/admin/users/:id/{ban,unban,rename,reset-rating,reset-password,profile,elo}` | POST | 用户管理（全部写审计） |
+| `/api/admin/users/:id` | DELETE | 删除账号（需确认） |
+| `/api/admin/records/:id/{visibility,meta}` | POST | 棋谱公开设置与对局信息编辑 |
+| `/api/admin/{tournaments,audit}` | GET | 赛事全量 / 操作审计 |
+| `/api/admin/records/import` | POST | 导入 KIF |
 
 ## WebSocket 协议
 
-WS 路径：`ws://<host>/ws?guest=<guestId>`
+连接：`ws://<host>/ws?guest=<guestId|accountToken>`
 
-客户端消息 `type`：
-- `create_room` 创建房间
-- `join_room {code}` 加入房间
-- `quick_match` / `cancel_match` 快速匹配
-- `move {usi}` 走子
-- `resign` 认输
-- `rematch` 再来一局
-- `spectate {roomId}` / `random_spectate` 观战（该身份在此房间有断线座位时自动回位到选手座位，`spectating` 带 `rebind:true`）
-- `leave` 离开
-- `rename {name}` 改名
-- `create_tournament {name,size}` / `join_tournament {id}` 赛事
-- `request_state {roomId?}` 请求当前状态（roomId=页面 URL 指向的房间，回位优先绑定它）
-- 感想战（FINISHED 后）：`demo_move {usi,index}` / `demo_undo` / `demo_claim` / `demo_transfer` / `demo_reset` / `demo_legal {index}`
+客户端消息：`create_room` `join_room {code}` `quick_match` `cancel_match` `move {usi}` `resign`
+`rematch` `leave` `chat {text}` `rename {name}` `spectate {roomId}` `random_spectate`
+`join_tournament_match` `create_tournament` `join_tournament` `admin_login {password}`
+`request_state {roomId?}`；终局后 `demo_move {usi,index}` `demo_undo` `demo_claim` `demo_transfer`
+`demo_reset` `demo_legal {index}` `demo_enter`。
 
-服务端消息 `type`：`hello / matched / room_created / room_joined / game_start / state / clock / move_invalid / game_over / elo_updated / spectator_update / tournament_update / renamed / spectating / demo_state / demo_legal / error`
+服务端消息：`hello` `matched` `room_created` `room_joined` `game_start` `state` `clock` `move_invalid`
+`game_over` `elo_updated` `spectator_update` `chat` `tournament_update` `renamed` `spectating`
+`demo_state` `demo_init` `admin_logged_in` `error`。
 
-## 棋谱格式（KIF / CSA）
+## 棋谱格式
 
-严格遵循日本业内标准格式（参照 python-shogi record.py 的判定原理实现）：
+严格遵循日本标准（KIF 2.0 / CSA V2.2），每手记录耗时，KIF 额外导出手数评论（`*` 注释行）：
 
-**KIF 示例：**
 ```
-# ---- Kifu for Windows V7 V7.1 棋譜ファイル ----
-開始日時：2026-08-13 04:07:09
+#KIF version=2.0 encoding=UTF-8
+開始日時：2026/09/07 19:20
+場所：天锻将棋道场
+持ち時間：10分
 手合割：平手
-先手：先手太郎
-後手：後手次郎
+先手：Sente
+後手：Gote
 手数----指手---------消費時間--
-1 ７四歩(73)
-2 ３六歩(37)
-まで2手で後手次郎の勝ち
-```
-
-**CSA 示例：**
-```
-V2.2
-N+先手太郎
-N-後手次郎
-P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
-...
-+
-+7374FU
--3736FU
-%TORYO
+1   ７六歩(77)   (0:3/0:0:3)
+*opening note
+2   ３四歩(33)   (0:5/0:0:8)
+まで2手でSenteの勝ち
 ```
 
 ## 数据存储
 
-所有数据写入单一 SQLite 库 `data/tdshogi.db`（WAL 模式；storage.js 提供 kv 兼容层）：
+单一 SQLite 库 `data/tdshogi.db`（WAL 模式，`storage.js` 提供 kv 兼容层）：
 
-- `kv` 表：评级 / 账号 / 赛事 / 公告 / 会话 / 管理配置（原各 *.json 的键值化落点）
-- `records` 表：每局棋谱（含起止局面、走法、玩家、结果、书签/评论/变着），支持 json_extract 组合检索
-- `gamesnapshots` 表：进行中对局快照，服务器重启自动恢复未完成对局
+- `kv`：评级 / 账号 / 赛事 / 公告 / 会话（`sessions/<id>.json`）/ 管理配置 / 事件日志（`events/<ts>-<rand>`）
+- `records`：每局棋谱（局面、走法、耗时、玩家、结果、书签/评论/变着、可见性与展示 meta）
+- `gamesnapshots`：进行中对局快照，重启自动恢复未完成对局
 
-**备份建议**：定期备份 `data/tdshogi.db` 单个文件即可还原所有数据。首次启动会自动把旧版
-JSON 文件迁移入库并改名为 `.bak`。
-
-## 规则说明
-
-- 标准将棋初始局面（平手）
-- 完整支持：升变、打步、持驹、王手、将死、投了、千日手、入玉、时间切れ
-- 服务端权威判定（shogi.js + 自实现的王手过滤与结果判定）
-- 棋钟：每方 15 分钟，未使用秒读
+首次启动会把旧版 JSON 迁移入库并改名 `.bak`。
 
 ## 开发与测试
 
-```bash
-# 开发模式（自动重启）
-npm run dev
+- **单元测试**：`npm test`（`tests/*.test.js`，Node 内置 `node --test`，纯函数不需起服）。
+  当前覆盖棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换、坐标换算、初始盘面
+- **e2e 回归**：`scripts/e2e-*.js`（10 套件），需先起服再跑；由维护者手工执行
+- **文档**：`docs/PLAN.md`（路线图）/ `docs/ARCHITECTURE.md`（架构）/ `docs/UI-PAGES.md`（页面地图）
 
-# 端到端测试（需 playwright-cli）
-npm install -g @playwright/cli
-playwright-cli install-browser
-# 启动服务器后，另开两个会话模拟双人对局
-```
+## 限制与扩展方向
 
-## 限制与扩展
+限制：仅平手（无駒落ち让子）、无 AI 对战、赛事仅单败淘汰、游客 id 无密码保护。
 
-v1 限制：
-- 駒落ち（让子）尚未支持（仅平手）
-- 暂无 AI 对战（可接入 USI 引擎如 YaneuraOu）
-- 暂无锦标赛（仅单败淘汰赛事）
-- 游客账号无密码（已支持升级为带密码的正式账号）
-
-扩展方向：
-- 接入 USI 引擎（人机对战）
-- 锦标赛（多轮淘汰 + 循环赛）
-- 驹落ち（香落ち等）
-- 实名账号体系（基于游客 id 升级）
-- 棋谱搜索与战术题库
+方向：接入 USI 引擎（人机对战）、锦标赛（多轮/循环）、駒落ち、i18n、
+内容运营（棋谱广场栏目化）、赛事前台与自动化、PWA、接口速率限制与越权治理。
 
 ## License
 

@@ -10,7 +10,8 @@
  */
 (function (global) {
   // 棋子中文名 → kind（来自服务端 KIND_NAME）
-  const NAME_TO_KEY = {
+  // 单一来源：piece-kinds.js（PLAN §M6）；未加载时退回内联备份，保证旧页面不炸
+  const NAME_TO_KEY = (global.PieceKinds && global.PieceKinds.NAME_TO_KEY) || {
     '歩': 'FU', '香': 'KY', '桂': 'KE', '銀': 'GI', '金': 'KI',
     '角': 'KA', '飛': 'HI', '玉': 'OU', '王': 'OU',
     'と': 'TO', '杏': 'NY', '圭': 'NK', '全': 'NG', '馬': 'UM', '龍': 'RY',

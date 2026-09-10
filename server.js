@@ -263,7 +263,8 @@ app.get('/api/records/:id/export', (req, res) => {
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
   const token = req.query.token || req.headers['x-admin-token'];
   const guest = resolvePlayer(req.query.guest);
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
+  // §L2：管理员 / 谱主 / 已公开棋谱 均可导出
+  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
     return res.status(403).json({ error: '无权导出他人的棋谱' });
   }
   const data = protocol.exportData(req.params.id, fmt);
@@ -293,7 +294,8 @@ app.get('/api/records/:id/playback', (req, res) => {
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
   const token = req.query.token || req.headers['x-admin-token'];
   const guest = resolvePlayer(req.query.guest);
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
+  // §L2：公开棋谱任何人可回放
+  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
     return res.status(403).json({ error: '只能回放自己的棋谱' });
   }
   res.json(records.playbackData(rec));
@@ -306,10 +308,46 @@ app.get('/api/records/:id/review', (req, res) => {
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
+  // §L2：公开棋谱任何人可复盘
+  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
     return res.status(403).json({ error: '只能复盘自己的棋谱' });
   }
   res.json(records.reviewData(req.params.id));
+});
+
+// ---------- §L 公开棋谱广场 ----------
+
+// 广场列表（公开棋谱，无需登录）：?tag=&q=&page=&limit=
+app.get('/api/gallery', (req, res) => {
+  const records = require('./src/records');
+  res.json(records.listPublic({
+    tag: req.query.tag || '',
+    query: req.query.q || req.query.query || '',
+    page: req.query.page || 1,
+    limit: req.query.limit || 20,
+  }));
+});
+
+// 设置公开/私有（管理员）
+app.post('/api/admin/records/:id/visibility', (req, res) => {
+  const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
+  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  const records = require('./src/records');
+  const r = records.setVisibility(req.params.id, (req.body || {}).visibility);
+  audit.adminAction({ adminIp: req.clientIp || null, action: 'record-visibility', targetId: req.params.id, ok: !!r.ok, detail: { visibility: (req.body || {}).visibility } });
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+// 编辑展示信息（管理员）：标题/赛事/轮次/日期/标签/简介/双方名覆盖/结果说明/置顶
+app.post('/api/admin/records/:id/meta', (req, res) => {
+  const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
+  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  const records = require('./src/records');
+  const r = records.setMeta(req.params.id, req.body || {});
+  audit.adminAction({ adminIp: req.clientIp || null, action: 'record-meta', targetId: req.params.id, ok: !!r.ok, detail: { fields: Object.keys(req.body || {}) } });
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r);
 });
 
 // 书签（toggle）
@@ -329,19 +367,42 @@ app.post('/api/records/:id/bookmark', (req, res) => {
   res.json(r);
 });
 
-// 评论（text 为空表示删除）
+// 评论（§L3 升级）：新增 / 编辑（带 commentId）/ 删除（带 commentId 且 text 为空）
+// 权限：谱主可写自己的评论；管理员可写、编辑、删除任意评论（force）
 app.post('/api/records/:id/comment', (req, res) => {
   const token = req.headers['x-admin-token'] || (req.query && req.query.token);
-  const guest = req.body && req.body.guest;
+  const isAdmin = admin.verify(token);
+  const guest = resolvePlayer(req.body && req.body.guest);
   const moveNo = req.body && req.body.moveNo;
   const text = req.body && req.body.text;
+  const commentId = (req.body && req.body.commentId) || null;
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
-    return res.status(403).json({ error: '无权操作' });
+  // §L：公开棋谱的评论仅管理员可维护（访客只读，避免展示内容被随意改动）
+  if (records.isPublic(rec) && !isAdmin) {
+    return res.status(403).json({ error: '公开棋谱的评论仅管理员可维护' });
   }
-  const r = records.setComment(req.params.id, moveNo, text);
+  if (!isAdmin && !records.isOwner(rec, guest)) {
+    return res.status(403).json({ error: '无权操作（仅谱主与管理员可评论）' });
+  }
+  const session = auth.load(guest) || null;
+  const authorName = isAdmin ? '管理员' : (session ? session.name : null);
+  const r = records.setComment(req.params.id, moveNo, text, {
+    authorId: guest,
+    authorName,
+    commentId,
+    force: isAdmin,
+  });
+  if (isAdmin) {
+    audit.adminAction({
+      adminIp: req.clientIp || null,
+      action: commentId ? 'record-comment-edit' : 'record-comment-add',
+      targetId: req.params.id,
+      ok: !!r.ok,
+      detail: { moveNo, commentId, hasText: !!(text && String(text).trim()) },
+    });
+  }
   if (!r.ok) return res.status(400).json(r);
   res.json(r);
 });

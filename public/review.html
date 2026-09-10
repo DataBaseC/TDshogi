@@ -51,6 +51,45 @@
         </div>
       </div>
 
+      <!-- 管理员：对局信息与展示设置（PLAN §L5） -->
+      <div class="card" id="adminPanel" style="padding:18px;margin-bottom:16px;display:none;">
+        <h3 style="margin:0 0 12px;font-size:15px;color:var(--gold-light);">🛡️ 管理员：对局信息与展示设置</h3>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+          <div><div style="font-size:11px;color:var(--text-dim);">标题</div>
+            <input class="input" id="adTitle" maxlength="120" style="width:180px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">赛事</div>
+            <input class="input" id="adEvent" maxlength="120" style="width:140px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">轮次</div>
+            <input class="input" id="adRound" maxlength="120" style="width:100px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">对局日期</div>
+            <input class="input" id="adPlayedOn" maxlength="40" placeholder="2026-09-06" style="width:130px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">标签（逗号分隔）</div>
+            <input class="input" id="adTags" style="width:180px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">先手展示名</div>
+            <input class="input" id="adNameB" maxlength="120" style="width:130px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">後手展示名</div>
+            <input class="input" id="adNameW" maxlength="120" style="width:130px;"></div>
+          <div><div style="font-size:11px;color:var(--text-dim);">结果说明</div>
+            <input class="input" id="adResultNote" maxlength="120" style="width:150px;"></div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+            <input type="checkbox" id="adFeatured"> 广场置顶
+          </label>
+        </div>
+        <div style="margin-top:10px;">
+          <div style="font-size:11px;color:var(--text-dim);">简介</div>
+          <textarea class="input" id="adDesc" rows="2" maxlength="200" placeholder="展示在广场卡片上的一句话说明"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" id="btnSaveMeta">保存对局信息</button>
+          <select class="input" id="adVisibility" style="max-width:160px;">
+            <option value="private">私有（仅谱主可见）</option>
+            <option value="public">公开（广场可见）</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="btnSaveVisibility">应用可见性</button>
+          <span id="adTip" style="font-size:12px;color:var(--text-dim);"></span>
+        </div>
+      </div>
+
       <div class="review-layout">
         <!-- 中央棋盘（对战页同款布局：玩家栏 + 棋盘区含持驹） -->
         <div>
@@ -150,6 +189,7 @@
   <script src="js/nav.js"></script>
   <script src="js/api.js"></script>
   <script src="js/pieces.js"></script>
+  <script src="js/piece-kinds.js"></script>
   <script src="js/board.js"></script>
   <script src="js/freeboard.js"></script>
   <script src="js/review.js"></script>

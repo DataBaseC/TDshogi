@@ -1,23 +1,33 @@
 /**
- * freeboard.js — 统一棋盘组件（PLAN §G v6）
+ * freeboard.js — 统一棋盘组件（PLAN §G v6，2026-09-08 优化）
  *
- * 三种模式（一个组件，全站共用）：
- *   play       对战模式：高亮服务端合法落点，onMove(usi) 交页面发送（服务端权威）
- *   demo-rules 感想战模式：同规则行棋，但由本地模型乐观渲染（服务端 demo 校验+广播）
+ * 四种模式（一个组件，全站共用）：
+ *   play       对战：高亮服务端合法落点，onMove(usi) 交页面发送（服务端权威）
+ *   demo-rules 感想战：同规则行棋，本地模型乐观渲染（服务端 demo 校验 + 广播）
  *   free       自由摆棋：不校验规则，本地草稿（撤销/双击升变，不入谱）
+ *   review     复盘浏览：只读（不可选子/不可拖），自动带上一步与王手高亮（PLAN §M6）
+ *
+ * 所有「查看棋谱」的场景（复盘页 / 历史页 / 棋谱广场 / 管理后台回放 / 对局页终局浏览）
+ * 都应使用 review 模式，保证渲染链路唯一。
  *
  * 交互：点击流 + 拖拽行棋（鼠标/触屏 Pointer Events，参考 lishogi/81dojo）。
  * 吃子/打子归属按正常将棋规则（被吃子恢复原始棋种进吃方驹台）。
  *
  * 坐标策略：模型统一用服务端 r/c 坐标，渲染交给 ShogiBoard（内部处理视角镜像）。
+ * 棋种映射统一取自 `piece-kinds.js`（单一来源，加载时自检互逆）。
  */
 (function (global) {
-  const PROMOTE = { '歩': 'と', '香': '成香', '桂': '成桂', '銀': '成銀', '角': '馬', '飛': '龍' };
-  // 成駒 → 原始棋种（吃子进驹台/双击降级用）
-  // ⚠️ 曾把 '馬' 错写成 '飛'：吃掉对方的馬（角行升变）会在驹台多出「飛」，已修正为「角」（PLAN §J3）
-  const DEMOTE = { 'と': '歩', '成香': '香', '杏': '香', '成桂': '桂', '圭': '桂', '成銀': '銀', '全': '銀', '馬': '角', '龍': '飛' };
-  const DROP_NAME = { P: '歩', L: '香', N: '桂', S: '銀', G: '金', B: '角', R: '飛' };
-  const DRAG_THRESHOLD = 6; // px，超过视为拖拽
+  // 棋种映射：取自单一来源 piece-kinds.js（不存在时退回内联备份，保证旧页面不炸）
+  const K = global.PieceKinds || {};
+  const PROMOTE = K.PROMOTE || { '歩': 'と', '香': '成香', '桂': '成桂', '銀': '成銀', '角': '馬', '飛': '龍' };
+  const DEMOTE = K.DEMOTE || { 'と': '歩', '成香': '香', '杏': '香', '成桂': '桂', '圭': '桂', '成銀': '銀', '全': '銀', '馬': '角', '龍': '飛' };
+  const DROP_NAME = K.DROP_NAME || { P: '歩', L: '香', N: '桂', S: '銀', G: '金', B: '角', R: '飛' };
+  const rawOf = K.rawOf || ((name) => DEMOTE[name] || name);
+
+  const MODES = ['play', 'demo-rules', 'free', 'review'];
+  // 拖拽阈值：手指比鼠标抖，触屏放宽一点，避免点一下被判成拖拽
+  const DRAG_THRESHOLD_MOUSE = 6;
+  const DRAG_THRESHOLD_TOUCH = 12;
 
   function sqToRC(sq) {
     const x = parseInt(sq[0], 10) - 1;
@@ -26,17 +36,19 @@
   }
 
   class FreeBoard {
-    constructor({ board, viewpoint = 'b', interactive = false, mode = 'play', hands, onChange, onMove, onPromoteChoice } = {}) {
+    constructor({ board, viewpoint = 'b', interactive = false, mode = 'play', hands, onChange, onMove, onPromoteChoice, onSqClick = null } = {}) {
       this.board = board;            // ShogiBoard 实例
       this.viewpoint = viewpoint;
       this.interactive = !!interactive;
-      this.mode = mode;              // 'play' | 'demo-rules' | 'free'
+      this.mode = MODES.includes(mode) ? mode : 'play';
       this.handsEls = hands || null; // { my: el, myColor, opp: el, oppColor }
       this.onChange = onChange || null;
       this.onMove = onMove || null;          // (usi) => void
       this.onPromoteChoice = onPromoteChoice || null; // ({ usiMove, usiPromote }) => void
+      this.onSqClick = onSqClick || null;    // (sq) => void，仅 review 模式：点击格子回执（如跳转到该手）
       this.model = null;             // { board, hands }
       this.lastMove = null;
+      this.checkSquares = [];        // 王手格（J2：此前 setModel 的第三参被丢弃，高亮丢失）
       this.legalTargetsBySq = {};    // { fromSq|dropSym: [{to, usi, promote}] }
       this.turnColor = null;         // 当前手番 'b'|'w'（非 free 模式下限制只能选手番方持驹）
       this.history = [];             // free 模式撤销栈
@@ -49,6 +61,11 @@
     }
 
     // ---------- 装载 ----------
+    /**
+     * 装载局面。
+     * @param {{board:Array, hands:object}} modelLike
+     * @param {string|null} lastMove 上一步**落点格**（如 '7f'），不是完整 USI
+     */
     setModel(modelLike, lastMove = null) {
       this.model = {
         board: JSON.parse(JSON.stringify(modelLike.board)),
@@ -57,6 +74,28 @@
       this.lastMove = lastMove;
       this.selectedSq = null;
       this.selectedHand = null;
+      this.render();
+    }
+
+    /** 王手格（数组，元素为格子名如 '5e'）；传空数组清除（§J2） */
+    setCheck(squares) {
+      this.checkSquares = Array.isArray(squares) ? squares.filter(Boolean) : [];
+      this.render();
+    }
+
+    /** 单独更新上一步落点 */
+    setLastMove(sq) {
+      this.lastMove = sq || null;
+      this.render();
+    }
+
+    /** 切换模式：'play' | 'demo-rules' | 'free' | 'review' */
+    setMode(mode) {
+      if (!MODES.includes(mode)) return;
+      this.mode = mode;
+      this.selectedSq = null;
+      this.selectedHand = null;
+      this.ruleTargets = null;
       this.render();
     }
 
@@ -70,13 +109,7 @@
     }
 
     // ---------- 模式/开关 ----------
-    setMode(mode) {
-      this.mode = mode;
-      this.selectedSq = null;
-      this.selectedHand = null;
-      this.ruleTargets = null;
-      this.render();
-    }
+    // setMode 见上方「装载」区（带 MODES 校验）
     setInteractive(v) {
       this.interactive = !!v;
       if (!this.interactive) { this.selectedSq = null; this.selectedHand = null; }
@@ -87,7 +120,34 @@
     /** 设置当前手番（'b'|'w'）：非 free 模式下，非手番方的持驹不可选（打子符号与颜色无关，
      *  否则演示者/玩家可点对手驹台的同种棋子，视觉上像从对手驹台打入） */
     setTurn(color) { this.turnColor = (color === 'b' || color === 'w') ? color : null; }
-    _canPickHand(color) { return this.mode === 'free' || !this.turnColor || color === this.turnColor; }
+    /**
+     * 切换视角（'b'|'w'），PLAN §R1：观战者可在先手 / 后手视角间切换。
+     *
+     * 只翻转 `board.render` 的 viewpoint 与驹台配色——**不换 DOM、不重建监听**：
+     * 下方驹台（`handsEls.my`）始终呈现“当前视角方”的持驹，所以只需交换
+     * `myColor / oppColor` 两个标记（`render()` 用它们决定各自渲染谁的持驹）。
+     * 若改为交换 DOM 元素，`bindHands` 闭包里捕获的 color 就会与元素错位。
+     */
+    setViewpoint(vp) {
+      if (vp !== 'b' && vp !== 'w') return;
+      if (this.viewpoint === vp) return;
+      this.viewpoint = vp;
+      if (this.handsEls) {
+        const { my, myColor, opp, oppColor } = this.handsEls;
+        this.handsEls = { my, myColor: oppColor, opp, oppColor: myColor };
+        if (my) my.dataset.fbColor = oppColor;
+        if (opp) opp.dataset.fbColor = myColor;
+      }
+      // 视角变了，选中状态必须清掉：否则残留的选中格/持驹属于另一视角
+      this.selectedSq = null;
+      this.selectedHand = null;
+      if (this.model) this.render();
+    }
+    /** 驹台是否可选：review 模式一律不可选（只读浏览） */
+    _canPickHand(color) {
+      if (this.mode === 'review') return false;
+      return this.mode === 'free' || !this.turnColor || color === this.turnColor;
+    }
     destroy() { this.detach(); this._removeGhost(); this.model = null; }
     attach() {
       this.board.boardEl.addEventListener('click', this._onClick);
@@ -153,7 +213,15 @@
 
     // ---------- 点击流 ----------
     _handleClick(e) {
-      if (!this.interactive || !this.model || this._drag) return;
+      if (!this.model) return;
+      // review 模式：只读浏览，不依赖 interactive——只把点击的格子回执给页面
+      // （如复盘页点击上一步的落点跳到该手）
+      if (this.mode === 'review') {
+        const rc = e.target.closest('.cell');
+        if (rc && rc.dataset.sq && this.onSqClick) this.onSqClick(rc.dataset.sq);
+        return;
+      }
+      if (!this.interactive || this._drag) return;
       const hand = e.target.closest('.hand-piece');
       if (hand && hand.parentElement && hand.parentElement.dataset.fbColor) {
         const color = hand.parentElement.dataset.fbColor;
@@ -222,12 +290,14 @@
       drag.startX = e.clientX;
       drag.startY = e.clientY;
       drag.pointerId = e.pointerId;
+      drag.pointerType = e.pointerType || 'mouse';
       this._drag = drag;
       this._docMove = (ev) => this._handleDocMove(ev);
       this._docUp = (ev) => this._handleDocUp(ev);
       document.addEventListener('pointermove', this._docMove);
       document.addEventListener('pointerup', this._docUp);
-      e.preventDefault();
+      // 触屏不 preventDefault：保留页面滚动能力，改由 CSS touch-action 控制棋盘区域
+      if (drag.pointerType !== 'touch') e.preventDefault();
     }
 
     _ensureGhost() {
@@ -243,11 +313,15 @@
     _handleDocMove(e) {
       const drag = this._drag;
       if (!drag || e.pointerId !== drag.pointerId) return;
-      if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
+      // 触屏阈值更宽：手指按下难免微动，太灵敏会把"点一下"误判成拖拽
+      const threshold = drag.pointerType === 'touch' ? DRAG_THRESHOLD_TOUCH : DRAG_THRESHOLD_MOUSE;
+      if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < threshold) return;
       drag.moved = true;
       const ghost = this._ensureGhost();
       ghost.style.left = e.clientX + 'px';
       ghost.style.top = e.clientY + 'px';
+      // 触屏时把幽灵抬到手指上方，避免被手指完全遮住
+      if (drag.pointerType === 'touch') ghost.style.transform = 'translate(-50%, -125%)';
       // 悬停格高亮
       document.querySelectorAll('.cell.drag-over').forEach((c) => c.classList.remove('drag-over'));
       const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -266,17 +340,19 @@
       if (this.mode !== 'free') {
         if (!sym || !(this.legalTargetsBySq[sym] || []).length) return; // 无合法打点不可拖
       }
+      const touch = e.pointerType === 'touch';
       this._drag = {
         kind: this.mode === 'free' ? 'hand-free' : 'hand',
         color, piece, sym, fromSq: sym,
         startX: e.clientX, startY: e.clientY, pointerId: e.pointerId,
+        pointerType: e.pointerType || 'mouse',
         ghostSrc: wrap.innerHTML,
       };
       this._docMove = (ev) => this._handleDocMove(ev);
       this._docUp = (ev) => this._handleDocUp(ev);
       document.addEventListener('pointermove', this._docMove);
       document.addEventListener('pointerup', this._docUp);
-      e.preventDefault();
+      if (!touch) e.preventDefault();
     }
 
     _handleDocUp(e) {
@@ -337,8 +413,8 @@
       this._pushHistory();
       const target = this.model.board[tr][tc];
       if (target && target.piece) {
-        const raw = DEMOTE[target.piece] || target.piece;
-        this._addToHand(piece.color, raw);
+        // 被吃子还原为原始棋种（成駒 → 未成），统一走 rawOf（单一来源，防 J3 复发）
+        this._addToHand(piece.color, rawOf(target.piece));
       }
       this.model.board[tr][tc] = { piece: piece.piece, color: piece.color, promoted: !!piece.promoted, sq: toSq };
       this.model.board[fr][fc] = null;
@@ -414,7 +490,12 @@
     // ---------- 渲染 ----------
     render() {
       if (!this.model) return;
-      this.board.render({ board: this.model.board }, { lastMove: this.lastMove }, this.viewpoint);
+      // §J2：check 此前从未传给 board.render，王手红格高亮一直不显示
+      this.board.render(
+        { board: this.model.board },
+        { lastMove: this.lastMove, check: this.checkSquares },
+        this.viewpoint
+      );
       if (this.selectedSq) this.board.highlightSq(this.selectedSq, 'sel');
       const from = this.selectedHand ? this.selectedHand.sym : this.selectedSq;
       const targets = from ? (this.legalTargetsBySq[from] || []) : [];
@@ -477,7 +558,7 @@
       if (!piece || !piece.piece) return;
       const target = model.board[tr][tc];
       if (target && target.piece) {
-        const raw = DEMOTE[target.piece] || target.piece;
+        const raw = rawOf(target.piece);
         const list = model.hands[color] = model.hands[color] || [];
         const h = list.find((x) => x.piece === raw);
         if (h) h.count += 1;
@@ -494,4 +575,12 @@
   global.FreeBoard = FreeBoard;
   FreeBoard.initialModel = initialModel;
   FreeBoard.applyUsiOnModel = applyUsiOnModel;
-})(window);
+  // 常量与纯函数导出：供单元测试直接加载断言（tests/，PLAN §P1）
+  FreeBoard.MODES = MODES;
+  FreeBoard.sqToRC = sqToRC;
+  FreeBoard.PROMOTE = PROMOTE;
+  FreeBoard.DEMOTE = DEMOTE;
+  FreeBoard.DROP_NAME = DROP_NAME;
+  FreeBoard.DRAG_THRESHOLD_MOUSE = DRAG_THRESHOLD_MOUSE;
+  FreeBoard.DRAG_THRESHOLD_TOUCH = DRAG_THRESHOLD_TOUCH;
+})(typeof window !== 'undefined' ? window : globalThis);

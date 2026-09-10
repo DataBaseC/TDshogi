@@ -55,10 +55,12 @@ shogiwebapp/
 │   ├── privacy.js       # 隐私字段出口白名单 stripPrivate/assertNoPrivate（PLAN §M3）
 │   └── announcements.js # 系统公告
 ├── public/              # 前端（静态）
-│   ├── *.html           # 8 页面：index/lobby/play/history/review/tournaments/profile/admin
+│   ├── *.html           # 9 页面：index/lobby/play/history/gallery/review/tournaments/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
-│   └── js/              # 15 个脚本：api.js(WS封装) nav.js board.js pieces.js(图集配置)
-│   │                      freeboard.js(统一棋盘组件 play/demo-rules/free 三模式) play.js sound.js …
+│   └── js/              # 17 个脚本：api.js(WS封装) nav.js board.js pieces.js(图集配置)
+│   │                      piece-kinds.js(棋种映射单一来源+自检)
+│   │                      freeboard.js(统一棋盘组件 play/demo-rules/free/review 四模式)
+│   │                      play.js gallery.js sound.js …
 ├── scripts/             # e2e-*.js 回归测试（ws 客户端模拟）+ import-kif-batch
 ├── data/                # 运行时：tdshogi.db（+ 迁移前的 *.bak）
 └── agents/MEMORY/       # 开发反思档案（非运行依赖）
@@ -229,10 +231,11 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 ### 7.1 页面与职责
 | 页面 | 职责 |
 |---|---|
-| index.html | 首页：公告/排行/进行中对局（改版中：删快捷三卡与对局区，方案见 PLAN §A） |
+| index.html | 首页：公告/排行/数据条/三步引导/最新战报/规则速查（PLAN §A） |
 | lobby.html | 建房/加入/快速匹配三卡 + 观战列表 |
 | play.html | 对局页（对战+观战+聊天+音效+断线提示；终局自动切感想战模式，同页同组件） |
 | history.html | 棋谱检索 + 列表 |
+| gallery.html | **棋谱广场**（PLAN §L）：公开棋谱列表（筛选/分页），点击进复盘 |
 | review.html | 复盘器（书签/评论/变着） |
 | tournaments.html | 赛事：我要创建赛事（登录门槛）+ 进行中/往期列表（审核流见 PLAN §B） |
 | profile.html | 账号（注册/登录/登出）+ 战绩 |
@@ -247,7 +250,35 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 - 读秒音效：`inByoyomi[turn] && sec<=10` 跨秒触发 playByoyomi
 - `replaced` 消息：同身份别处登录 → toast 提示 + 禁用棋盘
 
-### 7.3 音效（sound.js）
+### 7.3 棋盘组件与「看棋谱」的渲染路径
+
+`freeboard.js` 的 `FreeBoard` 是全站统一的棋盘交互组件，**四种模式**（2026-09-08 起）：
+
+| 模式 | 用途 | 交互 |
+|---|---|---|
+| `play` | 对战 | 高亮服务端合法落点，`onMove(usi)` 交页面发送 |
+| `demo-rules` | 感想战 | 按规则推演，本地乐观渲染 + 服务端校验 |
+| `free` | 自由摆棋 | 不校验规则，本地草稿（撤销/双击升变） |
+| `review` | **复盘浏览** | 只读：不可选子/不可拖，自动带上一步与王手高亮，点击回执 `onSqClick` |
+
+内部统一处理：合法目标高亮、升变弹层、拖拽行棋（Pointer Events，触屏阈值更宽）、
+持驹渲染、视角镜像、`setCheck()` 王手高亮、`setLastMove()` 上一步高亮。
+
+**统一后的调用路径（PLAN §M6 已收口）**
+
+| 页面 | 棋盘渲染 |
+|---|---|
+| `play.html` | FreeBoard（`play` / 终局 `demo-rules`） |
+| `review.html` 浏览 | FreeBoard（`review` 只读模式） |
+| `review.html` 自由摆放 | **同一个实例**切 `free` 模式（不再 destroy/new） |
+| history / gallery / admin 回放 | 跳转 `review.html` → 同上 |
+
+- **棋种映射单一来源**：`js/piece-kinds.js`（PROMOTE/DEMOTE/DROP_NAME/NAME_TO_KEY），
+  `board.js` 与 `freeboard.js` 都引用它；加载时 `validate()` 自检互逆——
+  §J3「吃馬却多出飞车」就是映射表写错一个字，现在这类错误会在控制台立刻报错。
+- 相关修复：§J2（王手高亮）通过 `setCheck()` 解决。
+
+### 7.4 音效（sound.js）
 Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结束；首次 pointerdown 解锁 AudioContext；开关持久化 localStorage。
 
 ---
@@ -272,6 +303,22 @@ Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结�
 
 **统一模式**：ws 客户端模拟多端 + "队列+wait（取最新匹配）" + `process.exit` 强制收尾。
 运行：先起服务器（`PORT=3999 DATA_DIR=独立目录`），再 `node scripts/e2e-*.js`。
+
+### 8.1 单元测试（`tests/`，PLAN §P1）
+
+- 运行：`npm test`（等价 `node --test tests/*.test.js`）
+  ——**Windows 下不能写 `node --test tests/`**，Node 会把目录当模块解析并报 MODULE_NOT_FOUND
+- 定位：纯函数与纯数据，**不起服、不连数据库**；涉及 storage 的用例用临时 `DATA_DIR` 并在收尾清理
+- 浏览器侧模块（IIFE 挂 `window`）在 Node 中的加载方式：
+  ```js
+  globalThis.window = { renderHands: () => {} };      // 最小替身
+  require('../public/js/piece-kinds.js');
+  require('../public/js/freeboard.js');
+  ```
+- 当前覆盖（18 项）：`tests/piece-kinds.test.js`（映射互逆自检、成駒还原含「吃馬得角」回归、
+  别名杏/圭/全、打子符号双向、NAME_TO_KEY 全覆盖）+ `tests/freeboard.test.js`
+  （坐标换算、初始盘面 40 枚、走子、升变、吃子进驹台、打子扣减与归零移除）
+- 扩充优先级：`game.js` 规则引擎 → `records.js` KIF/CSA 与评论 → `coords.js` → `privacy.js` / `net.js`
 
 ---
 
