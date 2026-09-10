@@ -84,10 +84,13 @@
    * @param {string} current 当前页 id（'home'|'lobby'|'history'|'tournaments'|'profile'）
    */
   function getTheme() {
+    // 主题的唯一数据源是 Settings（PLAN §S1）；Settings 未加载时回退旧键，保证单独打开也不炸
+    if (global.Settings) return global.Settings.get('theme');
     return localStorage.getItem(THEME_KEY) || 'dark';
   }
 
   function applyTheme() {
+    if (global.Settings) { global.Settings.apply('theme'); return; }
     const theme = getTheme();
     document.documentElement.classList.toggle('theme-light', theme === 'light');
     const btn = document.querySelector('.theme-toggle');
@@ -112,6 +115,7 @@
         </nav>
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" title="切换主题" onclick="NAV.toggleTheme()">🌙</button>
+          <button class="theme-toggle" title="设置" onclick="Settings.openPanel()">⚙️</button>
           ${adminEntryHtml()}
           <a class="nav-user" href="profile.html" title="个人页面/账号">
             <span>${displayName}</span>
@@ -130,6 +134,7 @@
         </nav>
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" title="切换主题" onclick="NAV.toggleTheme()">🌙</button>
+          <button class="theme-toggle" title="设置" onclick="Settings.openPanel()">⚙️</button>
           ${adminEntryHtml()}
         </div>
       `;
@@ -141,7 +146,8 @@
 
   function toggleTheme() {
     const next = getTheme() === 'light' ? 'dark' : 'light';
-    localStorage.setItem(THEME_KEY, next);
+    if (global.Settings) global.Settings.set('theme', next);
+    else localStorage.setItem(THEME_KEY, next);
     applyTheme();
   }
 

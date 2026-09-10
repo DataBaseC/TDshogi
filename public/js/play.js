@@ -98,6 +98,23 @@
     $('bottomPlayerBar').classList.toggle('active', st.turn === mySeatX);
   }
 
+  /**
+   * 手机/平板端首次拿到局面后，把棋盘滚到视口内（PLAN §S2）。
+   * 此前首屏停在顶部信息栏与侧栏，要往下滚才见到棋盘——对一个下棋应用来说主次颠倒。
+   * 只用一次（后续走子不应打断用户正在看的内容），宽屏不执行。
+   */
+  let boardScrolled = false;
+  function scrollBoardIntoViewOnce() {
+    if (boardScrolled) return;
+    boardScrolled = true;
+    if (window.innerWidth > 900) return;
+    const el = $('boardContainer');
+    if (!el) return;
+    setTimeout(() => {
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+    }, 80);
+  }
+
   function render(state) {
     const viewpoint = currentViewpoint();
     renderPlayerBars(state);
@@ -469,6 +486,7 @@
     mySeat = data.seat || null;
     isPlayer = data.isPlayer === true;
     lastTickTs = Date.now();
+    scrollBoardIntoViewOnce(); // §S2：手机端首屏直接落到棋盘
     // 感想战路由（PLAN §G v6）：终局自动进入；新对局自动退出
     if (state.status === 'FINISHED' && state.result) {
       enterDemo(state);
@@ -840,5 +858,14 @@
   }
   // WS 首次连接与断线重连统一在此进入房间；
   // 观战者重连后服务端不会主动重推 state，必须重新发起 spectate/request_state
+  // 设置变更 → 重渲染棋盘（坐标 §S4 / 图集 §S5 / 上一步高亮，PLAN §S1）
+  if (window.Settings) {
+    window.Settings.subscribe((all, key) => {
+      if (['showCoords', 'atlas', 'highlightLastMove'].indexOf(key) < 0) return;
+      if (state) render(state);
+      else if (fb) fb.render();
+    });
+  }
+
   api.on('open', enterRoom);
 })();

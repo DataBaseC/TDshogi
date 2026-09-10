@@ -19,7 +19,12 @@
   let ctx = null;
   let enabled = true;
 
-  try { enabled = localStorage.getItem(SOUND_KEY) !== 'off'; } catch (_) {}
+  // 音效开关的唯一数据源是 Settings（PLAN §S1）；Settings 未加载时回退旧键
+  if (global.Settings) {
+    enabled = global.Settings.get('sound');
+  } else {
+    try { enabled = localStorage.getItem(SOUND_KEY) !== 'off'; } catch (_) {}
+  }
 
   /** 懒初始化 AudioContext（需在用户手势后调用才可出声） */
   function ensureCtx() {
@@ -181,15 +186,28 @@
     });
   }
 
-  /** 开关（localStorage 持久化） */
+  /**
+   * 设置音效开关。持久化统一交给 Settings（§S1）——它变更后会回调 `applyEnabled()`
+   * 同步这里的内部状态。Settings 未加载时退回旧键，保证单独打开 sound.js 也能用。
+   */
   function setEnabled(on) {
+    if (global.Settings) { global.Settings.set('sound', !!on); return; }
     enabled = !!on;
     try { localStorage.setItem(SOUND_KEY, enabled ? 'on' : 'off'); } catch (_) {}
   }
+
+  /**
+   * 仅同步内部状态（由 Settings.apply 调用）。
+   * ⚠️ 这里**不可**再调 setEnabled，否则会 set → apply → set 递归。
+   */
+  function applyEnabled(on) {
+    enabled = !!on;
+  }
+
   function isEnabled() { return enabled; }
 
   global.Sound = {
     playMove, playCapture, playByoyomi, playStart, playEnd,
-    setEnabled, isEnabled, ensureCtx,
+    setEnabled, applyEnabled, isEnabled, ensureCtx,
   };
 })(window);

@@ -148,6 +148,20 @@
       if (this.mode === 'review') return false;
       return this.mode === 'free' || !this.turnColor || color === this.turnColor;
     }
+    /**
+     * 是否允许「按住拖拽」走子（PLAN §S3）。
+     *
+     * 触屏设备默认**关闭**：手机上「想滚动页面」与「拖拽走子」手势冲突，
+     * 极易误走一步；改用「点棋子 → 点目标格」两步点选更可靠
+     * （81Dojo 移动版同样以点选为主）。桌面鼠标拖拽不受此设置影响。
+     *
+     * 关闭拖拽只影响 pointerdown 链路，**点击走子（_handleClick）完全不受影响**。
+     */
+    _dragEnabled() {
+      if (!global.Settings) return true;
+      if (global.Settings.get('dragToMove')) return true;
+      return !(global.matchMedia && global.matchMedia('(pointer: coarse)').matches);
+    }
     destroy() { this.detach(); this._removeGhost(); this.model = null; }
     attach() {
       this.board.boardEl.addEventListener('click', this._onClick);
@@ -263,6 +277,7 @@
     // ---------- 拖拽行棋（Pointer Events：鼠标/触屏通用） ----------
     _handlePointerDown(e) {
       if (!this.interactive || !this.model || (e.button !== undefined && e.button !== 0)) return;
+      if (!this._dragEnabled()) return; // §S3：触屏默认不拖拽（点选两步走子）
       const hand = e.target.closest('.hand-piece');
       let drag = null;
       if (hand && hand.parentElement && hand.parentElement.dataset.fbColor) {
@@ -332,6 +347,7 @@
     /** 驹台拖拽起点：按住驹台棋子拖到目标格（rules 校验合法打点；free 自由放置） */
     _handleHandPointerDown(e, color) {
       if (!this.interactive || !this.model) return;
+      if (!this._dragEnabled()) return; // §S3：触屏默认不拖拽（点选两步打入）
       if (!this._canPickHand(color)) return; // 非手番方持驹禁拖
       const wrap = e.target.closest('.hand-piece');
       if (!wrap) return;

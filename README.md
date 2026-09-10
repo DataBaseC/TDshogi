@@ -56,7 +56,8 @@ shogiwebapp/
 │   ├── index/lobby/play/history/gallery/review/tournaments/profile/admin .html
 │   ├── css/                   # style.css（主题+响应式）/ board.css / review.css
 │   ├── pieces/                # 木棋子图片素材（kinki.png / ryoko.png）
-│   └── js/                    # 17 个脚本
+│   └── js/                    # 18 个脚本
+│       ├── settings.js        # ★ 用户设置中心（单一 tdshogi_settings 键 + ⚙️ 面板，须先于 nav.js 加载）
 │       ├── api.js nav.js board.js pieces.js piece-kinds.js
 │       ├── freeboard.js       # ★ 统一棋盘组件（play/demo-rules/free/review 四模式）
 │       ├── home lobby play history gallery review tournaments profile admin .js

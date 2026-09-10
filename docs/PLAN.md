@@ -436,11 +436,25 @@ Node 单进程下 `JSON.parse` 是**同步阻塞**的 → 打开一次广场 / �
 
 | 编号 | 项 | 要点 | 状态 |
 |---|---|---|---|
-| S1 | 用户设置面板 | 新增 `js/settings.js`，收敛为单一 `tdshogi_settings` 键；导航 ⚙️ 入口；迁移旧 `tdshogi_theme`/`tdshogi_sound` | ⬜ 设计完成 |
-| S2 | 手机端对局页布局 | 去掉 `order:-1`、侧栏折叠、进入自动滚到棋盘、按钮 ≥40px | ⬜ 设计完成 |
-| S3 | 触屏误触 | 设置项 `dragToMove` **默认关**（点选两步走子）；触屏热区 ≥44px | ⬜ 设计完成 |
-| S4 | 棋盘坐标标注 | 独立标注层，**跟随视角翻转**，`pointer-events:none` | ⬜ 设计完成 |
-| S5 | 棋子图集切换 | 复用 `board.js` 已有的 `window.PIECE_ATLAS_DEFAULT` | ⬜ 设计完成 |
+| S1 | 用户设置面板 | 新增 `js/settings.js`，收敛为单一 `tdshogi_settings` 键；导航 ⚙️ 入口；迁移旧 `tdshogi_theme`/`tdshogi_sound` | ✅ 已实施 |
+| S2 | 手机端对局页布局 | 统一 `order:0`、侧栏限高、进入自动滚到棋盘 | ✅ 已实施 |
+| S3 | 触屏误触 | `dragToMove` **默认关**（点选两步走子）；触屏热区 ≥44px；放开棋盘纵向滚动 | ✅ 已实施 |
+| S4 | 棋盘坐标标注 | 独立标注层，**跟随视角翻转**，`pointer-events:none` | ✅ 已实施 |
+| S5 | 棋子图集切换 | 读设置；外部 `window.PIECE_ATLAS_DEFAULT` 仍可覆盖 | ✅ 已实施 |
+
+#### 实施记录（2026-09-10，S1–S5 一轮全部落地）
+
+| 项 | 交付 |
+|---|---|
+| **S1** | **新增 `public/js/settings.js`**：单一键 `tdshogi_settings`；`SCHEMA` 驱动面板渲染（加设置项只改一处）；`subscribe()` 广播；旧键 `tdshogi_theme`/`tdshogi_sound` **只读一次迁移、不删旧键**（回滚安全）；面板 DOM 与样式**动态注入**，不改 HTML 结构；导航加 ⚙️ 入口。9 个页面均在 `nav.js` **之前**引入该脚本 |
+| **S2** | `style.css` 的 900px 断点去掉 `.play-side { order: -1 }`（641–900px 的小平板/窄窗口此前仍是「面板在上、棋盘在下」，而 ≤640px 早已改回）；侧栏棋谱/聊天限高；`play.js` 新增 `scrollBoardIntoViewOnce()`，窄屏首次拿到局面即把棋盘滚入视口（有 900px 判断，只用一次） |
+| **S3** | 设置项 `dragToMove` **默认关**；`freeboard.js` 新增 `_dragEnabled()`——触屏且未开启时直接跳过拖拽入口，**点击走子完全不受影响**；`@media (pointer: coarse)` 下 `body.no-drag` 放开棋盘 `touch-action: pan-y`，解决「想滚页面却误走一步」；按钮 ≥42px、驹台热区用 `::after` 外扩到 ≈44px |
+| **S4** | `board.js` 新增 `buildCoords()` + `renderCoords(viewpoint)`：绝对定位独立层，**与格子同口径随视角翻转**（先手 9…1 筋在左，后手相反），`pointer-events:none` 不吃点击；窄屏 `cellSize()` 推导同步扣除坐标留白（70→92）防溢出 |
+| **S5** | `board.js` 的 `getAtlas()` 改为读设置；`play.js` / `review.js` 订阅设置变更重渲染棋盘（坐标/图集/上一步高亮） |
+
+- 校验：`node --check`、`npm run lint`（**0 error**）、`npm test`（39 项）全绿
+- **待实机确认**：手机首屏即见棋盘、滚动手感、坐标随视角翻转、图集切换即时生效
+- ⚠️ 已知限制：即时切换坐标时格子的**像素尺寸不会重算**（`cellSize` 在渲染时确定），窄屏可能略有溢出；刷新页面即完全对齐
 
 **建议顺序**：S1 → S2 → S3 → S4 → S5（一轮「用户可感知」的体验批次，风险低），
 之后**单独一轮**做 §M5 拆分（结构性改动，需完整回归）。

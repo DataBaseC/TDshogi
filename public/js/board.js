@@ -18,9 +18,14 @@
     '成香': 'NY', '成桂': 'NK', '成銀': 'NG',
   };
 
-  // 默认棋子图集（可由外部用 window.PIECE_ATLAS_DEFAULT 覆盖）
+  /**
+   * 当前棋子图集路径。
+   * 优先级：外部显式覆盖（window.PIECE_ATLAS_DEFAULT）> 用户设置（PLAN §S1 `atlas`）> 默认。
+   */
   function getAtlas() {
-    return window.PIECE_ATLAS_DEFAULT || 'pieces/kinki.png';
+    if (window.PIECE_ATLAS_DEFAULT) return window.PIECE_ATLAS_DEFAULT;
+    if (window.Settings) return `pieces/${window.Settings.get('atlas')}.png`;
+    return 'pieces/kinki.png';
   }
 
   /** 当前格尺寸（px），由 CSS 变量 --cell-size 驱动，窄屏响应式缩小 */
@@ -32,7 +37,11 @@
     // 注意：CSS 自定义属性不解析 vw/min()（getComputedStyle 拿到的是原始 token），
     // 因此手机端媒体查询里 --cell-size 设为 auto，由这里按视口算出像素值。
     const vw = Math.min(window.innerWidth, 640);
-    const byViewport = Math.floor((vw - 70) / 9); // 70 ≈ 棋盘 padding + 页面留白
+    // 扣除「棋盘 padding + 页面留白」。开启坐标后四周各多约 11px，必须同步扣除，
+    // 否则手机会因棋盘变宽而横向溢出（§S4）。
+    const coordsOn = !!(window.Settings && window.Settings.get('showCoords'));
+    const chrome = coordsOn ? 92 : 70;
+    const byViewport = Math.floor((vw - chrome) / 9);
     return Math.max(28, Math.min(48, byViewport));
   }
 
@@ -83,7 +92,54 @@
       this.boardEl.style.position = 'relative';
       this.boardEl.style.display = 'inline-block';
       this.renderEmptyBoard();
+      this.buildCoords();
       this.container.appendChild(this.boardEl);
+    }
+
+    /**
+     * 棋盘坐标层（PLAN §S4）。
+     *
+     * 用**绝对定位的独立层**，而不是给每个 `.cell` 挂 `::before`：
+     *  - 绝对定位元素不参与 `.board-grid` 的网格布局，不会挤格子
+     *  - 不侵入 `.cell` 已有的伪元素（绿点/方块目标标记都用 `::after`）
+     *  - `pointer-events: none` 保证绝不吃掉点击与拖拽
+     *
+     * 显示与否由 `Settings.showCoords` 决定（默认隐藏）；开关打开时给 `.shogi-board`
+     * 加 `.coords-on`，由 CSS 扩大 padding 腾出标注空间。
+     */
+    buildCoords() {
+      const wrap = document.createElement('div');
+      wrap.className = 'board-coords';
+      wrap.innerHTML = '<div class="coords coords-files coords-top"></div>'
+        + '<div class="coords coords-files coords-bottom"></div>'
+        + '<div class="coords coords-ranks coords-left"></div>'
+        + '<div class="coords coords-ranks coords-right"></div>';
+      this.coordsEl = wrap;
+      this.boardEl.appendChild(wrap);
+    }
+
+    /**
+     * 更新坐标内容与显隐，**跟随视角翻转**（与 render() 的行列映射保持同一口径）：
+     *  - 先手视角：DOM 左→右为 9…1 筋，上→下为 一…九 段
+     *  - 后手视角：两者都反向（1 筋在左、九 段在上）
+     * @param {string} viewpoint 'b' | 'w'
+     */
+    renderCoords(viewpoint) {
+      if (!this.coordsEl) return;
+      const on = !!(window.Settings && window.Settings.get('showCoords'));
+      this.boardEl.classList.toggle('coords-on', on);
+      this.coordsEl.style.display = on ? '' : 'none';
+      if (!on) return;
+      const nums = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+      const kanji = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
+      const files = viewpoint === 'b' ? nums.slice().reverse() : nums;
+      const ranks = viewpoint === 'b' ? kanji : kanji.slice().reverse();
+      const fHtml = files.map((t) => `<span>${t}</span>`).join('');
+      const rHtml = ranks.map((t) => `<span>${t}</span>`).join('');
+      this.coordsEl.querySelector('.coords-top').innerHTML = fHtml;
+      this.coordsEl.querySelector('.coords-bottom').innerHTML = fHtml;
+      this.coordsEl.querySelector('.coords-left').innerHTML = rHtml;
+      this.coordsEl.querySelector('.coords-right').innerHTML = rHtml;
     }
 
     renderEmptyBoard() {
@@ -132,6 +188,7 @@
       this.state = state;
       this.extra = extra;
       this.viewpoint = viewpoint;
+      this.renderCoords(viewpoint); // 坐标层与格子同口径翻转（PLAN §S4）
       const board = state.board;
       const flipRow = viewpoint === 'w'; // 后手视角：行镜像（自己翻到底部）
       const colFrom = (c) => viewpoint === 'b' ? (8 - c) : c; // 列方向（先手9筋左，后手1筋左）
@@ -170,7 +227,9 @@
       // 上一步（USI 如 '7g7f' 或打子 'P*5e' → 只需高亮落点 '7f'/'5e'）
       // 修复：原直接传完整 USI 给 highlightSq，_findCell 永远匹配不到（格子 sq 是单格），
       //       导致「上一步」橙色高亮从不显示
-      if (extra.lastMove) {
+      // 上一步高亮可在设置里关闭（PLAN §S1 highlightLastMove，默认开启）
+      const showLast = !window.Settings || window.Settings.get('highlightLastMove') !== false;
+      if (extra.lastMove && showLast) {
         const lastTo = extra.lastMove.length >= 4 ? extra.lastMove.slice(2) : extra.lastMove;
         this.highlightSq(lastTo, 'last');
       }

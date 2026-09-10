@@ -701,7 +701,13 @@ a { color: inherit; text-decoration: none; }
   .hero-title { font-size: 32px; }
   /* 窄屏棋盘缩小 */
   :root { --cell-size: 48px; }
-  .play-side { order: -1; }  /* 对局页侧栏移到棋盘上方 */
+  /* 注（PLAN §S2）：此处原本是 `.play-side { order: -1 }`，把「棋谱/观众/操作」面板
+     提到棋盘**上方** —— 对一个下棋应用来说主次颠倒（641~900px 的小平板/窄窗口会中招，
+     而 ≤640px 的断点里早就改回 order:0 了）。现统一为「棋盘在上、侧栏在下」。 */
+  .play-side { order: 0; }
+  /* 侧栏限高：避免在平板/手机上长到要滚很久才见底部操作 */
+  .play-side .move-list { max-height: 240px; }
+  .play-side .chat-box { max-height: 160px; }
 }
 
 @media (max-width: 640px) {
@@ -815,6 +821,31 @@ a { color: inherit; text-decoration: none; }
 body { -webkit-text-size-adjust: 100%; }
 /* 触控元素：去掉双击缩放延迟（保留滚动/捏合） */
 .btn, .cell, .hand-piece, .tab-btn, .nav-links a, .rank-row, .game-card, .record-item { touch-action: manipulation; }
+
+/* ============================================================
+   触控设备优化（PLAN §S2/S3）
+   ------------------------------------------------------------
+   仅作用于 `pointer: coarse`（触屏），桌面鼠标体验完全不变。
+   - 点击目标放大到可用尺寸（按钮 ≥42px、驹台棋子热区 ≈44px）
+   - 「触屏拖拽走子」关闭时（设置项默认），棋盘允许纵向滑动页面，
+     解决「想滚页面、手指落在棋盘上却被识别为拖拽走子而误走一步」
+   ============================================================ */
+@media (pointer: coarse) {
+  .btn { min-height: 42px; }
+  .btn-sm { min-height: 36px; padding: 7px 12px; font-size: 13px; }
+  .theme-toggle, .admin-entry { width: 38px; height: 38px; font-size: 16px; }
+  .tab-btn { min-height: 40px; }
+
+  /* 驹台棋子：视觉尺寸保持不变，用伪元素把**热区**外扩约 5px（≈44px 触控标准）。
+     伪元素不产生独立事件目标，点击仍归 .hand-piece，故 freeboard 的
+     `e.target.closest('.hand-piece')` 依然命中。 */
+  .hand-piece { position: relative; }
+  .hand-piece::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+  }
+}
 
 @media (max-width: 640px) {
   /* ---- 棋盘：尺寸交给 board.js 按视口计算（--cell-size: auto）---- */

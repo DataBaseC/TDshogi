@@ -57,7 +57,7 @@ shogiwebapp/
 ├── public/              # 前端（静态）
 │   ├── *.html           # 9 页面：index/lobby/play/history/gallery/review/tournaments/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
-│   └── js/              # 17 个脚本：api.js(WS封装) nav.js board.js pieces.js(图集配置)
+│   └── js/              # 18 个脚本：settings.js(用户设置中心·须先于 nav.js) api.js(WS封装) nav.js board.js pieces.js(图集配置)
 │   │                      piece-kinds.js(棋种映射单一来源+自检)
 │   │                      freeboard.js(统一棋盘组件 play/demo-rules/free/review 四模式)
 │   │                      play.js gallery.js sound.js …
@@ -284,7 +284,15 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 - 相关修复：§J2（王手高亮）通过 `setCheck()` 解决。
 
 ### 7.4 音效（sound.js）
-Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结束；首次 pointerdown 解锁 AudioContext；开关持久化 localStorage。
+Web Audio API 程序化合成（零素材）：落子/吃子/读秒/开局/结束；首次 pointerdown 解锁 AudioContext；
+开关持久化交由 `Settings`（PLAN §S1，键 `tdshogi_settings.sound`）——`setEnabled` 转调 `Settings.set`，
+`applyEnabled` 供 `Settings.apply` 回调同步内部状态（**不可互相回调，否则递归**）。
+
+### 7.5 用户设置（settings.js，PLAN §S1）
+- 单一 localStorage 键 `tdshogi_settings`；旧键 `tdshogi_theme` / `tdshogi_sound` 首次读取时迁移（不删旧键）
+- `SCHEMA` 是设置项的**唯一描述**，⚙️ 面板据其渲染；新增设置项只改 `SCHEMA` + `DEFAULTS` + 相应消费者
+- 单向数据流：`set()` → 持久化 + `apply()` + `subscribe` 广播；订阅方（nav/sound/board/play/review）各自应用
+- 面板 DOM 与样式**动态注入**，无需修改任何 HTML 结构；9 个页面只需在 `nav.js` 之前引入该脚本
 
 ---
 

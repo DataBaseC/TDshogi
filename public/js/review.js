@@ -541,5 +541,13 @@
   document.getElementById('btnExportKif').addEventListener('click', () => doExport('kif'));
   document.getElementById('btnExportCsa').addEventListener('click', () => doExport('csa'));
 
+  // 设置变更 → 重渲染棋盘（坐标 §S4 / 图集 §S5，PLAN §S1）
+  if (window.Settings) {
+    window.Settings.subscribe((all, key) => {
+      if (['showCoords', 'atlas'].indexOf(key) < 0) return;
+      if (review) render();
+    });
+  }
+
   load();
 })();

@@ -7,11 +7,12 @@
 
 | 文件 | 职责 | 关键点 |
 |---|---|---|
-| `js/nav.js` | 全局导航渲染 | `renderNav(pageKey)` 高亮当前页；管理 localStorage guest 身份（GUEST_KEY）、主题切换。**名字以服务端权威**：首次只生成 id 不生成名字，`hello` 到达后由 api.js 调用 `NAV.updateUserName()` 回写并刷新徽章。**🛡️ 管理入口仅本机 localStorage 持有 admin token 时渲染**（PLAN §J5），普通用户不可见；`/admin.html` 可再配 `ADMIN_ENTRY_KEY` 门禁（未配 key 时管理员直接访问该 URL） |
+| `js/settings.js` | **用户设置中心**（PLAN §S1） | 单一 localStorage 键 `tdshogi_settings`（旧 `tdshogi_theme`/`tdshogi_sound` 首次读取时自动迁移、旧键不删）；`SCHEMA` 驱动 ⚙️ 设置面板（导航右侧入口），**加设置项只改这一处**；`get/set/all/subscribe/apply`。面板 DOM 与样式动态注入，不改 HTML 结构。**必须在 `nav.js` 之前加载** |
+| `js/nav.js` | 全局导航渲染 | `renderNav(pageKey)` 高亮当前页；管理 localStorage guest 身份（GUEST_KEY）。主题改由 `Settings` 驱动（`getTheme`/`toggleTheme` 转调），并提供 ⚙️ 设置入口。**名字以服务端权威**：首次只生成 id 不生成名字，`hello` 到达后由 api.js 调用 `NAV.updateUserName()` 回写并刷新徽章。**🛡️ 管理入口仅本机 localStorage 持有 admin token 时渲染**（PLAN §J5），普通用户不可见；`/admin.html` 可再配 `ADMIN_ENTRY_KEY` 门禁（未配 key 时管理员直接访问该 URL） |
 | `js/api.js` | WS 连接封装 + REST 工具 | `api.connect(guestId)` → `/ws?guest=<id>`；`api.on(type, fn)` 订阅、`api.send(obj)` 发送；hello 名字注入导航 |
-| `js/board.js` + `css/board.css` | 棋盘渲染与走子交互 | `new ShogiBoard(container, opts)`；`render(state, extra, viewpoint)` 全量渲染；合法目标高亮（空格=绿点 `.target`、有子=方块 `.has-piece`）；上一步橙色 `.last`、王手红 `.check`；后手视角镜像 |
+| `js/board.js` + `css/board.css` | 棋盘渲染与走子交互 | `new ShogiBoard(container, opts)`；`render(state, extra, viewpoint)` 全量渲染；合法目标高亮（空格=绿点 `.target`、有子=方块 `.has-piece`）；上一步橙色 `.last`（可由设置关闭）、王手红 `.check`；后手视角镜像。**棋盘坐标**（PLAN §S4）：`buildCoords()` + `renderCoords(viewpoint)` 独立绝对定位层，随视角翻转、`pointer-events:none`，由设置开关（默认隐藏） |
 | `js/pieces.js` | 驹台持驹渲染 | `renderHands(el, hands, seat, onClick, viewpoint)`；自研 SVG 木纹棋子（驹台格子可点击打子） |
-| `js/sound.js` | Web Audio 程序化音效 | 落子/吃子/读秒嗒声/开局/结束；AudioContext 需首次 pointerdown 解锁；开关持久化 localStorage |
+| `js/sound.js` | Web Audio 程序化音效 | 落子/吃子/读秒嗒声/开局/结束；AudioContext 需首次 pointerdown 解锁；开关由 `Settings` 统一持久化（`setEnabled` 转调 `Settings.set('sound')`，`applyEnabled` 供其回调，避免递归） |
 | `css/style.css` | 设计令牌 + 布局 | CSS 变量主题（深色和风 + 金色点缀）、卡片/按钮/toast/modal 类名、响应式断点（900px 单列；短视口压 cell-size） |
 
 身份约定（读代码前必知）：**guest.id 含 `.` 即账号会话令牌**（`<accountId>.<ts>.<sig>`），纯 24 hex 是游客 id。REST 查询自己数据时，账号要传 `id.split('.')[0]`（accountId）；对局/棋谱落盘都存 accountId。
