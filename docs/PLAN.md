@@ -598,6 +598,52 @@ grep 复核：8 个纯管理接口全部走 `adminOnly`、7 处条件判断改�
 
 ## 4. 本期已完成专题（2026-09-05 ~ 09-07）
 
+## §T 私人房间（密码房 / 休闲模式）+ 在线人数修正（2026-09-10 用户提出）
+
+### §T1 在线人数显示错误 — 🟡 待实施
+
+**现象**：用户反馈「在线人数还是不对」——此前修过一次（把 `rooms.stats().online` 换成 `clients.size`），
+仍未解决。
+
+**根因**：`lobbyData()` / `homeData()` 用的是 `this.clients.size`。而 `this.clients` 是
+`Map<clientId, ws>`，clientId 为 `${session.id}_${时间戳}`——**每次连接都生成新的一条**
+（代码注释明确写着「同一身份可多窗口并存，全部登记，不互相顶替」）。
+所以它数的是**连接数**而不是**人数**：同一人开两个标签页 = 2、手机+电脑 = 2、
+刷新时旧连接若未及时关闭还会短暂虚高。
+
+**修法**：改用 `this.playerToClients.size`（`Map<playerId, Set<clientId>>`，size 即**唯一身份数**），
+与观战人数按 playerId 去重的口径一致（§R）。
+
+另：`rooms.stats()` 里那个 `online` 字段公式本身就是错的
+（`rooms.size + (clientToRoom.size - rooms.size)` 恒等于 `clientToRoom.size`，只统计已绑定房间的连接），
+一并移除——**在线口径只在 protocol 层定义一次**，避免别处再算错一遍。
+
+### §T2 私人房间（密码房）— 🟡 待实施
+
+**需求**：创建房间时可选「私人房间」并可设密码；**私人房间不计 ELO，经验值照常加**。
+
+**已有基础（结算逻辑无需改动）**
+- `room.rated` 字段已存在；`_finalize()` 里 `if (room.rated && ...) ratings.applyGameResult(...)`
+  → 私人房设 `rated: false` 即**自动**不结算 ELO
+- 经验值 `ratings.addExp(..., 1, 'game')` 是**无条件**执行的 → 天然满足「经验照常加」
+
+**改动清单**
+
+| 位置 | 内容 |
+|---|---|
+| `src/rooms.js` | `createRoom(host, tc, { isPrivate, password })`；房间加 `isPrivate` / `passwordHash`；`joinRoom(player, code, password)` 校验；观战入口（列表 / 直接观战 / 随机观战）过滤私人房；快照持久化新字段 |
+| `src/protocol.js` | `create_room` 透传 `isPrivate`/`password`；`join_room` 透传 `password`；缺密码或不符时回 `needPassword: true` |
+| `public/lobby.html` | 「私人房间」复选框 + 密码输入（勾选后才显示）；加入房间的密码框（按需显示） |
+| `public/js/lobby.js` | 发送新参数；收到 `needPassword` 时显示密码框并提示 |
+
+**密码处理**：服务端**只存 hash、不存明文**；密码限 4–8 位。
+⚠️ 注意 WS 本身不加密，明文密码会经过网络传输——在未启用 HTTPS 的部署下这是**既有架构限制**，
+此处记录，不做超范围处理。
+
+**观战策略（默认取最"私人"的一种，可改）**：私人房间
+① 不出现在大厅观战列表；② 直接观战被拒绝；③ 排除在「随机观战」之外。
+若希望「知道密码的朋友仍可观战」，告知后放开即可。
+
 ## §K 用户详细信息（IP/隐私）与管理员数据管理 — ✅ 已实施，待实测
 
 > 需求：加 IP 等详细信息（**仅管理员可见**）；**管理员可管理用户的任何数据**。

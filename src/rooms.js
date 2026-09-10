@@ -1858,9 +1858,17 @@ class RoomManager {
     return room;
   }
 
+  /**
+   * 房间维度统计。
+   *
+   * ⚠️ 这里**刻意不返回 `online`**（PLAN §T1）：在线人数必须按「唯一身份数」计算，
+   * 而本层只看得到 `clientToRoom`（已绑定房间的连接）——既漏掉大厅/观战等未进房的连接，
+   * 又会把同一人的多个标签页重复计入。原公式
+   * `rooms.size + (clientToRoom.size - rooms.size)` 恒等于 `clientToRoom.size`，本身就是错的。
+   * 在线口径统一由 `protocol._stats()` 提供，**只此一处**。
+   */
   stats() {
     return {
-      online: this.rooms.size + (this.clientToRoom.size - this.rooms.size),
       playing: [...this.rooms.values()].filter((r) => r.status === 'PLAYING').length,
       reviewing: [...this.rooms.values()].filter((r) => r.status === 'FINISHED' && r.demo).length,
       waiting: [...this.rooms.values()].filter((r) => r.status === 'WAITING').length,

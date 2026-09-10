@@ -104,7 +104,7 @@ class Protocol {
         playerId: session.id,
         name: session.name,
         reconnect: pending ? { ok: true, ...pending } : null,
-        stats: this.rooms.stats(),
+        stats: this._stats(), // 统一统计出口（§T1）：在线人数按「唯一身份数」计
       },
     }));
 
@@ -382,9 +382,8 @@ class Protocol {
   lobbyData() {
     // 非管理员公开出口：统一过隐私白名单（PLAN §M3/§K——结构性保证，不靠人肉记忆）
     return privacy.stripPrivate({
-      // online 修正为「实际活跃 WS 连接数」（rooms.stats().online 之前用的是
-      // clientToRoom.size，只统计已绑定房间的连接，会漏掉大厅/观战/未进房的连接）
-      stats: { ...this.rooms.stats(), online: this.clients.size },
+      // 在线人数一律走统一统计出口（§T1），口径见 `_stats()` 注释
+      stats: this._stats(),
       games: this.rooms.activeGames(),
       announcements: listAnnouncements(),
       leaderboard: ratings.leaderboard(null, 10),
@@ -394,7 +393,7 @@ class Protocol {
   homeData() {
     const lb = ratings.leaderboard(null, 10);
     return privacy.stripPrivate({
-      stats: { ...this.rooms.stats(), online: this.clients.size },
+      stats: this._stats(), // 统一统计出口（§T1）
       games: this.rooms.activeGames(),
       announcements: listAnnouncements(),
       leaderboard: lb,
@@ -556,8 +555,20 @@ class Protocol {
     // 简易广播统计（对战页用 REST 轮询，这里可留空或推送给大厅）
   }
 
+  /**
+   * 统一的统计出口（PLAN §T1）。
+   *
+   * 在线人数**只有一种口径**：`playerToClients.size`（唯一身份数）。
+   * `rooms.stats()` 不再返回 `online`——它那层的公式曾算错（恒等于 clientToRoom.size，
+   * 只统计已绑定房间的连接，漏掉大厅/观战/未进房的连接），留着只会让下一个人再算错一遍。
+   * 所有对外出口（hello / lobbyData / homeData）都必须走这里。
+   */
+  _stats() {
+    return { ...this.rooms.stats(), online: this.playerToClients.size };
+  }
+
   getOnlineCount() {
-    return this.clients.size;
+    return this.playerToClients.size;
   }
 }
 
