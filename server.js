@@ -93,39 +93,59 @@ app.get('/api/lobby', (req, res) => {
 // 此前允许 ?player=<任意 id> 查询，而游客 id 在大厅/观战页是公开的
 // → 任何人可枚举他人棋谱（PLAN §Q7）。普通用户的检索一律走 WS `record_search`
 // （连接握手时已由 identify() 绑定身份，服务端强制按该身份过滤）。
-app.get('/api/history', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
-  const adminToken = req.query.adminToken || req.headers['x-admin-token'] || null;
-  if (!admin.verify(adminToken)) return res.status(403).json({ error: '无管理员权限' });
-  res.json(protocol.historyData(adminToken));
+app.get('/api/history', rateLimit.expressMiddleware(rateLimit.heavy), adminOnly, (req, res) => {
+  res.json(protocol.historyData(req.adminToken));
 });
 
 // 管理员：全部用户数据
-app.get('/api/admin/users', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'] || null;
-  const data = protocol.adminUsersData(token);
-  if (!data) return res.status(403).json({ error: '无管理员权限' });
-  res.json(data);
+app.get('/api/admin/users', rateLimit.expressMiddleware(rateLimit.heavy), adminOnly, (req, res) => {
+  res.json(protocol.adminUsersData(req.adminToken));
 });
 
 // 管理员：指定用户数据
-app.get('/api/admin/users/:id', (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'] || null;
-  const data = protocol.adminUserData(req.params.id, token);
+app.get('/api/admin/users/:id', adminOnly, (req, res) => {
+  const data = protocol.adminUserData(req.params.id, req.adminToken);
   if (!data) return res.status(403).json({ error: '无管理员权限或用户不存在' });
   res.json(data);
 });
 
+// ---------------- 管理接口统一鉴权（PLAN §Q7-5）----------------
+
+/**
+ * 管理身份判定：通过返回 token，失败返回 null。**全项目唯一的判定入口。**
+ *
+ * 此前每个管理接口都手抄 `req.query.token || req.headers['x-admin-token']` + `admin.verify`，
+ * 于是「新增接口忘记写校验」成了一个迟早会发生的错误类别（PLAN §Q7-1 的越权正是同源问题），
+ * 而且这类疏漏**不报错、不被测试发现**，只会静默存在。收敛到这一处后，结构上消除了它。
+ */
+function checkAdmin(req) {
+  const token = req.headers['x-admin-token'] || req.query.token || req.query.adminToken || null;
+  return admin.verify(token) ? token : null;
+}
+
+/**
+ * Express 中间件版：`app.get(path, adminOnly, handler)`。
+ * 鉴权通过后把 token 放进 `req.adminToken`，handler 直接取用，不必再解析一次。
+ */
+function adminOnly(req, res, next) {
+  const token = checkAdmin(req);
+  if (!token) return res.status(403).json({ error: '无管理员权限' });
+  req.adminToken = token;
+  next();
+}
+
 // ---------------- 用户管理写操作（PLAN §K3，全部写审计日志）----------------
 
 /**
- * 管理写路由统一包装：admin.verify → 执行业务 → audit.adminAction 落审计。
+ * 管理写路由统一包装：鉴权交给 `adminOnly` → 执行业务 → audit.adminAction 落审计。
  * handler(req, body) 返回 {ok, action, error?, audit?, ...data}；
  * ok=false 时返回 400 与 error。
+ *
+ * 返回**处理函数数组**，Express 会依次执行 → 调用处 `app.post(path, adminWrite(fn))` 无需改动，
+ * 而鉴权与读接口走的是**同一个 `adminOnly`**（不在这里再判一次，避免两套判定并存）。
  */
 function adminWrite(handler) {
-  return (req, res) => {
-    const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
-    if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  const h = (req, res) => {
     let r;
     try {
       r = handler(req, req.body || {}) || { ok: false, error: '无结果' };
@@ -145,6 +165,7 @@ function adminWrite(handler) {
     if (!r.ok) return res.status(400).json({ error: r.error || '操作失败' });
     res.json({ ok: true, ...data });
   };
+  return [adminOnly, h];
 }
 
 // 封禁（days>0 有期，否则永久；同时踢掉该身份全部在线连接）
@@ -216,16 +237,12 @@ app.delete('/api/admin/users/:id', adminWrite((req, body) => {
 }));
 
 // 管理员操作审计日志（PLAN §K4「操作审计」tab 数据源）
-app.get('/api/admin/audit', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'] || null;
-  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+app.get('/api/admin/audit', rateLimit.expressMiddleware(rateLimit.heavy), adminOnly, (req, res) => {
   res.json({ events: audit.query({ type: 'admin', limit: 200 }) });
 });
 
 // 管理员：导入 KIF 棋谱
-app.post('/api/admin/records/import', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
-  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+app.post('/api/admin/records/import', adminOnly, (req, res) => {
   const text = req.body && req.body.text;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: '缺少 KIF 文本' });
   const result = require('./src/records').importKif(text);
@@ -236,17 +253,13 @@ app.post('/api/admin/records/import', (req, res) => {
 // ---------------- 赛事管理（管理员，见 PLAN §E） ----------------
 
 // 全量列表（含 pending_approval/rejected/cancelled）
-app.get('/api/admin/tournaments', (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'] || null;
-  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+app.get('/api/admin/tournaments', adminOnly, (req, res) => {
   res.json({ tournaments: tournaments.listAllTournaments() });
 });
 
 // 审核/取消动作（幂等：状态已变更返回 400）
 function tournamentAction(action) {
-  return (req, res) => {
-    const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
-    if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+  const h = (req, res) => {
     const id = req.params.id;
     let r;
     if (action === 'approve') r = tournaments.approveTournament(id);
@@ -259,6 +272,7 @@ function tournamentAction(action) {
     }
     res.json(r);
   };
+  return [adminOnly, h]; // 同 adminWrite：返回数组，调用处不变，鉴权走同一个 adminOnly
 }
 app.post('/api/admin/tournaments/:id/approve', tournamentAction('approve'));
 app.post('/api/admin/tournaments/:id/reject', tournamentAction('reject'));
@@ -338,9 +352,7 @@ app.get('/api/gallery', (req, res) => {
 });
 
 // 设置公开/私有（管理员）
-app.post('/api/admin/records/:id/visibility', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
-  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+app.post('/api/admin/records/:id/visibility', adminOnly, (req, res) => {
   const records = require('./src/records');
   const r = records.setVisibility(req.params.id, (req.body || {}).visibility);
   audit.adminAction({ adminIp: req.clientIp || null, action: 'record-visibility', targetId: req.params.id, ok: !!r.ok, detail: { visibility: (req.body || {}).visibility } });
@@ -349,9 +361,7 @@ app.post('/api/admin/records/:id/visibility', (req, res) => {
 });
 
 // 编辑展示信息（管理员）：标题/赛事/轮次/日期/标签/简介/双方名覆盖/结果说明/置顶
-app.post('/api/admin/records/:id/meta', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token) || null;
-  if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+app.post('/api/admin/records/:id/meta', adminOnly, (req, res) => {
   const records = require('./src/records');
   const r = records.setMeta(req.params.id, req.body || {});
   audit.adminAction({ adminIp: req.clientIp || null, action: 'record-meta', targetId: req.params.id, ok: !!r.ok, detail: { fields: Object.keys(req.body || {}) } });

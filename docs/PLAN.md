@@ -345,6 +345,48 @@ SQLite 文件** `data/tdshogi.db` 里，而此前**没有任何备份机制**—
 **运维文档**：`DEPLOY.md` 新增「四、备份与恢复」，含**恢复步骤**——关键是
 ⚠️ 覆盖前**必须同时删除 `-wal` / `-shm`**，否则新库会读到"上一条数据库"的事务日志。
 
+### §Q7-5 管理接口统一鉴权 — ✅ 已实施 2026-09-10
+
+**问题**：管理接口的鉴权是**手抄**的。`server.js` 里同一段
+
+```js
+const token = req.query.token || req.headers['x-admin-token'] || null;
+if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权限' });
+```
+
+出现在 8 个路由里（`/api/history`、`/api/admin/users`、`/api/admin/users/:id`、
+`/api/admin/audit`、`/api/admin/records/import`、`/api/admin/tournaments`、
+`records/:id/visibility`、`records/:id/meta`）。写接口有 `adminWrite` 包装器，读接口全靠手抄。
+
+**风险**：以后新增第 9 个管理接口，**只要忘了抄这两行就是越权漏洞**——而这类疏漏不报错、
+不被测试发现，只会静默存在。这与 §Q7-1 的越权枚举**同源**：都靠"人记得写"来保证安全。
+
+**修复**：
+
+| 部件 | 作用 |
+|---|---|
+| `checkAdmin(req)` | **全项目唯一的身份判定入口**：解析 token（兼容 header / `?token` / `?adminToken` 三种来源）+ `admin.verify`，通过返回 token、失败返回 null |
+| `adminOnly(req,res,next)` | Express 中间件版：`app.get(path, adminOnly, handler)`；通过后把 token 放进 `req.adminToken`，handler 无需再解析 |
+| `adminWrite(handler)` | 改为返回 **`[adminOnly, h]`**（Express 会展开数组）→ 调用处写法不变，但鉴权与读接口走**同一个** `adminOnly`，不再有第二套判定 |
+| `tournamentAction(action)` | 同上返回数组 |
+
+**为什么用"返回 handler 数组"而不是逐个路由加中间件**：11 个路由一行都不用改，
+避免为了统一结构而制造 11 处新的改动风险。
+
+**Express 支持性已核实**（不能靠记忆）：`node_modules/express/lib/router/route.js:208`
+用 `flatten(slice.call(arguments))` 展开数组；且随后有
+`if (typeof handle !== 'function') throw ...`——即便写法有误也是**启动即报错**，
+不会静默跳过鉴权（fail loud，不是 fail open）。
+
+**未改动的 7 处 `admin.verify`**：`records/:id/export|playback|review|bookmark|comment|variation`
+与 `/api/records/search` 里的调用是**"管理员 *或* 谱主"**的条件判断，**不能**换成 `adminOnly`
+（否则会连谱主一起拒掉），故原样保留。
+
+**验证**：`node --check`、`npm run lint`（0 error）、`npm test`（58 项）全绿；
+grep 复核确认 8 个纯管理接口全部改完、7 处条件判断未被误改。
+**⚠️ 属于服务端改动，需重启进程生效**——重启后请确认：管理后台各 tab 能正常打开，
+非管理员直接请求 `/api/admin/*` 仍返回 403。
+
 ### §P2 eslint + §P3 CI — ✅ 已实施 2026-09-10
 
 - **eslint v10 扁平配置** `eslint.config.js`：分 Node（CJS）/ 浏览器（IIFE）两套 globals；
