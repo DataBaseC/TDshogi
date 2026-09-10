@@ -119,9 +119,15 @@
     }
 
     /**
-     * 更新坐标内容与显隐，**跟随视角翻转**（与 render() 的行列映射保持同一口径）：
-     *  - 先手视角：DOM 左→右为 9…1 筋，上→下为 一…九 段
-     *  - 后手视角：两者都反向（1 筋在左、九 段在上）
+     * 更新坐标内容与显隐，**跟随视角翻转**（与 render() 的行列映射保持同一口径）。
+     *
+     * 只保留**一对**标注（不是四边全给），并随视角换边：
+     *  - 先手视角：筋号在上边、段名在右边
+     *  - 后手视角：棋盘整体 180° 翻转 → 筋号落到下边、段名落到左边
+     *
+     * 四个容器仍在 DOM 中（CSS 已按四边定位），这里只填需要显示的那一对、
+     * 清空另一对——空容器无内容即无视觉呈现，省掉一份位置切换逻辑。
+     * 棋盘 padding 四边保持等宽，标注只在两处也不会让棋盘偏心。
      * @param {string} viewpoint 'b' | 'w'
      */
     renderCoords(viewpoint) {
@@ -130,16 +136,22 @@
       this.boardEl.classList.toggle('coords-on', on);
       this.coordsEl.style.display = on ? '' : 'none';
       if (!on) return;
+      const isB = viewpoint !== 'w';
       const nums = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
       const kanji = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
-      const files = viewpoint === 'b' ? nums.slice().reverse() : nums;
-      const ranks = viewpoint === 'b' ? kanji : kanji.slice().reverse();
+      // 先手视角：DOM 左→右为 9…1 筋、上→下为 一…九 段；后手视角两者皆反向
+      const files = isB ? nums.slice().reverse() : nums;
+      const ranks = isB ? kanji : kanji.slice().reverse();
       const fHtml = files.map((t) => `<span>${t}</span>`).join('');
       const rHtml = ranks.map((t) => `<span>${t}</span>`).join('');
-      this.coordsEl.querySelector('.coords-top').innerHTML = fHtml;
-      this.coordsEl.querySelector('.coords-bottom').innerHTML = fHtml;
-      this.coordsEl.querySelector('.coords-left').innerHTML = rHtml;
-      this.coordsEl.querySelector('.coords-right').innerHTML = rHtml;
+      const filesEl = this.coordsEl.querySelector(isB ? '.coords-top' : '.coords-bottom');
+      const ranksEl = this.coordsEl.querySelector(isB ? '.coords-right' : '.coords-left');
+      const filesOther = this.coordsEl.querySelector(isB ? '.coords-bottom' : '.coords-top');
+      const ranksOther = this.coordsEl.querySelector(isB ? '.coords-left' : '.coords-right');
+      if (filesEl) filesEl.innerHTML = fHtml;
+      if (ranksEl) ranksEl.innerHTML = rHtml;
+      if (filesOther) filesOther.innerHTML = '';
+      if (ranksOther) ranksOther.innerHTML = '';
     }
 
     renderEmptyBoard() {
