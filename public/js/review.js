@@ -227,11 +227,13 @@
     document.getElementById('topClock').textContent = '';
     document.getElementById('bottomClock').textContent = '';
 
-    // 棋盘（先手视角）：§M6 —— 浏览与自由摆放都走 FreeBoard，
-    // 浏览用 review 只读模式（自动带上一步高亮与统一持驹渲染），不再走裸 board.render
+    // 棋盘：§M6 —— 浏览与自由摆放都走 FreeBoard，
+    // 浏览用 review 只读模式（自动带上一步高亮与统一持驹渲染），不再走裸 board.render。
+    // §S6：视角统一由 setViewpoint 设置（会一并交换驹台配色并触发重渲染）；切勿直接改 fb.viewpoint
     const pos = positions[cursor];
     if (pos) {
       ensureFb();
+      fb.setViewpoint(viewpoint);
       if (freeMode && fb) {
         fb.render();
       } else {
