@@ -217,14 +217,12 @@
 
   // 棋钟已抽到 play-clock.js（PLAN §M5）：此处只做一次依赖注入。
   // 注入的是模块内读不到的两个"外部状态"——在 play.js 里它们是闭包变量：
-  //   state  → 最新对局状态（判断是否 PLAYING、谁的回合）
-  //   mySeat → 当前显示视角
-  // ⚠️ 视角这里**刻意保持抽出前的写法**（`mySeat === 'w' ? 'w' : 'b'`，观战者固定先手）：
-  //    与 §R1 观战视角切换的联动属于行为变更，拆分阶段不做——否则一旦出问题，
-  //    就分不清是"搬错了"还是"改坏了"。
+  //   state → 最新对局状态（判断是否 PLAYING、谁的回合）
+  //   视角  → 与棋盘**共用 `currentViewpoint()`**，保证两者永远同一口径
+  //          （对局者固定自己视角；观战者跟随可切换的 spectatorViewpoint）
   window.PlayClock.init({
     getState: function () { return state; },
-    getViewpoint: function () { return mySeat === 'w' ? 'w' : 'b'; },
+    getViewpoint: function () { return currentViewpoint(); },
   });
 
   // ==================================================================

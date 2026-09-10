@@ -257,7 +257,9 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
   `PlayClock.init({ getState, getViewpoint })`，并在 `state` 消息里调 `resetTick()`、
   在 `clock` 消息里调 `syncFromServer(data)`。读秒音效（`sec<=10` 跨秒触发 `playByoyomi`）
   与 tick 循环都在 `play-clock.js` 内
-- ⚠️ 已知不一致：`getViewpoint` 仍按 `mySeat` 计算，观战者切视角时棋钟不换边（待修）
+- 视角口径统一：`PlayClock.init({ getViewpoint: () => currentViewpoint() })`，与棋盘**共用同一函数**
+  ——观战者切视角时棋钟同步换边（此前各自算视角，出现过"棋盘翻、棋钟不翻"，2026-09-10 修复）
+- `advance(dtMs)` 独立导出：时间扣减可**脱离定时器**单测（`tests/play-clock.test.js` 12 项）
 - `replaced` 消息：同身份别处登录 → toast 提示 + 禁用棋盘
 
 ### 7.3 棋盘组件与「看棋谱」的渲染路径

@@ -59,16 +59,19 @@
     $('bottomClock').classList.toggle('low', lowMe && state && state.turn === mySeatH);
   }
 
-  /** 本地棋钟 tick（每 500ms） */
-  function tick() {
+  /**
+   * 按当前手番推进 `dtMs` 毫秒（**纯扣减**，tick 与单测共用）。
+   *
+   * 把这段逻辑从 tick 里拎出来，是为了让它**不依赖定时器也能被验证**——
+   * 时间算错是用户立刻能感知的错误，不能只靠"跑起来看着对"。
+   * 非 PLAYING（未开局 / 已终局）不扣时，由本函数自行判断，调用方无需关心。
+   */
+  function advance(dtMs) {
     const state = getState();
-    if (!state || state.status !== 'PLAYING') { update(); return; }
-    const now = Date.now();
-    const dt = now - lastTickTs;
-    lastTickTs = now;
+    if (!state || state.status !== 'PLAYING') return;
     const turn = state.turn;
     if (inByoyomi[turn] && byoyomiDuration > 0) {
-      localByoyomi[turn] = Math.max(0, localByoyomi[turn] - dt);
+      localByoyomi[turn] = Math.max(0, localByoyomi[turn] - dtMs);
       // 读秒 ≤10 秒：每秒「嗒」（跨秒边界触发，含 10 与 1）
       const sec = Math.ceil(localByoyomi[turn] / 1000);
       if (sec >= 1 && sec <= 10 && sec !== lastTickSecond) {
@@ -77,8 +80,20 @@
       }
       if (sec > 10) lastTickSecond = -1;
     } else {
-      localClocks[turn] = Math.max(0, localClocks[turn] - dt);
+      localClocks[turn] = Math.max(0, localClocks[turn] - dtMs);
     }
+  }
+
+  /** 本地棋钟 tick（每 500ms） */
+  function tick() {
+    const state = getState();
+    // ⚠️ 非 PLAYING 时**不更新 lastTickTs**——保持抽出前的语义
+    // （暂停期间不计入倒计时基准；恢复时服务端 state 消息会 resetTick 重新校准）
+    if (!state || state.status !== 'PLAYING') { update(); return; }
+    const now = Date.now();
+    const dt = now - lastTickTs;
+    lastTickTs = now;
+    advance(dt);
     update();
   }
 
@@ -130,5 +145,8 @@
     start();
   }
 
-  window.PlayClock = { init, syncFromState, syncFromServer, resetTick, update, start, stop };
+  window.PlayClock = {
+    init, syncFromState, syncFromServer, resetTick, update, start, stop,
+    advance, // 单测用：不经定时器直接推进 dtMs
+  };
 })();
