@@ -22,27 +22,44 @@
   });
 
   // ---- 创建房间 ----
+  // 私人房间（PLAN §T2）：休闲模式（不计 ELO，经验照常加）+ 可选密码；
+  // 勾选后才显示密码框，密码留空 = 不设门禁（只是休闲局）
+  let lastCreatedPrivate = false;
+  document.getElementById('roomPrivate').addEventListener('change', (e) => {
+    document.getElementById('roomPasswordWrap').style.display = e.target.checked ? 'block' : 'none';
+  });
   document.getElementById('btnCreateRoom').addEventListener('click', () => {
     const timeControl = document.getElementById('roomTimeControl').value || '10:00';
-    api.send({ type: 'create_room', data: { timeControl } });
+    const isPrivate = document.getElementById('roomPrivate').checked;
+    const password = document.getElementById('roomPassword').value.trim();
+    if (isPrivate && password && (password.length < 4 || password.length > 8)) {
+      return toast('房间密码需 4-8 位');
+    }
+    lastCreatedPrivate = isPrivate;
+    api.send({ type: 'create_room', data: { timeControl, isPrivate, password } });
   });
 
   // ---- 加入房间 ----
   document.getElementById('btnJoinRoom').addEventListener('click', () => {
     const code = document.getElementById('joinCode').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{6}$/.test(code)) return toast('请输入 6 位有效房间码');
-    api.send({ type: 'join_room', data: { code } });
+    const password = document.getElementById('joinPassword').value.trim();
+    api.send({ type: 'join_room', data: { code, password } });
   });
-  // 回车直接加入
-  document.getElementById('joinCode').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') document.getElementById('btnJoinRoom').click();
+  // 回车直接加入（房间码 / 密码框内均可）
+  ['joinCode', 'joinPassword'].forEach((id) => {
+    document.getElementById(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('btnJoinRoom').click();
+    });
   });
 
   // ---- WS 事件 ----
   api.on('room_created', (data) => {
     document.getElementById('roomCode').textContent = data.code;
     document.getElementById('roomCreated').style.display = 'block';
-    toast('房间已创建，等待对手加入');
+    toast(lastCreatedPrivate
+      ? '私人房间已创建，把房间码与密码发给好友'
+      : '房间已创建，等待对手加入');
   });
   api.on('room_joined', (data) => {
     toast('加入成功，对局开始！');
@@ -60,12 +77,17 @@
     location.href = `play.html?room=${data.roomId}`;
   });
   api.on('error', (data) => {
-    if (data && data.message) {
-      toast(data.message);
-      if (data.message.includes('匹配')) {
-        document.getElementById('matchWait').classList.remove('show');
-        document.getElementById('matchControls').style.display = 'block';
-      }
+    if (!data || !data.message) return;
+    toast(data.message);
+    // 私人房间需要密码（PLAN §T2）：服务端回的是**结构化标志** → 亮出密码框并聚焦。
+    // 比弹 prompt() 好：不打断操作，移动端也不会被浏览器拦截。
+    if (data.needPassword) {
+      document.getElementById('joinPasswordWrap').style.display = 'block';
+      document.getElementById('joinPassword').focus();
+    }
+    if (data.message.includes('匹配')) {
+      document.getElementById('matchWait').classList.remove('show');
+      document.getElementById('matchControls').style.display = 'block';
     }
   });
 

@@ -18,6 +18,7 @@ const { saveRecord } = require('./records');
 const ratings = require('./ratings');
 const { genId } = require('./auth');
 const tournaments = require('./tournaments');
+const roomPassword = require('./room-password'); // 私人房间密码（PLAN §T2，纯函数模块，可单测）
 
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混淆字符
 const RECONNECT_GRACE_MS = 60 * 1000; // 断线 60 秒重连期
@@ -35,6 +36,9 @@ const TIME_CONTROLS = {
   '10:00': { id: '10:00', name: '10分钟包干',   main: 10 * 60 * 1000, byoyomi: 0 },
   '10sec': { id: '10sec', name: '10秒快棋',      main: 0,             byoyomi: 10 * 1000 }, // 0+10：每手 10 秒读秒
 };
+
+// 房间密码的哈希/校验逻辑见 ./room-password（PLAN §T2）。
+// 抽成独立模块的理由：纯函数可单测——安全逻辑不该埋在 1787 行的本文件里靠人眼检查。
 
 /**
  * 由时间控制生成房间时钟初始状态。
@@ -198,9 +202,11 @@ class RoomManager {
   /**
    * 创建房间（host 作为先手或随机）。
    * @param {object} host { clientId, playerId, name }
+   * @param {string} timeControlId 时间控制预设 id
+   * @param {{isPrivate?:boolean, password?:string}} [opts] 私人房间（PLAN §T2）：休闲模式 + 可选密码
    * @returns {{ok:true, roomId, code, seat}|{ok:false, error}}
    */
-  createRoom(host, timeControlId) {
+  createRoom(host, timeControlId, opts) {
     // 若在已结束的对局中则自动退出；对局中自动认输退出（用户确认，PLAN §H）
     this._autoLeaveFinished(host.clientId);
     this._autoResignAndLeave(host.clientId);
@@ -234,6 +240,14 @@ class RoomManager {
       }
     }
     const tc = TIME_CONTROLS[timeControlId] || TIME_CONTROLS[DEFAULT_TIME_CONTROL];
+    const o = opts || {};
+    // 私人房间（PLAN §T2）：休闲模式——**不计 ELO**（`_finalize` 只对 rated 房间结算）；
+    // 经验值在 `_finalize` 里是**无条件**加的，所以「经验照常加」无需额外处理。
+    const isPrivate = o.isPrivate === true;
+    const password = typeof o.password === 'string' ? o.password.trim() : '';
+    if (isPrivate && !roomPassword.isValid(password)) {
+      return { ok: false, error: `房间密码需 ${roomPassword.MIN}–${roomPassword.MAX} 位` };
+    }
     const code = this._genRoomCode();
     const roomId = genId();
     const room = {
@@ -251,7 +265,9 @@ class RoomManager {
       lastActiveAt: Date.now(),
       result: null,
       resultDetail: null,
-      rated: true,
+      rated: !isPrivate,       // §T2：私人房间不计 ELO
+      isPrivate,               // §T2：不进观战列表 / 不可观战 / 排除随机观战
+      passwordHash: (isPrivate && password) ? roomPassword.hash(password) : null,
       tournamentId: null,
     };
     // host 随机执先手
@@ -272,8 +288,9 @@ class RoomManager {
    * 加入房间（按房间码）。
    * @param {object} player { clientId, playerId, name }
    * @param {string} code
+   * @param {string} [password] 私人房间密码（PLAN §T2）
    */
-  joinRoom(player, code) {
+  joinRoom(player, code, password) {
     // 若在已结束的对局中则自动退出；对局中自动认输退出（用户确认，PLAN §H）
     this._autoLeaveFinished(player.clientId);
     this._autoResignAndLeave(player.clientId);
@@ -285,6 +302,16 @@ class RoomManager {
     const target = this._room(roomId);
     if (target && ['b', 'w'].some((s) => target.players[s] && target.players[s].playerId === player.playerId)) {
       return { ok: false, error: '这是你自己创建/所在的房间，同一身份不能加入（可在对局结束后再来，或换一个身份测试）' };
+    }
+    // 私人房间密码校验（PLAN §T2）。
+    // ⚠️ 位置讲究：必须放在「处理当前所在房间」**之前**——否则密码输错也会先把玩家
+    // 从原等待房踢出去，变成"试错一次就被赶出房间"。
+    if (target && target.isPrivate && !roomPassword.verify(target.passwordHash, password)) {
+      return {
+        ok: false,
+        needPassword: true, // 结构化标志：前端据此显示密码输入框再重试
+        error: password ? '房间密码错误' : '该房间是私人房间，需要密码',
+      };
     }
     const curId = this.clientToRoom.get(player.clientId);
     if (curId) {
@@ -933,6 +960,13 @@ class RoomManager {
   spectate(clientId, roomId, playerId) {
     const room = this._room(roomId);
     if (!room) return { ok: false, error: '对局不存在' };
+    // 私人房间不开放观战（PLAN §T2）。
+    // 例外：本连接正是该房选手时放行——下面的「座位回位」路径要允许他们自己进来（含复盘）。
+    const seatInfoNow = this.clientToPlayer.get(clientId);
+    const seatedHere = !!(seatInfoNow && seatInfoNow.roomId === roomId);
+    if (room.isPrivate && !seatedHere) {
+      return { ok: false, error: '这是私人房间，不开放观战' };
+    }
     // 座位回位（PLAN §H）：本连接 playerId 命中本房间座位 → 回到座位（对局中/复盘中皆可），不进观战席
     const seatInfo = this.clientToPlayer.get(clientId);
     if (seatInfo && seatInfo.roomId === roomId) {
@@ -984,8 +1018,9 @@ class RoomManager {
   }
 
   randomSpectate(clientId, playerId) {
-    const playing = [...this.rooms.values()].filter((r) => r.status === 'PLAYING');
-    if (!playing.length) return { ok: false, error: '当前没有进行中的对局' };
+    // 排除私人房间（PLAN §T2）：随机观战不该把私人局推给陌生人
+    const playing = [...this.rooms.values()].filter((r) => r.status === 'PLAYING' && !r.isPrivate);
+    if (!playing.length) return { ok: false, error: '当前没有可观战的对局' };
     const room = playing[Math.floor(Math.random() * playing.length)];
     const res = this.spectate(clientId, room.id, playerId);
     return res;
@@ -1305,8 +1340,9 @@ class RoomManager {
   // ==================================================================
   activeGames() {
     // 进行中对局 + 感想战中的房间（终局后未清理，type='reviewing' 复盘中，可继续观战）
+    // 私人房间不出现（PLAN §T2）：这个列表就是给陌生人点进去观战用的
     return [...this.rooms.values()]
-      .filter((r) => r.status === 'PLAYING' || (r.status === 'FINISHED' && r.demo))
+      .filter((r) => !r.isPrivate && (r.status === 'PLAYING' || (r.status === 'FINISHED' && r.demo)))
       .map((r) => ({
         roomId: r.id,
         code: r.code,
@@ -1378,6 +1414,9 @@ class RoomManager {
       curByoyomi: room.curByoyomi ? { ...room.curByoyomi } : null,
       inByoyomi: room.inByoyomi ? { ...room.inByoyomi } : null,
       rated: room.rated,
+      // §T2：私人房属性必须随快照持久化，否则重启恢复后私人房会变成"公开可加入"
+      isPrivate: !!room.isPrivate,
+      passwordHash: room.passwordHash || null,
       tournamentId: room.tournamentId,
       // 对局数据：startSfen + moves 可完整重放恢复 Game
       startSfen: game.startSfen,
@@ -1853,6 +1892,8 @@ class RoomManager {
       result: snap.result || null,
       resultDetail: snap.resultDetail || null,
       rated: snap.rated !== false,
+      isPrivate: !!snap.isPrivate, // §T2：恢复私人房属性（否则重启后私人房会变成公开）
+      passwordHash: snap.passwordHash || null,
       tournamentId: snap.tournamentId || null,
     };
     return room;

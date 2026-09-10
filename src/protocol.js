@@ -171,15 +171,23 @@ class Protocol {
     switch (type) {
       case 'create_room': {
         const tc = data && data.timeControl;
-        const res = r.createRoom(player, tc);
+        // 私人房间（PLAN §T2）：isPrivate 决定 rated=false（不计 ELO，经验照常加）
+        const res = r.createRoom(player, tc, {
+          isPrivate: !!(data && data.isPrivate),
+          password: (data && data.password) || '',
+        });
         if (!res.ok) { this._error(clientId, res.error); break; }
         this._send(clientId, { type: 'room_created', data: res });
         break;
       }
       case 'join_room': {
-        const res = r.joinRoom(player, data && data.code);
+        const res = r.joinRoom(player, data && data.code, (data && data.password) || '');
         if (res.ok) {
           this._send(clientId, { type: 'room_joined', data: res });
+        } else if (res.needPassword) {
+          // 私人房间（§T2）：把「需要密码」作为**结构化标志**回传，
+          // 前端据此显示密码输入框再重试——而不是让用户从一句文案里猜该做什么
+          this._send(clientId, { type: 'error', data: { message: res.error, needPassword: true } });
         } else {
           this._error(clientId, res.error);
         }

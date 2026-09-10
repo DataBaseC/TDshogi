@@ -42,6 +42,15 @@
             <option value="10sec">10 秒快棋</option>
           </select>
         </div>
+        <!-- 私人房间（PLAN §T2）：休闲模式——不计 ELO，经验值照常加 -->
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:8px;">
+          <input type="checkbox" id="roomPrivate" style="width:16px;height:16px;cursor:pointer;">
+          <span>🔒 私人房间 <span style="color:var(--text-dim);font-size:12px;">（不计 ELO，经验照常 · 不开放观战）</span></span>
+        </label>
+        <div id="roomPasswordWrap" style="display:none;margin:0 0 14px;">
+          <input class="input" id="roomPassword" placeholder="房间密码（4-8 位，可留空表示不设密码）" maxlength="8" style="width:100%;">
+        </div>
+
         <button class="btn btn-ghost btn-lg" id="btnCreateRoom" style="width:100%;">创建房间</button>
         <div id="roomCreated" style="display:none;margin-top:16px;text-align:center;">
           <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">房间码</div>
@@ -56,6 +65,10 @@
         <h3>🔑 加入房间</h3>
         <p>输入好友提供的 6 位房间码加入对局。</p>
         <input class="input" id="joinCode" placeholder="输入房间码，如 AB3X7Q" maxlength="6" style="width:100%;text-transform:uppercase;letter-spacing:4px;margin-bottom:12px;">
+        <!-- 私人房间密码：仅在服务端回「需要密码」后出现（PLAN §T2），平时不占版面 -->
+        <div id="joinPasswordWrap" style="display:none;margin-bottom:12px;">
+          <input class="input" id="joinPassword" placeholder="该房间需要密码" maxlength="8" style="width:100%;">
+        </div>
         <button class="btn btn-primary btn-lg" id="btnJoinRoom" style="width:100%;">加入房间</button>
       </div>
     </div>
