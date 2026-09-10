@@ -20,11 +20,7 @@
   let selected = null;    // 当前选中的起点（格名或打子符号）
   let targets = [];       // 当前选中起点的合法目标
   let pendingPromote = null; // { usi, nonPromoteUsi, promoteUsi }
-  let localClocks = { b: 15 * 60 * 1000, w: 15 * 60 * 1000 };  // 本时剩余
-  let localByoyomi = { b: 0, w: 0 };  // 当前手读秒剩余
-  let inByoyomi = { b: false, w: false }; // 是否在读秒
-  let byoyomiDuration = 0;             // 秒读时长
-  let lastTickTs = Date.now();
+  // 棋钟状态与逻辑已抽到 play-clock.js（PLAN §M5）：本时剩余 / 读秒 / tick 都在那边
   // 统一棋盘组件（PLAN §G v6）：play 模式行棋 / 终局切感想战（demo-rules）/ 自由摆棋
   let fb = null;                  // FreeBoard 控制器（棋盘交互与拖拽）
   let reviewActive = false;       // 感想战模式中
@@ -135,17 +131,8 @@
       vpBtn.textContent = viewpoint === 'b' ? '🔄 视角·先手' : '🔄 视角·後手';
     }
 
-    // 棋钟初始 + 读秒
-    if (state.clock) {
-      localClocks.b = state.clock.b;
-      localClocks.w = state.clock.w;
-    }
-    if (state.inByoyomi) {
-      inByoyomi = { ...state.inByoyomi };
-      localByoyomi = state.curByoyomi ? { ...state.curByoyomi } : { b: 0, w: 0 };
-      byoyomiDuration = state.byoyomi || 0;
-    }
-    updateClocks();
+    // 棋钟初始 + 读秒（PLAN §M5：逻辑已抽到 play-clock.js）
+    window.PlayClock.syncFromState(state);
 
     // 感想战中：棋盘由推演谱渲染（state 推送仅更新横幅/时钟等周边）
     if (reviewActive && fb) {
@@ -228,52 +215,17 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  function displayFor(seat) {
-    // 本时用尽且进入读秒 → 显示读秒剩余；否则显示本时
-    if (inByoyomi[seat] && byoyomiDuration > 0) return fmtClock(localByoyomi[seat], true);
-    return fmtClock(localClocks[seat], false);
-  }
-  function updateClocks() {
-    const vp = mySeat === 'w' ? 'w' : 'b';
-    const oppSeat = vp === 'b' ? 'w' : 'b'; // 上方=对面
-    const mySeatH = vp;                       // 下方=自己
-    $('topClock').textContent = displayFor(oppSeat);
-    $('bottomClock').textContent = displayFor(mySeatH);
-    const lowOpp = inByoyomi[oppSeat] ? localByoyomi[oppSeat] <= 10000 : localClocks[oppSeat] <= 10000;
-    const lowMe = inByoyomi[mySeatH] ? localByoyomi[mySeatH] <= 10000 : localClocks[mySeatH] <= 10000;
-    $('topClock').classList.toggle('low', lowOpp && state && state.turn === oppSeat);
-    $('bottomClock').classList.toggle('low', lowMe && state && state.turn === mySeatH);
-  }
-  function fmtClock(ms, isByoyomi) {
-    const sec = Math.max(0, Math.ceil(ms / 1000));
-    if (isByoyomi) return `${sec}`; // 读秒只显示秒数
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
-  }
-
-  // 本地棋钟 tick
-  let lastTickSecond = -1;  // 读秒音效：记录上次"嗒"的秒数（跨秒触发）
-  setInterval(() => {
-    if (!state || state.status !== 'PLAYING') { updateClocks(); return; }
-    const now = Date.now();
-    const dt = now - lastTickTs;
-    lastTickTs = now;
-    const turn = state.turn;
-    if (inByoyomi[turn] && byoyomiDuration > 0) {
-      localByoyomi[turn] = Math.max(0, localByoyomi[turn] - dt);
-      // 读秒 ≤10 秒：每秒「嗒」（跨秒边界触发，含 10 与 1）
-      const sec = Math.ceil(localByoyomi[turn] / 1000);
-      if (sec >= 1 && sec <= 10 && sec !== lastTickSecond) {
-        if (window.Sound) window.Sound.playByoyomi();
-        lastTickSecond = sec;
-      }
-      if (sec > 10) lastTickSecond = -1;
-    } else {
-      localClocks[turn] = Math.max(0, localClocks[turn] - dt);
-    }
-    updateClocks();
-  }, 500);
+  // 棋钟已抽到 play-clock.js（PLAN §M5）：此处只做一次依赖注入。
+  // 注入的是模块内读不到的两个"外部状态"——在 play.js 里它们是闭包变量：
+  //   state  → 最新对局状态（判断是否 PLAYING、谁的回合）
+  //   mySeat → 当前显示视角
+  // ⚠️ 视角这里**刻意保持抽出前的写法**（`mySeat === 'w' ? 'w' : 'b'`，观战者固定先手）：
+  //    与 §R1 观战视角切换的联动属于行为变更，拆分阶段不做——否则一旦出问题，
+  //    就分不清是"搬错了"还是"改坏了"。
+  window.PlayClock.init({
+    getState: function () { return state; },
+    getViewpoint: function () { return mySeat === 'w' ? 'w' : 'b'; },
+  });
 
   // ==================================================================
   // 走子交互
@@ -485,7 +437,7 @@
     state = data;
     mySeat = data.seat || null;
     isPlayer = data.isPlayer === true;
-    lastTickTs = Date.now();
+    window.PlayClock.resetTick(); // 以"此刻"为倒计时基准（原 `lastTickTs = Date.now()`）
     scrollBoardIntoViewOnce(); // §S2：手机端首屏直接落到棋盘
     // 感想战路由（PLAN §G v6）：终局自动进入；新对局自动退出
     if (state.status === 'FINISHED' && state.result) {
@@ -501,22 +453,8 @@
     render(state);
   });
 
-  api.on('clock', (data) => {
-    if (!data) return;
-    if (typeof data.b === 'number') {
-      localClocks.b = data.b;
-      localClocks.w = data.w;
-    }
-    if (data.curByoyomi) {
-      localByoyomi = { ...data.curByoyomi };
-    }
-    if (data.inByoyomi) {
-      inByoyomi = { ...data.inByoyomi };
-    }
-    if (data.byoyomi != null) byoyomiDuration = data.byoyomi;
-    lastTickTs = Date.now();
-    updateClocks();
-  });
+  // 棋钟校准（PLAN §M5：处理逻辑已抽到 play-clock.js）
+  api.on('clock', (data) => window.PlayClock.syncFromServer(data));
   // 观战者名单（对局页右列观众列表，PLAN §R）
   // 兼容两种形态：字符串数组（旧）与 {id,name,rating,level}（新）
   function renderSpectators(list) {

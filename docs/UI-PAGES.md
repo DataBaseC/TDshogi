@@ -43,7 +43,11 @@
 
 底部列表来自 `GET /api/lobby` 的 `games`，5s 轮询；每张 game-card 点击进入对局——点击者是该局选手（`g.playerIds` 命中 hello 下发的本机 playerId）则跳 `play.html?room=<roomId>`（走 request_state 回位到选手座位），否则才带 `spectate=1` 观战进入；meta 显示房间码/类型/手数/观战人数（§R4：`spectatorCount` 由服务端按 playerId 去重，列表按观众数降序「热门优先」，同人数保持服务端原序）。
 
-## 3. play.html（对局页）— `js/play.js`（核心页面）
+## 3. play.html（对局页）— `js/play.js`（核心页面）+ `js/play-clock.js`（棋钟）
+
+> 脚本顺序：`play-clock.js` 必须排在 `play.js` **之前**（后者依赖前者的 `window.PlayClock`）。
+> 棋钟于 PLAN §M5 第 1 步从 `play.js` 抽出；`play.js` 只注入 `getState/getViewpoint`
+> 并在 `state`/`clock` 消息里转发，tick 循环与读秒音效都在 `play-clock.js`。
 
 **职责**：对战 / 观战 / 重连三合一。布局：顶部信息栏 + 棋盘（上=对手栏，下=自己栏）+ 左对手持驹/右自己持驹 + 右侧聊天与走子记录。
 

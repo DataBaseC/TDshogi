@@ -231,14 +231,32 @@ public/js/
 
 ### 5.3 拆分顺序（低风险 → 高风险）
 
-| 步 | 动作 | 风险 | 验证 |
-|---|---|---|---|
-| 1 | 新增 `settings.js`（§2） | 极低 | 手测 + `lint` |
-| 2 | `play.js` 抽出棋钟 → `play-clock.js` | 低（与棋钟 e2e 对应） | `e2e-timecontrol.js` |
-| 3 | `play.js` 抽出感想战 → `play-demo.js` | 中（§J3 高发区） | `e2e-freeboard.js` |
-| 4 | `play.js` 抽出观战 → `play-views.js` | 中（§R 刚改） | `e2e-spectator-identity.js` |
-| 5 | `admin.js` 按 tab 拆 | 中 | 手测 + `e2e-tournament-admin.js` |
-| 6 | `freeboard.js` 内联骒台/拖拽细节外提 | 中高 | `e2e-freeboard.js` + 单测 |
+| 步 | 动作 | 风险 | 验证 | 状态 |
+|---|---|---|---|---|
+| 1 | 新增 `settings.js`（§2） | 极低 | 手测 + `lint` | ✅ 已完成 |
+| 2 | `play.js` 抽出棋钟 → `play-clock.js` | 低（与棋钟 e2e 对应） | `e2e-timecontrol.js` | ✅ 已搬运（2026-09-10），**待用户跑 e2e 验收** |
+| 3 | `play.js` 抽出感想战 → `play-demo.js` | 中（§J3 高发区） | `e2e-freeboard.js` | ⬜ 待做 |
+| 4 | `play.js` 抽出观战 → `play-views.js` | 中（§R 刚改） | `e2e-spectator-identity.js` | ⬜ 待做 |
+| 5 | `admin.js` 按 tab 拆 | 中 | 手测 + `e2e-tournament-admin.js` | ⬜ 待做 |
+| 6 | `freeboard.js` 内联驹台/拖拽细节外提 | 中高 | `e2e-freeboard.js` + 单测 | ⬜ 待做 |
+
+**第 2 步实施记录（2026-09-10）**
+
+- 边界：棋钟相关标识符（`localClocks` / `localByoyomi` / `inByoyomi` / `byoyomiDuration` /
+  `lastTickTs` / `lastTickSecond` / `fmtClock` / `updateClocks` / `displayFor`）**只在 `play.js`
+  内部出现**，用 grep 确认过，没有外部引用点。
+- 手法：**纯搬运，逻辑一字未改**。`play.js` 里原本依赖两个闭包变量，改为注入回调：
+  `getState()`（取 `state`）、`getViewpoint()`（取 `mySeat === 'w' ? 'w' : 'b'`）。
+- 调用点共 5 处，**全部改完并 grep 复核**（残留检查 0 命中）：
+  ① 模块顶部 5 个状态声明 → 删除；② `render()` 的棋钟初始化 → `PlayClock.syncFromState(state)`；
+  ③ `displayFor/updateClocks/fmtClock` + `setInterval(tick,500)` → `PlayClock.init({...})`；
+  ④ `state` 消息里的 `lastTickTs = Date.now()` → `PlayClock.resetTick()`；
+  ⑤ `api.on('clock')` 整段 → `PlayClock.syncFromServer(data)`。
+- `play.html` 在 `play.js` **之前**引入 `play-clock.js`（依赖顺序）。
+- 结果：`play.js` 819 → **758** 行；新增 `play-clock.js` 121 行。
+- **⚠️ 已知差异（拆时刻意保留，未修）**：`getViewpoint` 仍按 `mySeat` 计算，因此
+  **观战者切换 §R1 视角时，上下棋钟不会跟着换边**。这是 §R1 引入的不一致，属于行为变更，
+  按"搬运与改逻辑分开"原则留到下一步单独处理。
 
 **每步独立提交**（本项目已有 git 基线 `v1.3.1`），任何一步出问题都能 `git revert` 单步。
 

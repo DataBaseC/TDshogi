@@ -58,10 +58,10 @@ shogiwebapp/
 ├── public/              # 前端（静态）
 │   ├── *.html           # 9 页面：index/lobby/play/history/gallery/review/tournaments/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
-│   └── js/              # 18 个脚本：settings.js(用户设置中心·须先于 nav.js) api.js(WS封装) nav.js board.js pieces.js(图集配置)
+│   └── js/              # 19 个脚本：settings.js(用户设置中心·须先于 nav.js) api.js(WS封装) nav.js board.js pieces.js(图集配置)
 │   │                      piece-kinds.js(棋种映射单一来源+自检)
 │   │                      freeboard.js(统一棋盘组件 play/demo-rules/free/review 四模式)
-│   │                      play.js gallery.js sound.js …
+│   │                      play.js(对局页编排) play-clock.js(棋钟·仅 play.html 加载) gallery.js sound.js …
 ├── scripts/             # e2e-*.js 回归测试（ws 客户端模拟）+ import-kif-batch
 ├── data/                # 运行时：tdshogi.db（+ 迁移前的 *.bak）
 └── agents/MEMORY/       # 开发反思档案（非运行依赖）
@@ -253,7 +253,11 @@ _snapshotAll 每 30s（可配）把 PLAYING/WAITING 房间序列化存表
 - `api.on('open')` → `enterRoom()`：按 URL 参数分支——`spectate=1` 观战 / `join=1` 赛事 / 否则 `request_state`（重连）
 - `state` 消息全量渲染：棋盘 / 持驹 / 走子列表（日式记谱 movesKif）/ 棋钟 / 音效
 - 走子音效：`moves.length > prevMoves` 且棋子数减少 → 吃子音，否则落子音
-- 读秒音效：`inByoyomi[turn] && sec<=10` 跨秒触发 playByoyomi
+- **棋钟已抽到 `play-clock.js`（PLAN §M5 第 1 步）**：`play.js` 只做依赖注入
+  `PlayClock.init({ getState, getViewpoint })`，并在 `state` 消息里调 `resetTick()`、
+  在 `clock` 消息里调 `syncFromServer(data)`。读秒音效（`sec<=10` 跨秒触发 `playByoyomi`）
+  与 tick 循环都在 `play-clock.js` 内
+- ⚠️ 已知不一致：`getViewpoint` 仍按 `mySeat` 计算，观战者切视角时棋钟不换边（待修）
 - `replaced` 消息：同身份别处登录 → toast 提示 + 禁用棋盘
 
 ### 7.3 棋盘组件与「看棋谱」的渲染路径
