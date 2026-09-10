@@ -378,13 +378,20 @@ if (!admin.verify(token)) return res.status(403).json({ error: '无管理员权�
 `if (typeof handle !== 'function') throw ...`——即便写法有误也是**启动即报错**，
 不会静默跳过鉴权（fail loud，不是 fail open）。
 
-**未改动的 7 处 `admin.verify`**：`records/:id/export|playback|review|bookmark|comment|variation`
-与 `/api/records/search` 里的调用是**"管理员 *或* 谱主"**的条件判断，**不能**换成 `adminOnly`
-（否则会连谱主一起拒掉），故原样保留。
+**"管理员 *或* 谱主"的 7 处**：`records/:id/export|playback|review|bookmark|comment|variation`
+与 `/api/records/search`——这些**不能**用 `adminOnly`（会把谱主一起拒掉），但原先各自手抄
+token 解析、且只支持 2 种来源。现已统一改为 `!!checkAdmin(req)`，与中间件共用**同一份判定逻辑**。
+
+**收敛结果**：`grep admin.verify server.js` **只剩 `checkAdmin` 内 1 处**；
+`grep x-admin-token` 同样只剩 1 处（+ 注释）。全项目**唯一**的管理身份判定入口。
+
+**⚠️ 一处刻意的行为差异**：token 来源优先级由「`?token` 优先」改为「`x-admin-token` header 优先」
+（header 是更明确的意图，前端 `admin.js` 也一直只用 header），同时新增 `?adminToken` 来源支持
+（此前只有 `/api/history` 认它）。三条来源现统一在 `checkAdmin` 内，不会再出现"某个接口少认一种"。
 
 **验证**：`node --check`、`npm run lint`（0 error）、`npm test`（58 项）全绿；
-grep 复核确认 8 个纯管理接口全部改完、7 处条件判断未被误改。
-**⚠️ 属于服务端改动，需重启进程生效**——重启后请确认：管理后台各 tab 能正常打开，
+grep 复核：8 个纯管理接口全部走 `adminOnly`、7 处条件判断改为 `checkAdmin`、无残留手抄解析。
+**⚠️ 属于服务端改动，需重启进程生效**——重启后请确认：管理后台各 tab 能正常打开（写操作正常），
 非管理员直接请求 `/api/admin/*` 仍返回 403。
 
 ### §P2 eslint + §P3 CI — ✅ 已实施 2026-09-10

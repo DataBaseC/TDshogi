@@ -284,10 +284,9 @@ app.get('/api/records/:id/export', (req, res) => {
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  const token = req.query.token || req.headers['x-admin-token'];
   const guest = resolvePlayer(req.query.guest);
-  // §L2：管理员 / 谱主 / 已公开棋谱 均可导出
-  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
+  // §L2：管理员 / 谱主 / 已公开棋谱 均可导出（管理员判定统一走 checkAdmin）
+  if (!records.canView(rec, { playerId: guest, isAdmin: !!checkAdmin(req) })) {
     return res.status(403).json({ error: '无权导出他人的棋谱' });
   }
   const data = protocol.exportData(req.params.id, fmt);
@@ -315,10 +314,9 @@ app.get('/api/records/:id/playback', (req, res) => {
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  const token = req.query.token || req.headers['x-admin-token'];
   const guest = resolvePlayer(req.query.guest);
-  // §L2：公开棋谱任何人可回放
-  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
+  // §L2：公开棋谱任何人可回放（管理员判定统一走 checkAdmin）
+  if (!records.canView(rec, { playerId: guest, isAdmin: !!checkAdmin(req) })) {
     return res.status(403).json({ error: '只能回放自己的棋谱' });
   }
   res.json(records.playbackData(rec));
@@ -326,13 +324,12 @@ app.get('/api/records/:id/playback', (req, res) => {
 
 // 复盘数据（完整：含书签/评论/变着）。权限：owner 或管理员。
 app.get('/api/records/:id/review', (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'];
   const guest = resolvePlayer(req.query.guest);
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  // §L2：公开棋谱任何人可复盘
-  if (!records.canView(rec, { playerId: guest, isAdmin: admin.verify(token) })) {
+  // §L2：公开棋谱任何人可复盘（管理员判定统一走 checkAdmin）
+  if (!records.canView(rec, { playerId: guest, isAdmin: !!checkAdmin(req) })) {
     return res.status(403).json({ error: '只能复盘自己的棋谱' });
   }
   res.json(records.reviewData(req.params.id));
@@ -371,14 +368,13 @@ app.post('/api/admin/records/:id/meta', adminOnly, (req, res) => {
 
 // 书签（toggle）
 app.post('/api/records/:id/bookmark', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token);
   const guest = req.body && req.body.guest;
   const moveNo = req.body && req.body.moveNo;
   const on = !!(req.body && req.body.on);
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
+  if (!checkAdmin(req) && !records.isOwner(rec, guest)) {
     return res.status(403).json({ error: '无权操作' });
   }
   const r = records.toggleBookmark(req.params.id, moveNo, on);
@@ -389,8 +385,7 @@ app.post('/api/records/:id/bookmark', (req, res) => {
 // 评论（§L3 升级）：新增 / 编辑（带 commentId）/ 删除（带 commentId 且 text 为空）
 // 权限：谱主可写自己的评论；管理员可写、编辑、删除任意评论（force）
 app.post('/api/records/:id/comment', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token);
-  const isAdmin = admin.verify(token);
+  const isAdmin = !!checkAdmin(req); // 管理员判定统一走 checkAdmin
   const guest = resolvePlayer(req.body && req.body.guest);
   const moveNo = req.body && req.body.moveNo;
   const text = req.body && req.body.text;
@@ -428,14 +423,13 @@ app.post('/api/records/:id/comment', (req, res) => {
 
 // 变着（添加一条变着走法）
 app.post('/api/records/:id/variation', (req, res) => {
-  const token = req.headers['x-admin-token'] || (req.query && req.query.token);
   const guest = req.body && req.body.guest;
   const parent = req.body && req.body.parent;
   const move = req.body && req.body.move;
   const records = require('./src/records');
   const rec = records.getRecord(req.params.id);
   if (!rec) return res.status(404).json({ error: '棋谱不存在' });
-  if (!admin.verify(token) && !records.isOwner(rec, guest)) {
+  if (!checkAdmin(req) && !records.isOwner(rec, guest)) {
     return res.status(403).json({ error: '无权操作' });
   }
   const r = records.addVariation(req.params.id, parent, move);
@@ -462,8 +456,7 @@ app.get('/api/profile', (req, res) => {
 //   - 非管理员 → player 参数**必须是可验证的账号令牌**，且只能查该令牌自己的棋谱
 //   - 游客 → 一律 403（游客 id 无法自证身份），前端改走 WS `record_search`
 app.get('/api/records/search', rateLimit.expressMiddleware(rateLimit.heavy), (req, res) => {
-  const token = req.query.token || req.headers['x-admin-token'] || null;
-  const isAdmin = admin.verify(token);
+  const isAdmin = !!checkAdmin(req); // 管理员判定统一走 checkAdmin
   const raw = req.query.player || null;
 
   let playerId = null;
