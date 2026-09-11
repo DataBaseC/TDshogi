@@ -8,7 +8,8 @@
  *
  * 规则边界（困毙判定 / 强制升变 / 连续王手千日手）已于 2026-09-10 经用户拍板确认，
  * 断言见文件末尾「用户拍板后补充」一节。
- * 仍待实现：持将棋点数判定（入玉宣言法 24 点制）。
+ * 持将棋点数判定（入玉宣言法 **27 点法**：先手 28 / 后手 27）已于 2026-09-10 拍板实现，
+ * 断言同样见文件末尾「持将棋 / 入玉宣言法」一节。
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -199,4 +200,73 @@ test('规则 R-c：连续王手千日手判王手方负', () => {
   assert.strictEqual(g.result, 'w', '连续王手方（先手）判负 → 后手胜');
 });
 
-// TODO：持将棋点数判定（入玉宣言法，24 点制）尚未实现。
+// ======================================================================
+// 持将棋 / 入玉宣言法（PLAN §P1 R-d）
+//
+// 口径：AJSA **27 点法**（对齐 81Dojo）——先手 28 点、后手 27 点。
+// ⚠️ 最容易搞错的三个点，专门留了回归用例：
+//   1. 点数**只统计**「宣言方在敌阵内的棋子（不含玉）+ 宣言方持驹」，
+//      敌阵**以外**的盘上棋子**一律不计**；
+//   2. 持驹**计分**但**不计入**「敌阵内 10 枚」；
+//   3. 己方非玉棋子满员也只有 27 点，先手的 28 点必然依赖持驹。
+// ======================================================================
+
+test('入玉宣言：先手满足全部条件（敌阵内 11 枚 / 28 点）可宣言', () => {
+  // 先手玉在敌阵(5a)；敌阵内 11 枚 = 飛角金金銀銀桂桂香香歩(19 点) + 持驹 9 歩(9 点) = 28 点
+  const g = new Game('2GBKRG2/2SN1NS2/2L1P1L2/9/9/9/9/9/8k b 9P 1');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.ok, true, d.reason || '');
+  assert.strictEqual(d.points, 28, '点数 = 敌阵内 19 + 持驹 9 = 28（必须含持驹）');
+  assert.strictEqual(d.count, 11, '敌阵内除玉外应为 11 枚');
+});
+
+test('入玉宣言：先手 27 点差 1 点不可宣言（28 为硬边界）', () => {
+  const g = new Game('2GBKRG2/2SN1NS2/2L1P1L2/9/9/9/9/9/8k b 8P 1');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.ok, false, '27 点不应达标');
+  assert.strictEqual(d.points, 27);
+  assert.match(d.reason, /点数不足/);
+});
+
+test('入玉宣言：后手 27 点即可宣言（后手门槛比先手低 1 点）', () => {
+  // 与先手用例镜像；后手持驹 8 歩 → 19 + 8 = 27 点
+  const g = new Game('8K/9/9/9/9/9/2l1p1l2/2sn1ns2/2gbkrg2 w 8p 1');
+  const d = g.canDeclareNyugyoku('w');
+  assert.strictEqual(d.ok, true, d.reason || '');
+  assert.strictEqual(d.points, 27);
+  // 对照：同一局面先手既非手番、也不满足 28 点门槛
+  assert.strictEqual(g.canDeclareNyugyoku('b').ok, false, '非手番方不应可宣言');
+});
+
+test('入玉宣言：玉不在敌阵时不可宣言', () => {
+  const g = new Game('2GB1RG2/2SN1NS2/2L1P1L2/9/4K4/9/9/9/8k b 9P 1');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.ok, false);
+  assert.match(d.reason, /玉还不在敌阵/);
+});
+
+test('入玉宣言：敌阵内不足 10 枚时不可宣言', () => {
+  // 敌阵内仅 9 枚（3 段的香只保留 1 枚）
+  const g = new Game('2GBKRG2/2SN1NS2/2L6/9/9/9/9/9/8k b 9P 1');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.ok, false);
+  assert.match(d.reason, /10 枚以上/);
+});
+
+test('入玉宣言：被王手时不可宣言', () => {
+  // 5 线全空，后手飛 5i 直接将军先手玉 5a
+  const g = new Game('2GBKRG2/2SN1NS2/2L3L2/9/9/9/9/9/4r3K b 9P 1');
+  assert.strictEqual(g.isCheck(), true, '应先处于王手');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.ok, false);
+  assert.match(d.reason, /王手/);
+});
+
+test('入玉宣言【回归】：敌阵以外的盘上棋子不计分、持驹不凑「10 枚」', () => {
+  // 敌阵内 10 枚小駒 = 10 点；敌阵外另有 龍 5e + 馬 4f（10 点）——后者不得计分。
+  // 若误按「盘上全体」统计会得到 27 点，故断言精确到 17（= 敌阵内 10 + 持驹 7 歩）。
+  const g = new Game('2G1K1G2/2SN1NS2/2LP1PL2/9/4+R4/5+B3/9/9/8k b 7P 1');
+  const d = g.canDeclareNyugyoku('b');
+  assert.strictEqual(d.points, 17, '只计敌阵内 10 + 持驹 7，敌阵外的龍馬不计');
+  assert.strictEqual(d.count, 10);
+});

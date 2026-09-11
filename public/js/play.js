@@ -55,6 +55,19 @@
   }
 
   /**
+   * §R5 观战信息增强：玩家栏副标题 —— 等级 / ELO / 称号。
+   * 只对确实存在的值做拼接，避免出现 "Lv.undefined" 这种占位。
+   */
+  function playerMeta(p) {
+    if (!p) return '';
+    const parts = [];
+    if (p.level != null) parts.push(`Lv.${p.level}`);
+    if (p.rating != null) parts.push(`ELO ${p.rating}`);
+    const meta = parts.join(' · ');
+    return p.title ? `${meta} · ${p.title}` : meta;
+  }
+
+  /**
    * 玩家栏渲染（名字 / ELO / 悬停信息卡所需的 data-player-id）。
    *
    * ⚠️ 必须独立成函数：终局时 `api.on('state')` 走的是 `enterDemo(state); return;`
@@ -77,7 +90,7 @@
     $('topName').setAttribute('data-player-id', (opp && opp.id) || ''); // 悬停信息卡
     $('topRating').textContent = oppDisconnected
       ? '⚠️ 断线 · 60秒内未重连将判你获胜'
-      : (opp ? `ELO ${opp.rating}` : '');
+      : (opp ? playerMeta(opp) : '');
     $('topPlayerBar').classList.toggle('disconnected', !!oppDisconnected);
     $('topPlayerBar').classList.toggle('active', st.turn === oppSeat && !oppDisconnected);
 
@@ -86,7 +99,7 @@
     const myName = guest && guest.name ? guest.name : (me && me.name) || (mySeatX === 'b' ? '先手' : '後手');
     $('bottomName').textContent = myName;
     $('bottomName').setAttribute('data-player-id', (me && me.id) || '');
-    $('bottomRating').textContent = me ? `ELO ${me.rating}` : '';
+    $('bottomRating').textContent = me ? playerMeta(me) : '';
     $('bottomPlayerBar').classList.toggle('active', st.turn === mySeatX);
   }
 
@@ -120,6 +133,18 @@
     const spectator = !isPlayer;
     $('spectatorTag').style.display = spectator ? 'inline' : 'none';
     $('btnResign').style.display = spectator ? 'none' : 'inline';
+    // 入玉宣言（§P1 R-d）：**只在服务端判定「可宣言」时亮出按钮**。
+    // 规则只实现一处（`game.canDeclareNyugyoku`），前端不自己算点数；
+    // 条件不满足 → 按钮不存在 → 不存在「误点被判反则负」的风险。
+    const declareBtn = $('btnDeclare');
+    if (declareBtn) {
+      const d = state.canDeclare;
+      const canDecl = !spectator && state.status === 'PLAYING' && !!(d && d.ok);
+      declareBtn.style.display = canDecl ? 'inline' : 'none';
+      if (canDecl) {
+        declareBtn.title = `入玉宣言（当前 ${d.points} 点 · 敌阵内 ${d.count} 枚）→ 宣言方获胜`;
+      }
+    }
     // §R1：视角切换按钮仅观战者可见，文字反映当前视角
     const vpBtn = $('btnViewpoint');
     if (vpBtn) {
@@ -341,6 +366,12 @@
   $('btnResign').addEventListener('click', () => {
     if (confirm('确定认输吗？')) api.send({ type: 'resign' });
   });
+  // 入玉宣言（§P1 R-d）：条件一律由服务端判定，成功即宣言方胜；失败会收到具体原因
+  if ($('btnDeclare')) {
+    $('btnDeclare').addEventListener('click', () => {
+      api.send({ type: 'declare_nyugyoku' });
+    });
+  }
   $('btnRematch').addEventListener('click', () => {
     api.send({ type: 'rematch' });
   });
@@ -736,10 +767,25 @@
   // ==================================================================
   const chatBox = $('chatBox');
   const chatInput = $('chatInput');
-  function appendChat(msg) {
+  // §R2 kibitz 分区：保存全量消息，切 tab 时按当前筛选整体重渲染（否则切不回来）
+  let chatLog = [];
+  let chatTab = 'all'; // all | players | spectators
+
+  /** 当前 tab 是否应显示该条 */
+  function chatMatch(msg) {
+    if (chatTab === 'all') return true;
+    if (msg.sys) return true; // 系统消息在任何分区都可见
+    if (chatTab === 'players') return msg.role === 'player-b' || msg.role === 'player-w';
+    if (chatTab === 'spectators') return msg.role === 'spectator';
+    return true;
+  }
+
+  function appendChatRow(msg) {
     if (!chatBox) return;
     const row = document.createElement('div');
-    row.className = 'chat-msg' + (msg.sys ? ' sys' : '');
+    // §R2：玩家金色 / 观战者冷蓝 / 系统暗色斜体（配色见 style.css）
+    const kind = msg.sys ? 'sys' : (msg.role === 'spectator' ? 'spectator' : 'player');
+    row.className = `chat-msg ${kind}`;
     const who = document.createElement('span');
     who.className = 'who';
     who.textContent = msg.name || '';
@@ -749,9 +795,23 @@
     row.appendChild(who);
     row.appendChild(text);
     chatBox.appendChild(row);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    while (chatBox.children.length > 100) chatBox.removeChild(chatBox.firstChild);
   }
+
+  function renderChat() {
+    if (!chatBox) return;
+    chatBox.innerHTML = '';
+    for (const m of chatLog) if (chatMatch(m)) appendChatRow(m);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  function appendChat(msg) {
+    chatLog.push(msg);
+    while (chatLog.length > 100) chatLog.shift();
+    if (!chatMatch(msg)) return; // 当前分区不显示，但仍记入全量，切回来还在
+    appendChatRow(msg);
+    if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
   function sendChat() {
     const text = chatInput.value.trim();
     if (!text) return;
@@ -760,12 +820,33 @@
   }
   if ($('btnChatSend')) $('btnChatSend').addEventListener('click', sendChat);
   if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+  // §R2 分区切换
+  if ($('chatTabs')) {
+    $('chatTabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.chat-tab');
+      if (!btn) return;
+      chatTab = btn.getAttribute('data-tab') || 'all';
+      $('chatTabs').querySelectorAll('.chat-tab').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+      renderChat();
+    });
+  }
+
   api.on('chat', (data) => {
-    // §R：观战者发言带 👁 标识（服务端已用其会话真名，不再一律显示"观众"）
-    if (data) {
-      const mark = data.role === 'spectator' ? '👁 ' : '';
-      appendChat({ name: mark + (data.name || ''), text: data.text });
-    }
+    if (!data) return;
+    // §R3：观众进出提示可关闭（人多时避免刷屏）；其余系统消息不受影响
+    if (data.kind && data.kind.indexOf('spectate-') === 0
+      && window.Settings && window.Settings.get('spectatorNotices') === false) return;
+    const mark = data.role === 'spectator' ? '👁 ' : '';
+    appendChat({
+      name: mark + (data.name || ''),
+      text: data.text,
+      role: data.role || 'player',
+      sys: !!data.sys,
+      kind: data.kind || null,
+    });
   });
   // 观战者进入时系统提示（rebind=选手掉线重进回位，不算观战）
   api.on('spectating', (data) => {

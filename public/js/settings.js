@@ -25,6 +25,7 @@
     atlas: 'kinki',             // 棋子图集：kinki | ryoko（对应 pieces/<name>.png）
     dragToMove: false,          // 触屏拖拽走子；关闭时用「点选两步」避免误触
     highlightLastMove: true,    // 上一步落点高亮
+    spectatorNotices: true,     // §R3：聊天区显示「XX 进入/离开观战」
   };
 
   /** 设置项元数据（面板渲染的唯一来源） */
@@ -37,6 +38,8 @@
     { group: '对局', key: 'sound', type: 'bool', label: '行棋音效' },
     { group: '对局', key: 'dragToMove', type: 'bool', label: '触屏拖拽走子',
       hint: '关闭时用「点棋子 → 点目标格」两步走子，可减少误触' },
+    { group: '对局', key: 'spectatorNotices', type: 'bool', label: '观众进出提示',
+      hint: '在聊天区显示「XX 进入/离开观战」；人多时可关掉避免刷屏' },
     { group: '棋子', key: 'atlas', type: 'select', label: '棋子图集',
       options: [['kinki', 'kinki'], ['ryoko', 'ryoko']] },
   ];

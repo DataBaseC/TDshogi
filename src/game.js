@@ -453,6 +453,85 @@ class Game {
   isCheck() {
     return this.shogi.isCheck(this.shogi.turn);
   }
+
+  /**
+   * 入玉宣言（PLAN §P1 R-d；用户 2026-09-10 拍板 **AJSA / 27 点法**，对齐 81Dojo）。
+   *
+   * 条件（缺一不可）：
+   *  1. 宣言方的玉在**敌阵**（先手 y≤3 上方三段，后手 y≥7 下方三段）
+   *  2. 宣言方在**敌阵内**、除玉外的棋子 **≥10 枚**（持驹不算入这 10 枚）
+   *  3. 点数 ≥ **先手 28 / 后手 27**（27 点法：先后手差 1 点以抵消先手优势）
+   *  4. 必须轮到宣言方（自己手番）
+   *  5. 宣言方**未被王手**
+   *
+   * ⚠️ 点数的**统计范围**是最容易搞错的一点——AJSA 只计这两部分：
+   *   - ✅ 宣言方**在敌阵内**的棋子（不含玉）
+   *   - ✅ 宣言方**持驹**
+   *   - ❌ 敌阵**以外**的盘上棋子（自己半场 / 中央的棋子）**不计**
+   *   大駒（飛角，含龍馬）5 点 / 其余 1 点；玉 0 点。
+   *
+   * 为什么必须是「敌阵内 + 持驹」：己方非玉棋子满员也只有 **27 点**，
+   * 若只算盘上，先手的 28 点门槛**永远不可能达到**。而 28/27 的设计前提是
+   * 「盘面总点数恒为 54、双方各 27」，超出 27 的部分只能来自吃掉的对方棋子（持驹）。
+   *
+   * @param {'b'|'w'} color 宣言方
+   * @returns {{ok:boolean, reason?:string, points?:number, count?:number}}
+   */
+  canDeclareNyugyoku(color) {
+    const shi = this.shogi;
+    const col = color === 'b' ? Color.Black : Color.White;
+    if (this.result) return { ok: false, reason: '对局已结束' };
+    if (shi.turn !== col) return { ok: false, reason: '只能在自己的手番宣言' };
+    if (shi.isCheck(col)) return { ok: false, reason: '被王手时不能宣言' };
+
+    const king = findKing(shi, col);
+    if (!king) return { ok: false, reason: '找不到玉' };
+    // 敌阵：先手看 y≤3（上方三段），后手看 y≥7（下方三段）
+    const inEnemyCamp = (y) => (col === Color.Black ? y <= 3 : y >= 7);
+    if (!inEnemyCamp(king.y)) return { ok: false, reason: '玉还不在敌阵' };
+
+    const score = (rawKind) => ((rawKind === 'HI' || rawKind === 'KA') ? 5 : 1);
+
+    let inCamp = 0;  // 敌阵内、除玉外的己方棋子数（不含持驹）
+    let points = 0;  // 点数 = 敌阵内己方棋子 + 持驹（**不含**敌阵以外的盘上棋子）
+    for (let y = 1; y <= 9; y++) {
+      for (let x = 1; x <= 9; x++) {
+        const p = shi.get(x, y);
+        if (!p || p.color !== col) continue;
+        const raw = Piece.unpromote(p.kind); // 龍→HI、馬→KA、と→FU ……
+        if (raw === 'OU') continue;          // 玉 0 点，也不计入枚数
+        if (!inEnemyCamp(y)) continue;       // 敌阵以外的盘上棋子：既不计枚数也不计分
+        inCamp++;
+        points += score(raw);
+      }
+    }
+    // 持驹：只计分，**不计入**「10 枚」（持驹不在敌阵内）
+    const hand = shi.getHandsSummary(col) || {};
+    for (const kind of Object.keys(hand)) {
+      points += (hand[kind] || 0) * score(Piece.unpromote(kind));
+    }
+
+    if (inCamp < 10) {
+      return { ok: false, reason: `敌阵内棋子需 10 枚以上（当前 ${inCamp}）`, points, count: inCamp };
+    }
+    const need = col === Color.Black ? 28 : 27;
+    if (points < need) {
+      return { ok: false, reason: `点数不足：先手需 28 / 后手需 27（当前 ${points}）`, points, count: inCamp };
+    }
+    return { ok: true, points, count: inCamp };
+  }
+
+  /**
+   * 执行入玉宣言：满足条件则**宣言方获胜**（`resultDetail` 记「入玉宣言」）。
+   * @param {'b'|'w'} color
+   */
+  declareNyugyoku(color) {
+    const chk = this.canDeclareNyugyoku(color);
+    if (!chk.ok) return { ok: false, error: chk.reason };
+    this.result = color === 'b' ? 'b' : 'w';
+    this.resultDetail = '入玉宣言';
+    return { ok: true, result: this.result, detail: this.resultDetail, points: chk.points, count: chk.count };
+  }
 }
 
 function newGame(startSfen = STARTING_SFEN, names = ['先手', '後手']) {

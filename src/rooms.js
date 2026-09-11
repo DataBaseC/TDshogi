@@ -68,6 +68,12 @@ class RoomManager {
     this.clientToPlayer = new Map();// clientId -> {roomId, seat}
     this.playerToClient = new Map();// playerId -> clientId（当前活跃连接）
     this.spectatorsByRoom = new Map();// roomId -> Set<clientId>
+    // §R3：观战者名字缓存（clientId -> name）。
+    // 必须单独存：断线走的是 `protocol._onClose` → 它**先**删除 playerRegistry、
+    // **再**调用 `_unbindClient()`，那时已查不到名字，只能靠这张表播报「XX 离开观战」。
+    this.spectatorNames = new Map();
+    // §R5：称号缓存（playerId -> { title, at }）。见 `_playerTitle()` 的说明。
+    this._titleCache = new Map();
     this._clockTimers = new Map();  // roomId -> interval
     this._disconnectTimers = new Map(); // roomId -> Map<seat, timer>（断线宽限期）
     // 对局快照定时器（进行中对局定期落盘，重启可恢复）
@@ -133,9 +139,26 @@ class RoomManager {
     st.players = {
       // connected：该座位当前是否在线（前端据此显示「对手断线，等待重连」）
       // level：等级系统（PLAN §K7），供对局页玩家栏展示
-      b: room.players.b ? { id: room.players.b.playerId, name: room.players.b.name, rating: profB.rating, level: profB.level, connected: room.players.b.connected !== false } : null,
-      w: room.players.w ? { id: room.players.w.playerId, name: room.players.w.name, rating: profW.rating, level: profW.level, connected: room.players.w.connected !== false } : null,
+      // title：称号（PLAN §R5）——注意 `ratings.profile()` **不含** title，它只存在于会话中
+      b: room.players.b ? { id: room.players.b.playerId, name: room.players.b.name, rating: profB.rating, level: profB.level, title: this._playerTitle(room.players.b.playerId), connected: room.players.b.connected !== false } : null,
+      w: room.players.w ? { id: room.players.w.playerId, name: room.players.w.name, rating: profW.rating, level: profW.level, title: this._playerTitle(room.players.w.playerId), connected: room.players.w.connected !== false } : null,
     };
+    // §P1 R-d：当前手番方能否入玉宣言——前端据此决定是否亮出「入玉宣言」按钮。
+    // 规则只在 `game.canDeclareNyugyoku()` 实现一处，前端不自己算点数；条件不满足时
+    // 按钮根本不出现，因此不存在「误点 → 反则负」的问题（服务端仍保留权威判定，防伪造消息）。
+    if (room.status === 'PLAYING' && !room.game.isGameOver()) {
+      const seat = room.game.turn;
+      const d = room.game.canDeclareNyugyoku(seat);
+      st.canDeclare = {
+        seat,
+        ok: !!d.ok,
+        reason: d.reason || null,
+        points: d.points == null ? null : d.points,
+        count: d.count == null ? null : d.count,
+      };
+    } else {
+      st.canDeclare = { seat: null, ok: false, reason: null, points: null, count: null };
+    }
     st.clock = { b: room.clock.b, w: room.clock.w };
     st.timeControl = room.timeControl || DEFAULT_TIME_CONTROL;
     st.byoyomi = room.byoyomi || 0;
@@ -690,6 +713,32 @@ class RoomManager {
   }
 
   /**
+   * §R5：取玩家称号。
+   * 称号**不在** `ratings.profile()` 里（那里只有 rating / exp / 战绩），而是挂在会话对象上，
+   * 因此必须单独从 auth 读——否则玩家栏的称号会永远是空的。
+   *
+   * ⚠️ 必须缓存：`auth.load()` 是**同步读磁盘**，而本函数在 `_gameState()` 里每次走子都会调用
+   * （每局 2 次）——直接读等于把磁盘 I/O 塞进对局主循环，与 §Q7-2 修掉的是同一类问题。
+   * 称号是低频数据，用 TTL 兜住「管理员改称号」的可见延迟即可。
+   */
+  _playerTitle(playerId) {
+    if (!playerId) return null;
+    const TTL_MS = 30000;
+    const now = Date.now();
+    const cached = this._titleCache.get(playerId);
+    if (cached && now - cached.at < TTL_MS) return cached.title;
+    let title = null;
+    try {
+      const sess = require('./auth').load(playerId);
+      title = (sess && sess.title) || null;
+    } catch (_) { title = null; }
+    // 缓存不是关键数据：超限整体清空，避免长时间运行后无界增长
+    if (this._titleCache.size > 1000) this._titleCache.clear();
+    this._titleCache.set(playerId, { title, at: now });
+    return title;
+  }
+
+  /**
    * 玩家主动进入自己的赛事对局（建局时可能不在线）。
    */
   joinTournamentMatch(clientId, roomId, playerId) {
@@ -762,6 +811,26 @@ class RoomManager {
     this._checkGameOver(room);
     this._pushState(room);
     return { ok: true };
+  }
+
+  /**
+   * 入玉宣言（PLAN §P1 R-d；用户 2026-09-10 拍板 **AJSA 全套**）。
+   *
+   * 由**玩家主动申请**，服务端做权威判定——前端只传一个"我要宣言"的意图，
+   * 成不成立全部由 `game.declareNyugyoku()` 判定（条件见 game.js 的注释）。
+   * 这样规则只有一处实现，前端不需要（也不应该）自己算点数。
+   */
+  declareNyugyoku(clientId) {
+    const seat = this.clientToPlayer.get(clientId);
+    if (!seat) return { ok: false, error: '你不是本局玩家，不能宣言' };
+    const room = this._room(seat.roomId);
+    if (!room || room.status !== 'PLAYING') return { ok: false, error: '对局未在进行' };
+    if (room.game.isGameOver()) return { ok: false, error: '对局已结束' };
+    const r = room.game.declareNyugyoku(seat.seat);
+    if (!r.ok) return { ok: false, error: r.error };
+    this._checkGameOver(room);
+    this._pushState(room);
+    return { ok: true, detail: r.detail, points: r.points, count: r.count };
   }
 
   /**
@@ -921,12 +990,17 @@ class RoomManager {
     // 观战者：从观战列表移除并解绑（否则残留导致继续收广播 + 内存泄漏）
     const specRoomId = this.clientToRoom.get(clientId);
     if (specRoomId && !this.clientToPlayer.has(clientId)) {
+      const specRoom = this._room(specRoomId);
+      const specName = this._specName(clientId); // 必须在清理之前取
       const specs = this.spectatorsByRoom.get(specRoomId);
       if (specs) {
         specs.delete(clientId);
         if (specs.size === 0) this.spectatorsByRoom.delete(specRoomId);
       }
+      this.spectatorNames.delete(clientId);
       this.clientToRoom.delete(clientId);
+      // §R3：播报「XX 离开观战」
+      if (specRoom) this._sysChat(specRoom, `${specName} 离开观战`, 'spectate-leave');
       return { ok: true };
     }
     const seat = this.clientToPlayer.get(clientId);
@@ -1029,6 +1103,10 @@ class RoomManager {
     this.spectatorsByRoom.get(roomId).add(clientId);
     this._broadcastSpectators(room); // 观众列表实时更新（PLAN §G v7）
     this.clientToRoom.set(clientId, roomId);
+    // §R3：先记名字再播报——断线路径那时已查不到 registry，只能靠这张表
+    const specName = this._specName(clientId);
+    this.spectatorNames.set(clientId, specName);
+    this._sysChat(room, `${specName} 进入观战`, 'spectate-join');
     return { ok: true, roomId };
   }
 
@@ -1068,13 +1146,18 @@ class RoomManager {
     // 观战者断线：同样清理（否则残留收广播 + 泄漏）
     const specRoomId = this.clientToRoom.get(clientId);
     if (specRoomId && !this.clientToPlayer.has(clientId)) {
+      const specName = this._specName(clientId); // 必须在 delete 之前取（registry 此刻已被删除）
       const specs = this.spectatorsByRoom.get(specRoomId);
       if (specs) {
         specs.delete(clientId);
         if (specs.size === 0) this.spectatorsByRoom.delete(specRoomId);
         const room = this._room(specRoomId);
-        if (room) this._broadcastSpectators(room); // 观众列表实时更新
+        if (room) {
+          this._broadcastSpectators(room); // 观众列表实时更新
+          this._sysChat(room, `${specName} 离开观战`, 'spectate-leave'); // §R3
+        }
       }
+      this.spectatorNames.delete(clientId);
     }
     const seat = this.clientToPlayer.get(clientId);
     if (seat) {
@@ -1522,6 +1605,26 @@ class RoomManager {
   /** 观战者名单变动广播（对局页观众列表实时更新） */
   _broadcastSpectators(room) {
     this._broadcast(room.id, { type: 'spectator_update', data: { spectators: this._spectatorList(room) } });
+  }
+
+  /**
+   * 系统聊天播报（§R3 观众进出提示）。
+   * `kind` 是给前端的**类型标签**——观众进出类消息可被用户关掉显示（避免刷屏），
+   * 其余系统消息（如"你已进入观战"）不受影响。
+   */
+  _sysChat(room, text, kind) {
+    this._broadcast(room.id, {
+      type: 'chat',
+      data: { name: '系统', text, ts: Date.now(), sys: true, kind: kind || null },
+    });
+  }
+
+  /** 取观战者显示名（§R3）：优先名字缓存 → registry → 兜底「观众」 */
+  _specName(clientId) {
+    const cached = this.spectatorNames.get(clientId);
+    if (cached) return cached;
+    const info = this.playerRegistry ? this.playerRegistry(clientId) : null;
+    return (info && info.name) || '观众';
   }
 
   _hostSeat(room) {

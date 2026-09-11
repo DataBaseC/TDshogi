@@ -214,6 +214,12 @@ class Protocol {
         if (!res.ok) this._error(clientId, res.error);
         break;
       }
+      // 入玉宣言（PLAN §P1 R-d）：玩家申请，服务端按 AJSA 规则权威判定
+      case 'declare_nyugyoku': {
+        const res = r.declareNyugyoku(clientId);
+        if (!res.ok) this._error(clientId, res.error);
+        break;
+      }
       case 'rematch': {
         r.rematch(clientId);
         break;
