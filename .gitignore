@@ -18,6 +18,10 @@ data/
 # 不入主库——否则 src/public 会在仓库里出现两份
 github-upload/
 
+# 部署打包产物（dist/tdshogi-deploy-v*.zip）
+# 同样是 src/public 的副本，体积不小且每次打包都变——不入库
+dist/
+
 # §M1 拆分期间的校验基线（临时文件，拆完即删）
 .tmp-proto-*.txt
 

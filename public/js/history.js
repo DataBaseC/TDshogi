@@ -16,12 +16,9 @@
   // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
   function esc(s) { return window.UI.esc(s); }
 
-  function resultText(r, names) {
-    if (r.result === 'b') return { text: `${names[0]} 胜`, cls: 'result-win' };
-    if (r.result === 'w') return { text: `${names[1]} 胜`, cls: 'result-win' };
-    if (r.result === '-') return { text: r.resultDetail || '和棋', cls: 'result-draw' };
-    return { text: '未完成', cls: 'result-draw' };
-  }
+  // 对局结果文案（PLAN §M5）：实现统一在 util.js，此处只转发
+  // （原先与 review.js 各有一份，加新结果说明时很容易只改一边）
+  function resultText(r, names) { return window.UI.resultText(r, { names, withClass: true }); }
 
   // 检索条件（不再包含 player —— 身份由服务端按 WS 连接绑定，客户端无从指定）
   function buildQuery() {

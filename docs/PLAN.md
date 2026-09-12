@@ -39,9 +39,9 @@
 | P1 | §J4 | demo_state 下发权威 hands，兜住前端模型漂移 | ✅ 已实施（2026-09-12），待实测 | — |
 | **P1** | **§M6** | **复盘浏览模式：FreeBoard 增 `review` 模式，统一所有看谱场景** | **✅ 已实施（2026-09-08），待用户实测** | 建议与 M5 一起做 |
 | **P1** | **§S** | **前端体验优化（设置面板 / 手机端布局 / 触屏误触 / 棋盘坐标 / 图集切换）** | **✅ S1–S5 已实施（2026-09-10），待实机确认** | 用户痛点 |
-| P2 | §M5 | 前端拆分（play / admin 按职责内聚） | 🟨 **`play.js` 已拆完**（2026-09-12，906→629 行；新增 `play-chat.js` / `play-demo.js`）；余 `review.js` / `admin.js` | 待实机验证 |
-| P3 | §M1 | `rooms.js` 1820 行 mixin 拆分 | ⬜ 待实施 | 功能稳定后单独窗口 |
-| P3 | §M2 | `server.js` 路由模块化 + 统一 admin 中间件 + eslint no-undef | ⬜ 待实施 | §C 的既有前提 |
+| P2 | §M5 | 前端拆分（按页面内聚） | ✅ **已完成**（2026-09-12）：`play.js` 906→629 拆出 chat/demo；`review.js`/`admin.js` 评估后**不拆**（理由见正文），顺手消除 `resultText` 重复 | 待实机验证 |
+| P3 | §M1 | `rooms.js` mixin 拆分 | ✅ 已实施（2026-09-12）：**2056 → 240 行**，拆出 9 个 mixin 模块 | 待实机验证 |
+| P3 | §M2 | `server.js` 路由模块化 + 统一 admin 中间件 + eslint no-undef | ✅ 已实施（2026-09-12）：**592 → 117 行**，拆出 `src/http/`（context + middleware + 4 个 routes） | 待实机验证 |
 | P3 | §M4 | 存储双写统一（会话单一来源 = kv） | ⬜ 待实施 | — |
 | P4 | §C1/C3/C5/C6 | 管理后台其余增强（总览/棋谱管理/公告/实时干预） | ⬜ 未排期 | M2 + K 审计 |
 | — | §Q1-Q7 | 商业化 / 产品候选池（见 §3） | ⏸ 待你排期 | — |
@@ -174,15 +174,35 @@ FreeBoard 模式（四选一）
 
 ⚠️ **行为一字未改**（纯搬运 + 依赖注入），但前端没有自动化测试，**必须实机验证**——
 重点：感想战全流程（进入 / 演示 / 待った / 清空 / 自由摆棋 / 历史手跳转）、聊天三个分区、观众列表。
-余下 `review.js` / `admin.js` 的主体拆分**未开始**。
+#### 余下两文件：评估后**不拆**（2026-09-12），但顺手消除一处真实重复
 
-| 文件 | 现状 | 拆分 |
+原计划把 `review.js` / `admin.js` 也拆开。实测两者分别 **559 / 531 行**，读完结构后的结论是**不拆**——
+这是判断而非省略，理由如下：
+
+1. **§M5 的目标对它们已天然满足**。拆 `play.js` 的动机是它把「对战 + 感想战 + 聊天 + 棋钟」
+   四个互不相关的子系统混在 906 行里；而 `review.js` 只服务 `review.html`、`admin.js` 只服务 `admin.html`
+   ——**每个文件已被一个页面独占**，不存在"多子系统混编"；
+2. **前端没有模块系统**。拆开后只能靠 `window.Xxx` 共享状态；`review` 的渲染链路
+   （`load` → `render` → `renderMoveList` / `renderAnnotations` / `renderVariations`）一旦切断，
+   跨文件追一个渲染分支比在 559 行里读更费劲——**耦合不会消失，只会从"文件内"变成"文件间"**；
+3. **`admin.js` 的拆分点是假的**：4 个 tab 看似独立，但全部写操作挤在 `adminPost`（178 行）里按 path 分派，
+   真要拆得先重构它——那是**行为改动**而非搬运，在无前端自动化测试的前提下不值得冒险；
+4. **无测试兜底**：`play.js` 拆完尚需实机验证，再拆两个无测试覆盖的页面只是叠加风险。
+
+**若将来确实要拆**（例如某文件涨到 800+ 行），拆分点已勘明，可直接照做：
+
+| 文件 | 拆分点 | 备注 |
 |---|---|---|
-| `review.js` | 约 22 KB（本轮新增广场/管理面板后继续膨胀） | 抽出「复盘器内核」：`reviewer/{board（FreeBoard review 模式）,moves,annotations,admin}`，供 gallery → review 复用 |
-| `play.js` | ✅ **已拆完**（2026-09-12，906 → 629 行 / 34 KB → 26 KB） | `play-clock.js` + `play-chat.js` + `play-demo.js`；`play.js` 只留 core |
-| `admin.js` | 约 20 KB（4 tab） | `admin/{records,users,tournaments,audit}.js` |
+| `review.js` | 记谱工具（`usiToJp` / `pieceNameAtBoard` / `formatMove`）→ `notation.js`；注记（书签/评论/变着）→ `review-annotations.js`；自由摆放 → `review-freeplace.js` | 记谱工具是**无状态纯函数**，最容易先抽，`board.js` 将来可复用 |
+| `admin.js` | **先按 tab 把 `adminPost` 拆成 4 个函数，再按 tab 拆文件**（`admin-{records,users,tournaments,audit}.js`） | 顺序不能反：先拆函数再拆文件，否则跨文件分派更难读 |
 
-建议与 M6 同期做：先统一组件（M6），再按模块拆文件（M5），顺序反了会拆两次。
+**顺手消除的真实重复**：`resultText`（对局结果文案）原先在 `history.js` 与 `review.js` 各有一份，
+且**返回形态不同**（列表要 `{text, cls}` 着色、复盘页只要纯文本）。现已合并到 `util.js` 的
+`UI.resultText(r, opts)`，两处改为一行转发（**调用点零改动**），由 `tests/util.test.js` 同时锁定两种形态。
+收益不只是少 10 行：将来加新结果说明（時間切れ / 入玉宣言 / 反则负…）时，
+**不会出现"只改一边、另一页静默显示成未完成"**。
+
+> 原始「建议与 M6 同期做（先统一组件再拆文件）」仍然成立——真到要拆时照上面的表来。
 
 ### M1 `src/rooms.js`（1820 行，全仓最大且是历史 bug 高发区）
 
@@ -223,14 +243,34 @@ FreeBoard 模式（四选一）
 | 2 | `rooms/demo.js`（感想战 9 个方法） | 263 | ✅ |
 | 3 | `rooms/snapshot.js`（快照 + 重启恢复 7 个方法） | 206 | ✅ |
 | 4 | `rooms/clock.js`（棋钟 4 个方法） | 92 | ✅ |
-| 5+ | 待搬：`lifecycle` / `binding` / `state` / `cleanup` | — | ⬜ |
+| 5 | `rooms/state.js`（状态快照/推送 + 观战名单 + 系统播报 13 个方法） | 285 | ✅ |
+| 6 | `rooms/binding.js`（观战 / 连接绑定 / 断线回位 8 个方法） | 273 | ✅ |
+| 7 | `rooms/cleanup.js`（房间销毁 + 各类宽限计时 8 个方法） | 183 | ✅ |
+| 8 | `rooms/gameplay.js`（走子 / 认输 / 结算落盘 / 离开 8 个方法） | 295 | ✅ |
+| 9 | `rooms/lifecycle.js`（建房 / 加入 / 匹配 / 开局 / 赛事 14 个方法） | 493 | ✅ |
 
-**进度**：`src/rooms.js` **2056 → 1565 行**；`RoomManager.prototype` 方法数 **76 → 76（一致）**；
-每批后 `npm test`（106 项全绿）与 `npm run lint`（0 error，warning 数与拆分前相同）。
-（顺带修正：`TICK_MS` 随棋钟搬走后主文件不再引用，已从导入中移除——**是 lint 抓出来的**，
-说明这套检查确实在干活。）
+**最终结果**：`src/rooms.js` **2056 → 240 行（-88%）**，只剩骨架（构造 / 房间码 / 房间查找 /
+广播 / 统计）；`RoomManager.prototype` 方法数 **76 → 76**；`npm test` 106 项全绿、
+`npm run lint` **0 error**（warning 数 7，与拆分前完全一致）。
 
-### M2 `server.js` 路由模块化
+**验证手段（本次最有价值的部分）**：除了「方法名清单比对」（证明**没漏没多**），
+还加了一道**逐方法源码比对**——从 `git HEAD`（拆分前）取出 `rooms.js`，
+与拆分后的实现逐方法 `toString()` 比对（空白归一化）：
+
+> 最终只剩 **4 处差异**，全部是 `require('./x')` → `require('../x')` 的**路径调整**
+> （搬到子目录后必要且等价），其余 **72 个方法逐字一致**。
+
+这道检查抓到了**两个真实问题**：
+1. **漏装配**：`lifecycle.js` 写完后忘了加 `require('./rooms/lifecycle')(RoomManager)` ——
+   于是 `createRoom` / `joinRoom` / `quickMatch` 等 5 个方法**在 prototype 上根本不存在**。
+   单测覆盖不到这些路径，方法名清单当时也还未跑，**差点就这么提交了**；
+2. **一处抄写偏差**：`quickMatch` 里把 `this.playerRegistry(cid)`「顺手」写成带 `?: null` 保护的版本——
+   语义变了（原本会抛错的地方变成静默返回 null），而方法名清单**完全看不出来**。
+
+⚠️ **教训**：大规模代码搬运**不能只验证「个数对不对」，还要验证「内容对不对」**。
+临时校验脚本验完即删（需要时可重写）。
+
+### M2 `server.js` 路由模块化 — ✅ 已实施（2026-09-12）
 
 - `src/http/` 目录：`routes/{home,lobby,records,accounts,admin,tournaments}.js` + `middleware/{adminAuth,error,requestCtx}.js`
 - 统一 admin 中间件（当前每个路由各写一遍 `admin.verify(token)`，是 §C 的既有前提）
@@ -238,6 +278,36 @@ FreeBoard 模式（四选一）
 - **配 eslint `no-undef`**：今天 `server.js` 漏 `require('./src/auth')` 导致四条管理路由 500，
   `node --check` 与现有 lint 都查不出，只能靠运行时暴露（见 §K8 教训）
 - WS 部分保留在 `server.js`
+
+#### 实施记录（2026-09-12）
+
+**结果**：`server.js` **592 → 117 行**，只保留「组装」职责（中间件挂载 + 路由装配 + WS + listen）。
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `src/http/context.js` | 62 | `protocol` 单例、`VERSION`、`resolvePlayer` / `sanitize` / `checkAdmin` |
+| `src/http/middleware.js` | 134 | `requestId`(§P4) / `adminEntryGate`(§J5) / `adminOnly` / `adminWrite` / `tournamentAction` |
+| `src/http/routes/public.js` | 63 | 首页 / 大厅 / 个人 / 玩家卡 / 赛事列表 / 棋谱广场 |
+| `src/http/routes/records.js` | 176 | 棋谱导出 / 回放 / 复盘 / 检索 / 书签 / 评论 / 变着 |
+| `src/http/routes/accounts.js` | 68 | 注册 / 登录 / 令牌校验 / 个人资料 |
+| `src/http/routes/admin.js` | 187 | 用户管理 / 审计 / 棋谱导入与元数据 / 赛事审核 |
+
+**与原文计划的差异（取舍）**：
+- `middleware/` 由三个文件（`adminAuth`/`error`/`requestCtx`）**合并为一个 `middleware.js`**：
+  三者合计仅 ~140 行，拆三个文件反而要在三处跳转；且 `adminOnly` 与 `adminWrite` 强相关（共用同一判定），
+  分开写容易出现"两套鉴权并存"——那正是 §Q7-1 越权的成因。
+- `routes` 由 6 个合并为 4 个：`home`/`lobby`/`tournaments` 都是 ≤10 行的只读接口，合成 `public.js`；
+  赛事在 `server.js` 里本就只有 4 条路由、且其中 3 条共用 `tournamentAction` 包装。
+- 原文说"`resolvePlayer` / `sanitize` 移入 `src/http/util.js`" → 实际放进 `context.js`：
+  它们与 `protocol` 单例、`checkAdmin` 同属"HTTP 层共享上下文"，分两处反而割裂。
+- **原文动机之一是"漏 require 导致 4 条路由 500"**：拆分后每条路由的依赖在各模块顶部显式列出，
+  覆盖面随之扩大——本次拆完 ESLint 立刻抓到 `middleware.js` 里未使用的 `admin` 导入。
+
+**验证**：
+1. **路由清单比对**（同 §M1 思路）：从 `git HEAD`（拆分前）与拆分后代码分别提取 `app.<method>('<path>'`，
+   **37 : 37 逐条对齐**。路由拆分最怕漏掉一条，而漏掉**不会报错**——只会在用户点进那个页面时变成 404；
+2. **起服冒烟**：`PORT=0 node server.js`，5 秒内正常启动、日志输出正常；
+3. `npm test` 106 项全绿、`npm run lint` 0 error。
 
 ## §P 工程质量与防回归基建（2026-09-07 新增）
 

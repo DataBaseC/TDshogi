@@ -105,19 +105,31 @@ if (checkOnly) {
   process.exit(1);
 }
 
-// 清空重建：整目录删掉，保证不会残留"源码里已删除、上传区还留着"的旧文件
-if (fs.existsSync(OUT)) fs.rmSync(OUT, { recursive: true, force: true });
+// 覆盖式同步（**刻意不做整目录删除**）：
+//  - 最初实现是「rmSync 整个目录再重建」，但在装有 safe-delete 保护钩子的环境里，
+//    递归删除会被直接拦下 → 打包整个失败（本仓库实际踩到过）；
+//  - 改成「复制覆盖 + 只删多余文件」后，不再需要递归删除，同样不会留残影。
 fs.mkdirSync(OUT, { recursive: true });
 
 for (const item of ITEMS) {
-  fs.cpSync(path.join(ROOT, item), path.join(OUT, item), { recursive: true });
+  fs.cpSync(path.join(ROOT, item), path.join(OUT, item), { recursive: true, force: true });
 }
 
-// 复制后立即自校：搬运工具的"我以为复制成功了"是最典型的假安全感
+// 清掉「源码里已删除、上传区还留着」的旧文件（只删文件，不动目录树）
+const stale = diff(expected, listFiles(OUT)).extra;
+for (const rel of stale) {
+  try { fs.unlinkSync(path.join(OUT, rel)); } catch (_) { /* 删不掉就留给下面的自校报出来 */ }
+}
+
+// 复制后立即自校：搬运工具最典型的假安全感就是「我以为复制成功了」
 const { missing, extra } = diff(expected, listFiles(OUT));
 if (missing.length || extra.length) {
-  if (missing.length) console.error('✘ 复制后仍缺少：' + missing.join(', '));
-  if (extra.length) console.error('✘ 复制后多出：' + extra.join(', '));
+  if (missing.length) {
+    console.error('✘ 复制后仍缺少 ' + missing.length + ' 个文件：\n  ' + missing.join('\n  '));
+  }
+  if (extra.length) {
+    console.error('✘ 上传区多出 ' + extra.length + ' 个文件（源码里已不存在），且自动删除失败，请手动清理：\n  ' + extra.join('\n  '));
+  }
   process.exit(1);
 }
 

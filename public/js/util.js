@@ -145,6 +145,28 @@
 
   debugLog.clear = function () { debugRing.length = 0; };
 
+  // ==================================================================
+  // 对局结果文案（PLAN §M5：原先 history.js 与 review.js 各有一份）
+  // ==================================================================
+  // 两份实现语义相同、签名不同：一份要 `{text, cls}` 给列表着色，一份只要纯文本。
+  // 合并为一个函数、用 options 区分——**「谁赢了」这条规则只维护一处**，
+  // 否则将来加新结果说明（時間切れ / 入玉宣言 / 反则负…）很容易只改一边、另一页显示成"未完成"。
+  //
+  //   UI.resultText(r)                      → '先手 胜'
+  //   UI.resultText(r, { names })           → 用指定双方名（缺省用 r.names）
+  //   UI.resultText(r, { withClass: true }) → { text, cls }（列表着色用）
+  function resultText(r, opts) {
+    const o = opts || {};
+    const n = o.names || r.names || ['先手', '後手'];
+    let text;
+    if (r.result === 'b') text = `${n[0]} 胜`;
+    else if (r.result === 'w') text = `${n[1]} 胜`;
+    else if (r.result === '-') text = r.resultDetail || '和棋';
+    else text = '未完成';
+    if (!o.withClass) return text;
+    return { text, cls: (r.result === 'b' || r.result === 'w') ? 'result-win' : 'result-draw' };
+  }
+
   global.debugLog = debugLog;
-  global.UI = { $, esc, toast, debugLog };
+  global.UI = { $, esc, toast, debugLog, resultText };
 })(window);

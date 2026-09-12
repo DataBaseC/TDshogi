@@ -142,3 +142,43 @@ test('localStorage 抛错时（隐私模式）不崩溃，退化为关闭', () =
   assert.doesNotThrow(() => win.debugLog.enable(), 'enable 不应因存储不可用而抛错');
   assert.doesNotThrow(() => win.debugLog.disable());
 });
+
+// ======================================================================
+// UI.resultText（§M5：原先 history.js 与 review.js 各有一份实现）
+// ======================================================================
+// 这条测试的价值在于**同时锁定两种返回形态**：列表页要 `{text, cls}` 着色，
+// 复盘页只要纯文本。合并实现时最容易犯的错就是让其中一种形态失效——
+// 而两页都只会**静默显示错文案**，不会报错。
+test('UI.resultText：纯文本形态与带样式形态（历史页/复盘页两种用法）', () => {
+  const win = {
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    console: { log: () => {} },
+  };
+  globalThis.window = win;
+  delete require.cache[require.resolve(UTIL)];
+  require(UTIL);
+  const sf = win.UI.resultText;
+
+  // ---- 纯文本形态（review.js 的用法）----
+  assert.strictEqual(sf({ result: 'b', names: ['先手', '後手'] }), '先手 胜');
+  assert.strictEqual(sf({ result: 'w', names: ['先手', '後手'] }), '後手 胜');
+  assert.strictEqual(sf({ result: '-', resultDetail: '千日手', names: [] }), '千日手', '和棋应显示 resultDetail');
+  assert.strictEqual(sf({ result: '-', names: [] }), '和棋', '无 resultDetail 时兜底为「和棋」');
+  assert.strictEqual(sf({ result: null }), '未完成');
+  assert.strictEqual(sf({}), '未完成');
+  assert.strictEqual(sf({ result: 'b' }), '先手 胜', 'r.names 缺失时用默认双方名');
+
+  // ---- names 覆盖（history.js 传局部 names 的用法）----
+  assert.strictEqual(sf({ result: 'b', names: ['甲', '乙'] }, { names: ['丙', '丁'] }), '丙 胜');
+
+  // ---- 带样式形态（history.js 的用法）----
+  assert.deepStrictEqual(
+    sf({ result: 'b', names: ['甲', '乙'] }, { withClass: true }),
+    { text: '甲 胜', cls: 'result-win' });
+  assert.deepStrictEqual(
+    sf({ result: '-' , resultDetail: '入玉宣言', names: [] }, { withClass: true }),
+    { text: '入玉宣言', cls: 'result-draw' });
+  assert.deepStrictEqual(
+    sf({ result: null }, { withClass: true }),
+    { text: '未完成', cls: 'result-draw' });
+});

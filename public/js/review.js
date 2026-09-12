@@ -184,13 +184,9 @@
     } catch (_) { toast('网络错误'); }
   });
 
-  function resultText(r) {
-    const n = r.names || ['先手', '後手'];
-    if (r.result === 'b') return `${n[0]} 胜`;
-    if (r.result === 'w') return `${n[1]} 胜`;
-    if (r.result === '-') return r.resultDetail || '和棋';
-    return '未完成';
-  }
+  // 对局结果文案（PLAN §M5）：实现统一在 util.js，此处只转发
+  // （原先与 history.js 各有一份，加新结果说明时很容易只改一边）
+  function resultText(r) { return window.UI.resultText(r); }
 
   function render() {
     // 顶部元信息（§L：管理员可为展示覆盖双方名/结果说明，与广场卡片保持一致）
