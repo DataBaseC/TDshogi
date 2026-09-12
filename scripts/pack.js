@@ -41,6 +41,12 @@ const checkOnly = process.argv.includes('--check');
 function listFiles(dir, base = dir) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    // ⚠️ 跳过上传区自身的 `.git`——`github-upload/` 现在是一个**独立的 git 仓库**
+    // （推送到 CrossPolate/TDshogi-upload）。若不跳过，它会被下面"清理多余文件"
+    // 的逻辑判定为"源码里已不存在"，把 objects/refs 逐个 unlinkSync →
+    // **下一次 npm run pack 就会毁掉该仓库**。
+    // 注：只豁免 `.git`，其余多余文件照删不误——那才是这段清理的本意。
+    if (entry.name === '.git') continue;
     const abs = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...listFiles(abs, base));
     else out.push(path.relative(base, abs).split(path.sep).join('/'));
