@@ -109,10 +109,15 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 - **WebSocket 需反代放行**：Nginx 要带 `Upgrade` / `Connection` 头
 - **走反代必配 `TRUST_PROXY=1`**，并加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
 - **服务端任何改动都必须重启进程**，前端静态资源已设 `no-cache` 协商缓存
-- 部署包：`npm run` 无打包脚本，用 bsdtar 打（Windows 自带 `tar.exe`）：
+- **部署上传区**：`npm run pack` 把要传的文件同步到 **`github-upload/`**（目录，不是压缩包）——
+  整目录拖到 GitHub 或 scp 到服务器即可，改完代码重新跑一次就同步：
   ```bash
-  tar -a -c -f tdshogi-deploy.zip package.json package-lock.json server.js .npmrc DEPLOY.md README.md src public
+  npm run pack            # 同步上传区（先清空再复制）
+  npm run pack -- --check # 只校验：对比源码与上传区是否一致，不写入
   ```
+  内容严格按部署清单（`package.json` / `package-lock.json` / `.npmrc` / `server.js` /
+  `DEPLOY.md` / `README.md` / `src/` / `public/`），清单**只维护在 `scripts/pack.js` 一处**。
+  手抄清单的典型事故是漏掉新增文件，而漏掉的多半正是服务端启动时 `require` 的那个。
 
 ## REST API（主要）
 

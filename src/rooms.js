@@ -19,44 +19,23 @@ const ratings = require('./ratings');
 const { genId } = require('./auth');
 const tournaments = require('./tournaments');
 const roomPassword = require('./room-password'); // 私人房间密码（PLAN §T2，纯函数模块，可单测）
+const log = require('./logger');
 
-const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混淆字符
-const RECONNECT_GRACE_MS = 60 * 1000; // 断线 60 秒重连期
-const TICK_MS = 1000;                   // 棋钟 tick
-const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS || '30000', 10) || 30000; // 进行中对局快照间隔（可配，默认 30s）
-const NO_MEMBER_CLEANUP_MS = parseInt(process.env.NO_MEMBER_CLEANUP_MS || '', 10) || 2 * 60 * 1000;   // 完全无连接的房间 2 分钟后清理（可配）
-const FINISHED_TTL_MS = parseInt(process.env.FINISHED_TTL_MS || '', 10) || 30 * 60 * 1000;            // 感想战中（FINISHED 有连接成员）自最后活动起 30 分钟（可配）
-
-// 时间控制预设（房间 / 快速匹配可选）
-//  - main: 本时（每方思考时间，ms）
-//  - byoyomi: 秒读（本时用尽后每手限时，ms；0 = 包干，本时用尽即判负）
-const TIME_CONTROLS = {
-  '15+60': { id: '15+60', name: '15分钟 + 60秒', main: 15 * 60 * 1000, byoyomi: 60 * 1000 },
-  '10+30': { id: '10+30', name: '10分钟 + 30秒', main: 10 * 60 * 1000, byoyomi: 30 * 1000 },
-  '10:00': { id: '10:00', name: '10分钟包干',   main: 10 * 60 * 1000, byoyomi: 0 },
-  '10sec': { id: '10sec', name: '10秒快棋',      main: 0,             byoyomi: 10 * 1000 }, // 0+10：每手 10 秒读秒
-};
-
-// 房间密码的哈希/校验逻辑见 ./room-password（PLAN §T2）。
-// 抽成独立模块的理由：纯函数可单测——安全逻辑不该埋在 1787 行的本文件里靠人眼检查。
-
-/**
- * 由时间控制生成房间时钟初始状态。
- * 0+10 快棋（main=0, byoyomi>0）：开局即进入读秒（本时恒 0，每手读秒）。
- */
-function initClockState(tc) {
-  return {
-    clock: { b: tc.main, w: tc.main },
-    byoyomi: tc.byoyomi,
-    curByoyomi: { b: tc.byoyomi, w: tc.byoyomi },
-    // main=0 且 byoyomi>0 → 开局即读秒；否则等待本时耗尽进入
-    inByoyomi: { b: tc.main <= 0 && tc.byoyomi > 0, w: tc.main <= 0 && tc.byoyomi > 0 },
-  };
-}
-const DEFAULT_TIME_CONTROL = '10:00'; // 快速匹配 / 默认标准对局：10 分钟包干
-
-// 持驹中文名 -> 打子符号（与 game.js legalTargets 的 drop 符号一致）
-const DROP_SYMBOL_BY_NAME = { '歩': 'P', '香': 'L', '桂': 'N', '銀': 'S', '金': 'G', '角': 'B', '飛': 'R' };
+// §M1：时间控制预设 / 各类超时常量 / 打子符号表 / `initClockState()` 已拆到
+// `rooms/config.js`——它们是「配置」，不该埋在两千行的状态机里（改一个超时要翻半天）。
+// 房间密码的哈希/校验逻辑见 ./room-password（PLAN §T2）：纯函数可单测，
+// 安全逻辑不该埋在大文件里靠人眼检查。
+const {
+  ROOM_CODE_ALPHABET,
+  RECONNECT_GRACE_MS,
+  SNAPSHOT_INTERVAL_MS,
+  NO_MEMBER_CLEANUP_MS,
+  FINISHED_TTL_MS,
+  TIME_CONTROLS,
+  DEFAULT_TIME_CONTROL,
+  DROP_SYMBOL_BY_NAME,
+  initClockState,
+} = require('./rooms/config');
 
 class RoomManager {
   constructor(broadcaster) {
@@ -173,6 +152,9 @@ class RoomManager {
     if (room.status === 'FINISHED' && room.demo) {
       const dSeat = room.demo.demonstratorSeat;
       const g = this._demoGame(room);
+      // §J4：权威局面（推演终局）。**三处出口**（本处 / `_broadcastDemo` / `demoEnter`）
+      // 口径必须一致——都取同一份 `game.state()`，否则前端覆盖逻辑会时灵时不灵。
+      const dSnap = g.state();
       st.demo = {
         moves: room.demo.moves,
         kif: room.demo.kif,
@@ -181,6 +163,8 @@ class RoomManager {
         legalMoves: g.legalMovesUsi(),
         legalTargetsBySq: this._legalTargetsMap(g),
         turn: g.turn,
+        board: dSnap.board,
+        hands: dSnap.hands,
         demonstratorSeat: dSeat || null,
         demonstratorName: dSeat && room.players[dSeat] ? room.players[dSeat].name : null,
       };
@@ -506,32 +490,7 @@ class RoomManager {
     }
   }
 
-  /**
-   * 放弃玩家名下的「恢复局」（服务器重启时从快照恢复的旧局，room.restored = true）。
-   * 在玩家主动开启新对局（建房/加入/匹配）时调用——否则 request_state 的重连兜底
-   * 会按 playerId 把玩家绑回僵尸恢复局，表现为新对局「双方锁死、计时器不动」。
-   *  - 对手仍在线 → 按接続切断判负推进（保留对手的结算与复盘）
-   *  - 对手不在线/无对手/WAITING → 直接解散
-   */
-  _abandonRestoredFor(playerId) {
-    if (!playerId) return;
-    for (const room of [...this.rooms.values()]) {
-      if (!room.restored || room.status === 'FINISHED') continue;
-      const seat = ['b', 'w'].find((s) => room.players[s] && room.players[s].playerId === playerId);
-      if (!seat) continue;
-      const otherSeat = seat === 'b' ? 'w' : 'b';
-      const other = room.players[otherSeat];
-      const otherConnected = !!(other && other.connected);
-      if (room.status === 'WAITING' || !otherConnected || room.game.isGameOver()) {
-        this._broadcast(room.id, { type: 'room_closed', data: { roomId: room.id, reason: 'abandoned_restored' } });
-        this._dissolveRoom(room.id, 'player_started_new_game');
-      } else {
-        room.game.result = seat === 'b' ? 'w' : 'b';
-        room.game.resultDetail = '接続切断';
-        this._checkGameOver(room);
-      }
-    }
-  }
+  // `_abandonRestoredFor()`（放弃僵尸恢复局）已拆到 **rooms/snapshot.js**（§M1）。
 
   /**
    * 销毁房间：清理所有绑定与资源，避免 WAITING 房间永远残留成为「幽灵房间」。
@@ -568,7 +527,7 @@ class RoomManager {
     const wt = this._waitingTimers && this._waitingTimers.get(roomId);
     if (wt) { clearTimeout(wt); this._waitingTimers.delete(roomId); }
     this._clearSnapshot(roomId);
-    console.log(`[rooms] 房间 ${roomId} (${room.code}) 销毁 (${reason})`);
+    log.info('rooms', `房间 ${roomId} (${room.code}) 销毁 (${reason})`, { roomId, reason });
   }
 
   /**
@@ -1239,7 +1198,7 @@ class RoomManager {
         }
       }
       if (updated) {
-        console.log(`[rooms] 玩家 ${playerId} 改名→${newName}，房间 ${room.id} state 广播`);
+        log.info('rooms', `玩家 ${playerId} 改名→${newName}，房间 ${room.id} state 广播`, { roomId: room.id, playerId });
         this._pushState(room);
       }
     }
@@ -1264,76 +1223,9 @@ class RoomManager {
   }
 
   // ==================================================================
-  // 棋钟
+  // 棋钟 —— 已拆到 **rooms/clock.js**（§M1）
   // ==================================================================
-  _startClock(room) {
-    this._stopClock(room.id);
-    const timer = setInterval(() => this._tick(room.id), TICK_MS);
-    this._clockTimers.set(room.id, timer);
-  }
-
-  _stopClock(roomId) {
-    const timer = this._clockTimers.get(roomId);
-    if (timer) clearInterval(timer);
-    this._clockTimers.delete(roomId);
-  }
-
-  _tick(roomId) {
-    const room = this._room(roomId);
-    if (!room || room.status !== 'PLAYING') return;
-    const turn = room.game.turn;
-    const byoyomi = room.byoyomi || 0;
-
-    if (room.clock[turn] > 0) {
-      // 本时消耗
-      room.clock[turn] -= TICK_MS;
-      if (room.clock[turn] <= 0) {
-        room.clock[turn] = 0;
-        if (byoyomi > 0) {
-          // 本时耗尽 → 进入读秒：给当前手完整的 byoyomi
-          room.inByoyomi[turn] = true;
-          room.curByoyomi[turn] = byoyomi;
-          this._broadcast(roomId, { type: 'clock', data: this._clockData(room) });
-        } else {
-          // 包干：本时用尽即判负
-          const game = room.game;
-          game.result = turn === 'b' ? 'w' : 'b';
-          game.resultDetail = '時間切れ';
-          this._checkGameOver(room);
-        }
-      } else {
-        this._broadcast(roomId, { type: 'clock', data: this._clockData(room) });
-      }
-    } else if (byoyomi > 0) {
-      // 本时已为 0（含 0+10 快棋：初始即读秒）
-      if (!room.inByoyomi[turn]) {
-        room.inByoyomi[turn] = true;
-        room.curByoyomi[turn] = byoyomi;
-      }
-      // 读秒中
-      room.curByoyomi[turn] -= TICK_MS;
-      if (room.curByoyomi[turn] <= 0) {
-        room.curByoyomi[turn] = 0;
-        const game = room.game;
-        game.result = turn === 'b' ? 'w' : 'b';
-        game.resultDetail = '時間切れ';
-        this._checkGameOver(room);
-      } else {
-        this._broadcast(roomId, { type: 'clock', data: this._clockData(room) });
-      }
-    }
-    // byoyomi === 0 且 clock === 0 的包干情况：已在上一分支 clock 耗尽时判负，无需处理
-  }
-
-  _clockData(room) {
-    return {
-      clock: { ...room.clock },
-      byoyomi: room.byoyomi || 0,
-      curByoyomi: room.curByoyomi ? { ...room.curByoyomi } : null,
-      inByoyomi: room.inByoyomi ? { ...room.inByoyomi } : null,
-      turn: room.game.turn,
-    };
-  }
+  // 含 `_startClock` / `_stopClock` / `_tick`（本时→读秒→时间切れ判负）/ `_clockData`。
 
   // ==================================================================
   // 断线重连
@@ -1491,65 +1383,10 @@ class RoomManager {
   }
 
   // ==================================================================
-  // 对局快照 / 重启恢复
+  // 对局快照 / 重启恢复 —— 已拆到 **rooms/snapshot.js**（§M1）
   // ==================================================================
-
-  /**
-   * 序列化房间为可恢复的快照（不包含连接态：clientId/spectators 等运行时信息）。
-   */
-  _serializeRoom(room) {
-    const game = room.game;
-    return {
-      id: room.id,
-      code: room.code,
-      status: room.status,
-      type: room.type,
-      creatorId: room.creatorId,
-      createdAt: room.createdAt,
-      timeControl: room.timeControl,
-      clock: { ...room.clock },
-      byoyomi: room.byoyomi,
-      curByoyomi: room.curByoyomi ? { ...room.curByoyomi } : null,
-      inByoyomi: room.inByoyomi ? { ...room.inByoyomi } : null,
-      rated: room.rated,
-      // §T2：私人房属性必须随快照持久化，否则重启恢复后私人房会变成"公开可加入"
-      isPrivate: !!room.isPrivate,
-      passwordHash: room.passwordHash || null,
-      tournamentId: room.tournamentId,
-      // 对局数据：startSfen + moves 可完整重放恢复 Game
-      startSfen: game.startSfen,
-      moves: [...game.moves],
-      result: game.result,
-      resultDetail: game.resultDetail,
-      // 玩家（仅持久身份，不存 clientId）
-      players: {
-        b: room.players.b ? { playerId: room.players.b.playerId, name: room.players.b.name } : null,
-        w: room.players.w ? { playerId: room.players.w.playerId, name: room.players.w.name } : null,
-      },
-    };
-  }
-
-  /** 保存单个房间快照（仅 PLAYING 与 WAITING） */
-  _snapshotRoom(room) {
-    if (!room || (room.status !== 'PLAYING' && room.status !== 'WAITING')) return;
-    try {
-      require('./storage').putGameSnapshot(room.id, this._serializeRoom(room));
-    } catch (err) {
-      console.error('[rooms] 快照失败:', err.message);
-    }
-  }
-
-  /** 定期快照所有进行中的对局 */
-  _snapshotAll() {
-    for (const room of this.rooms.values()) {
-      this._snapshotRoom(room);
-    }
-  }
-
-  /** 对局结束/删除时清除快照 */
-  _clearSnapshot(roomId) {
-    try { require('./storage').deleteGameSnapshot(roomId); } catch (_) {}
-  }
+  // 该模块含：`_abandonRestoredFor` / `_serializeRoom` / `_snapshotRoom` /
+  // `_snapshotAll` / `_clearSnapshot` / `restoreSnapshots` / `_restoreRoom`。
 
   /**
    * 管理员取消赛事：解散其全部进行中/等待中的对局房间。
@@ -1637,237 +1474,12 @@ class RoomManager {
     return 'b';
   }
 
-  /**
-   * 终局后初始化演示状态（推演谱：可变基点分支模型，PLAN §G v4）。
-   * baseIndex/baseSfen：推演谱的起点（默认=原对局终局）；在棋谱历史手处下出
-   * 不同的棋 → 起点回退到该手、之后的推演截断（新分支覆盖）。
-   */
-  _initDemo(room) {
-    const moves = room.game.moves || [];
-    room.demo = {
-      baseIndex: moves.length,               // 推演起点 = 原谱第 N 手后
-      baseCount: moves.length,               // 原对局总手数（不变，用于界面区分本谱/推演）
-      baseSfen: room.game.state().sfen,      // 起点局面 SFEN
-      moves: [],                             // 推演着法（USI，规则合法，服务端校验）
-      kif: [],                               // 推演着法日式记谱
-      demonstratorSeat: this._hostSeat(room),
-      updatedAt: Date.now(),
-      _game: null,                           // 推演 Game（懒重建）
-    };
-  }
-
-  /** 原谱第 k 手后的局面 SFEN（k=0 即初始局面） */
-  _sfenAtOriginal(room, k) {
-    const g = newGame(room.game.startSfen || STARTING_SFEN, ['先手', '後手']);
-    const moves = room.game.moves || [];
-    for (let i = 0; i < k && i < moves.length; i++) g.applyMove(moves[i]);
-    return g.state().sfen;
-  }
-
-  /** 推演 Game 实例：起点 SFEN + 重放推演着法（懒重建） */
-  _demoGame(room) {
-    const demo = room.demo;
-    if (!demo._game) {
-      const g = newGame(demo.baseSfen, ['先手', '後手']);
-      for (const usi of demo.moves) g.applyMove(usi);
-      demo._game = g;
-    }
-    return demo._game;
-  }
-
-  /** 推演谱日式记谱（相对起点重放） */
-  _refreshDemoKif(room) {
-    const demo = room.demo;
-    try {
-      const { movesToKif } = require('./records');
-      demo.kif = movesToKif(demo.baseSfen, demo.moves);
-    } catch (_) {
-      demo.kif = demo.moves.map((u, i) => `${u}`);
-    }
-  }
-
-  /** 推演谱第 k 手后的 Game 实例（k ≤ baseIndex 用本谱重放；> baseIndex 叠推演） */
-  _demoGameAt(room, k) {
-    let g;
-    if (k <= room.demo.baseIndex) {
-      g = newGame(room.game.startSfen || STARTING_SFEN, ['先手', '後手']);
-      const moves = room.game.moves || [];
-      for (let i = 0; i < k && i < moves.length; i++) g.applyMove(moves[i]);
-    } else {
-      g = this._demoGame(room);
-      const moves = room.demo.moves;
-      for (let i = room.demo.baseIndex; i < k && i < moves.length; i++) g.applyMove(moves[i]);
-    }
-    return g;
-  }
-
-  _broadcastDemo(room, exceptClientId = null) {
-    if (!room.demo) return;
-    const seat = room.demo.demonstratorSeat;
-    const g = this._demoGame(room);
-    this._broadcast(room.id, {
-      type: 'demo_state',
-      data: {
-        moves: room.demo.moves,
-        kif: room.demo.kif,
-        baseIndex: room.demo.baseIndex,
-        baseCount: room.demo.baseCount,
-        legalMoves: g.legalMovesUsi(),
-        legalTargetsBySq: this._legalTargetsMap(g),
-        turn: g.turn,
-        demonstratorSeat: seat || null,
-        demonstratorName: seat && room.players[seat] ? room.players[seat].name : null,
-      },
-    }, exceptClientId);
-  }
-
-  /**
-   * 感想战演示操作分发（仅 FINISHED 房间）。
-   * action: move（演示者按规则行棋）/ undo（待った）/ transfer / claim / reset（清空推演）
-   */
-  /**
-   * 进入感想战页：返回该客户端视角的完整载荷（独立感想战页 demo.html 用）。
-   * 玩家带座位与演示权；观战者/离开者以旁观身份进入。
-   */
-  demoEnter(clientId, roomId) {
-    const seatInfo = this.clientToPlayer.get(clientId);
-    const rid = roomId || (seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId));
-    const room = this._room(rid);
-    if (!room) return { ok: false, error: '对局房间不存在（可能已清理，请到棋谱页复盘）' };
-    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
-    if (!room.demo) this._initDemo(room);
-    const demo = room.demo;
-    const g = this._demoGame(room);
-    const mySeat = seatInfo ? seatInfo.seat : null;
-    const { movesToKif } = require('./records');
-    const gameKif = movesToKif(room.game.startSfen || STARTING_SFEN, room.game.moves || []);
-    return {
-      ok: true,
-      demo: {
-        roomId: room.id,
-        mySeat,
-        isPlayer: !!mySeat,
-        startSfen: room.game.startSfen || STARTING_SFEN,
-        gameMoves: room.game.moves || [],
-        gameKif,
-        moves: demo.moves,
-        kif: demo.kif,
-        baseIndex: demo.baseIndex,
-        baseCount: demo.baseCount,
-        legalMoves: g.legalMovesUsi(),
-        legalTargetsBySq: this._legalTargetsMap(g),
-        turn: g.turn,
-        demonstratorSeat: demo.demonstratorSeat || null,
-        demonstratorName: demo.demonstratorSeat ? (room.players[demo.demonstratorSeat] || {}).name : null,
-        names: (room.game.names && room.game.names.length === 2) ? room.game.names : ['先手', '後手'],
-        result: room.game.result,
-        resultDetail: room.game.resultDetail,
-      },
-    };
-  }
-
-  /** 感想战：按需下发指定手数局面的合法走法（历史手行棋，PLAN §H） */
-  demoLegal(clientId, data = {}) {
-    const seatInfo = this.clientToPlayer.get(clientId);
-    const roomId = seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId);
-    const room = this._room(roomId);
-    if (!room) return { ok: false, error: '房间不存在' };
-    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
-    if (!room.demo) this._initDemo(room);
-    const idx = Math.max(0, Math.min(Number(data.index) || 0, room.demo.baseIndex + room.demo.moves.length));
-    const g = this._demoGameAt(room, idx);
-    return {
-      ok: true,
-      data: {
-        index: idx,
-        legalMoves: g.legalMovesUsi(),
-        legalTargetsBySq: this._legalTargetsMap(g),
-        turn: g.turn,
-      },
-    };
-  }
-
-  demoAction(clientId, action, data = {}) {
-    const seatInfo = this.clientToPlayer.get(clientId);
-    const roomId = seatInfo ? seatInfo.roomId : this.clientToRoom.get(clientId);
-    const room = this._room(roomId);
-    if (!room) return { ok: false, error: '房间不存在' };
-    if (room.status !== 'FINISHED') return { ok: false, error: '对局尚未结束' };
-    if (!room.demo) this._initDemo(room);
-    const demo = room.demo;
-    const mySeat = seatInfo ? seatInfo.seat : null; // 观战者为 null
-    const isDemo = !!mySeat && demo.demonstratorSeat === mySeat;
-    const curName = demo.demonstratorSeat ? (room.players[demo.demonstratorSeat] || {}).name : null;
-    switch (action) {
-      case 'move': {
-        if (!isDemo) return { ok: false, error: curName ? `正在由 ${curName} 演示` : '演示权空闲，请先认领' };
-        const usi = String(data.usi || '');
-        // 分支：携带 index（在该手之后的局面下行棋）。与既有推演不同 → 截断/重设起点开新分支
-        if (Number.isInteger(data.index) && data.index !== demo.baseIndex + demo.moves.length) {
-          const idx = Math.max(0, Math.min(data.index, demo.baseCount));
-          if (idx <= demo.baseIndex) {
-            demo.baseIndex = idx;
-            demo.baseSfen = this._sfenAtOriginal(room, idx);
-            demo.moves = [];
-          } else {
-            demo.moves = demo.moves.slice(0, idx - demo.baseIndex);
-          }
-          demo._game = null;
-        }
-        const res = this._demoGame(room).applyMove(usi); // 服务端规则校验（含王手过滤）
-        if (!res.ok) return { ok: false, error: res.error || '非法走法' };
-        demo.moves.push(usi);
-        this._refreshDemoKif(room);
-        demo.updatedAt = Date.now();
-        this._broadcastDemo(room); // 全员回显（含演示者）——客户端统一以服务端回执渲染
-        return { ok: true };
-      }
-      case 'undo': {
-        // 待った：优先回退推演手；推演谱为空且起点在本谱内 → 跨界回退本谱一手（PLAN §H）
-        if (demo.moves.length) {
-          demo.moves.pop();
-        } else if (demo.baseIndex > 0) {
-          demo.baseIndex -= 1;
-          demo.baseSfen = this._sfenAtOriginal(room, demo.baseIndex);
-        } else {
-          return { ok: false, error: '没有可回退的推演手' };
-        }
-        demo._game = null; // 强制重建
-        this._refreshDemoKif(room);
-        demo.updatedAt = Date.now();
-        this._broadcastDemo(room); // 全员（含请求方）按新推演谱重绘
-        return { ok: true };
-      }
-      case 'transfer': {
-        if (!isDemo) return { ok: false, error: '只有演示者可以交接演示权' };
-        demo.demonstratorSeat = mySeat === 'b' ? 'w' : 'b';
-        demo.updatedAt = Date.now();
-        this._broadcastDemo(room);
-        return { ok: true };
-      }
-      case 'claim': {
-        if (!mySeat) return { ok: false, error: '观战者不能获得演示权' };
-        if (demo.demonstratorSeat) return { ok: false, error: '演示权已被占用' };
-        demo.demonstratorSeat = mySeat;
-        demo.updatedAt = Date.now();
-        this._broadcastDemo(room);
-        return { ok: true };
-      }
-      case 'reset': {
-        if (!isDemo) return { ok: false, error: '只有演示者可以清空推演' };
-        demo.baseIndex = demo.baseCount;
-        demo.baseSfen = this._sfenAtOriginal(room, demo.baseCount);
-        demo.moves = [];
-        demo.kif = [];
-        demo._game = null;
-        demo.updatedAt = Date.now();
-        this._broadcastDemo(room); // 全员回到本谱终局
-        return { ok: true };
-      }
-      default:
-        return { ok: false, error: '未知演示操作' };
-    }
-  }
+  // ==================================================================
+  // 感想战（PLAN §G v4）：推演谱 / 演示权 / 历史手 —— 已拆到 **rooms/demo.js**（§M1）
+  // ==================================================================
+  // 9 个方法（_initDemo / _sfenAtOriginal / _demoGame / _refreshDemoKif / _demoGameAt /
+  // _broadcastDemo / demoEnter / demoLegal / demoAction）由 `require('./rooms/demo')`
+  // 注入本类 prototype，`this.*` 调用链完全不变（装配见文件末尾）。
 
   /**
    * 清理已结束超过 N 分钟的 FINISHED 房间，避免 rooms Map 无限增长
@@ -1917,105 +1529,8 @@ class RoomManager {
     return n;
   }
 
-  /**
-   * 启动时恢复全部快照（服务器重启后续局）。
-   * 玩家重连时由 protocol.reconnect 找到恢复的房间。
-   * @returns {number} 恢复的房间数
-   */
-  restoreSnapshots() {
-    let restored = 0;
-    let snapshots = [];
-    try { snapshots = require('./storage').listGameSnapshots(); } catch (_) { return 0; }
-    for (const { roomId, data } of snapshots) {
-      try {
-        const room = this._restoreRoom(data);
-        if (!room) { this._clearSnapshot(roomId); continue; }
-        this.rooms.set(room.id, room);
-        this.byCode.set(room.code, room.id);
-        // 重新绑定玩家（若在线）
-        for (const seat of ['b', 'w']) {
-          const p = room.players[seat];
-          if (p && p.playerId) {
-            const clientId = this.playerToClient.get(p.playerId);
-            if (clientId) {
-              p.clientId = clientId;
-              p.connected = true;
-              this._bindClient(clientId, room.id, seat);
-            } else {
-              p.clientId = null;
-              p.connected = false;
-            }
-          }
-        }
-        // 恢复局自愈（防幽灵复活循环，修复「重启后新对局被旧局劫持」）：
-        //  - WAITING 恢复房：没有需要保留的对局，立即销毁
-        //  - PLAYING 恢复局：对未连接座位启动 60s 判负计时——
-        //    及时重连可续局；都不回来则判负收尾并清快照，
-        //    否则僵尸恢复局每次重启复活，request_state 重连兜底会把
-        //    玩家绑进死局（表现为新对局「双方锁死、计时器不动」）
-        room.restored = true;
-        if (room.status === 'WAITING') {
-          this._dissolveRoom(room.id, 'restored_waiting_cleanup');
-          continue;
-        }
-        if (room.status === 'PLAYING') {
-          this._startClock(room);
-          for (const seat of ['b', 'w']) {
-            const p = room.players[seat];
-            if (p && p.connected === false && !room.game.isGameOver()) {
-              this._scheduleDisconnectLoss(room.id, seat);
-            }
-          }
-        }
-        restored++;
-      } catch (err) {
-        console.error('[rooms] 恢复房间失败:', err.message, roomId);
-        this._clearSnapshot(roomId);
-      }
-    }
-    return restored;
-  }
-
-  /** 从快照重建房间对象（Game 用 startSfen+moves 重放） */
-  _restoreRoom(snap) {
-    if (!snap || !snap.id) return null;
-    const game = newGame(snap.startSfen || STARTING_SFEN, [
-      snap.players && snap.players.b ? snap.players.b.name : '先手',
-      snap.players && snap.players.w ? snap.players.w.name : '後手',
-    ]);
-    // 重放走法
-    for (const usi of snap.moves || []) {
-      const r = game.applyMove(usi);
-      if (!r.ok) return null; // 走法无法重放 → 快照无效
-    }
-    const room = {
-      id: snap.id,
-      code: snap.code,
-      game,
-      players: {
-        b: snap.players && snap.players.b ? { clientId: null, playerId: snap.players.b.playerId, name: snap.players.b.name, connected: false } : null,
-        w: snap.players && snap.players.w ? { clientId: null, playerId: snap.players.w.playerId, name: snap.players.w.name, connected: false } : null,
-      },
-      status: snap.status || 'FINISHED',
-      type: snap.type || 'room',
-      creatorId: snap.creatorId || null,
-      createdAt: snap.createdAt || Date.now(),
-      timeControl: snap.timeControl || DEFAULT_TIME_CONTROL,
-      clock: snap.clock ? { ...snap.clock } : { b: 0, w: 0 },
-      byoyomi: snap.byoyomi || 0,
-      curByoyomi: snap.curByoyomi ? { ...snap.curByoyomi } : { b: 0, w: 0 },
-      inByoyomi: snap.inByoyomi ? { ...snap.inByoyomi } : { b: false, w: false },
-      lastMoveTs: Date.now(),
-      lastActiveAt: Date.now(),
-      result: snap.result || null,
-      resultDetail: snap.resultDetail || null,
-      rated: snap.rated !== false,
-      isPrivate: !!snap.isPrivate, // §T2：恢复私人房属性（否则重启后私人房会变成公开）
-      passwordHash: snap.passwordHash || null,
-      tournamentId: snap.tournamentId || null,
-    };
-    return room;
-  }
+  // `restoreSnapshots()` 与 `_restoreRoom()`（重启续局 + 恢复局自愈）已拆到
+  // **rooms/snapshot.js**（§M1）。
 
   /**
    * 房间维度统计。
@@ -2036,5 +1551,15 @@ class RoomManager {
     };
   }
 }
+
+// ==================================================================
+// mixin 装配（PLAN §M1）
+// ==================================================================
+// 拆出去的模块把方法挂到 `RoomManager.prototype` 上（`this.*` 调用链**完全不变**），
+// 因此对调用方（`protocol.js` 的 `require('./rooms')`）完全透明——它拿到的仍是同一个 `{ RoomManager }`。
+// 逐个文件搬运，每搬一块都可独立验证（方法个数 + 名字必须与拆分前一致）。
+require('./rooms/demo')(RoomManager);
+require('./rooms/snapshot')(RoomManager);
+require('./rooms/clock')(RoomManager);
 
 module.exports = { RoomManager };

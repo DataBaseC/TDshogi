@@ -10,7 +10,8 @@
     "test": "node --test tests/*.test.js",
     "lint": "eslint .",
     "check": "node --check server.js",
-    "backup": "node scripts/backup.js"
+    "backup": "node scripts/backup.js",
+    "pack": "node scripts/pack.js"
   },
   "engines": {
     "node": ">=22"

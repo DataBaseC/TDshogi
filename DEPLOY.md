@@ -11,6 +11,12 @@
 
 ## 一、要传哪些文件（部署包清单）
 
+> **不用手动挑文件**：跑 `npm run pack` 会把下面的清单自动同步到 **`github-upload/`**（目录形式，
+> **不是压缩包**）——整目录拖到 GitHub、或用 scp/rsync 传到服务器即可。
+> 清单只维护在 `scripts/pack.js` 一处，改完代码重新跑一次就同步：
+> `npm run pack`（同步）/ `npm run pack -- --check`（只校验一致性）。
+> 手抄清单最典型的事故是**漏掉新增文件**，而漏掉的多半正是服务端启动时要 `require` 的那个。
+
 **必传（应用代码 + 依赖清单）：**
 
 ```
@@ -76,6 +82,8 @@ export ADMIN_PASSWORD=你的强密码        # 管理员登录密码（不设置
 export ADMIN_SECRET=随机长字符串        # token 签名密钥（不设置则从管理密码派生）
 export TRUST_PROXY=1                    # 走 Nginx 反代时必配（1 层），否则记录到的 IP 是 127.0.0.1
 export ADMIN_ENTRY_KEY=随机长字符串     # 可选：隐藏管理后台入口（见下）
+export LOG_LEVEL=info                   # 日志级别 debug|info|warn|error（默认 info，见「五、日志与排障」）
+export LOG_FORMAT=text                  # 日志格式 text|json（默认 text；接入日志系统时可设 json）
 
 # 4. 启动
 npm start
@@ -255,3 +263,56 @@ pm2 start tdshogi
   却把 `DATA_DIR` 指向容器内的非持久目录——那样**库和备份都会随容器销毁一起消失**。
 - **备份与库在同一块磁盘上，防不了整盘损坏**。重要数据请定期把 `backups/` 里最新那份
   同步到异地（对象存储 / 另一台机器）。
+
+---
+
+## 五、日志与排障
+
+服务端日志自 2026-09-12 起统一走 `src/logger.js`，不再散落 `console.*`（PLAN §P4）。
+
+**默认格式**（text，带时间戳与级别）：
+
+```
+20:41:42.123 INFO  [rooms] 房间 abc123 (XYZ789) 销毁 (leave) roomId=abc123 reason=leave
+20:41:45.900 ERROR [storage] 写入 kv 失败 err="磁盘满了"
+    at Storage.write (/opt/tdshogi/src/storage.js:191:9)
+```
+
+**两个环境变量**：
+
+| 变量 | 取值 | 用途 |
+|---|---|---|
+| `LOG_LEVEL` | `debug` / `info` / `warn` / `error`（默认 `info`） | 排障时临时调 `debug` 看细节 |
+| `LOG_FORMAT` | `text`（默认）/ `json` | `json` 时每行一个 JSON 对象，便于交给日志系统或结构化检索 |
+
+**告警分流**：`warn` / `error` 写 **stderr**，`debug` / `info` 写 **stdout**。所以推荐这样收集：
+
+```bash
+npm start > srv.log 2> srv.err      # srv.err 里只有告警与异常，一眼可见
+```
+
+**requestId 排障法**：每个 HTTP 请求都会分配一个 8 位短 id，随响应头 `X-Request-Id` 返回
+（管理写接口报 500 时，响应体里也会带 `requestId`）。让用户报障时把该 id 给你，
+直接定位到那一次请求的日志：
+
+```bash
+grep 'a1b2c3d4' srv.log srv.err
+```
+
+不必再靠"大概几点几分出错"去反推。前端在浏览器开发者工具的 Network 面板里即可看到
+`X-Request-Id` 响应头。
+
+### 前端调试日志（`window.debugLog`）
+
+浏览器端也有对应的调试日志（定义在 `js/util.js`，9 个页面全部已加载），**默认关闭**：
+
+| 开启方式 | 场景 |
+|---|---|
+| 访问带 `?debug=1` 的地址 | 排障时直接发这个链接给用户，最快 |
+| 控制台执行 `debugLog.enable()` | 已在页面上时随时打开（会记住，刷新仍生效；`debugLog.disable()` 关闭） |
+| `window.TDSHOGI_DEBUG = true` | 自动化测试预置 |
+
+开启后输出形如 `12:34:56.789 DEBUG [play] state 到达 {...}`，**与服务端 text 日志同格式**，两端可对照着看。
+
+**让用户报障时多跑一句 `copy(debugLog.dump())`**，把最近 200 条日志整段贴给你——
+比"截图 + 描述现象"精确得多。

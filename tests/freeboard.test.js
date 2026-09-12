@@ -3,6 +3,9 @@
  *
  * 只测不依赖 DOM 的部分：坐标换算、初始盘面、USI 应用到模型（走子/吃子/升变/打子）。
  * 吃子用例直接覆盖 §J3 的回归场景：吃掉对方的「馬」，驹台必须多出「角」而不是「飛」。
+ *
+ * （2026-09-12）补 §J4 漂移回归：本地重放的盘面/持驹与 `src/game.js` 的权威结果**逐格比对**，
+ * 让"前端模型悄悄跑偏"这类问题在单测阶段就暴露，而不是等用户吃子时才发现。
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -14,6 +17,9 @@ globalThis.window.renderHands = () => {};
 require(path.join(__dirname, '../public/js/piece-kinds.js'));
 require(path.join(__dirname, '../public/js/freeboard.js'));
 const FB = globalThis.window.FreeBoard;
+
+// 服务端规则引擎（§J4 漂移回归的权威基准）
+const { newGame, STARTING_SFEN } = require('../src/game');
 
 /** 取某格的棋子对象 */
 const at = (model, sq) => {
@@ -181,4 +187,56 @@ test('§R1 视角切换：清除选中状态，避免残留另一视角的选中
   fb.setViewpoint('w');
   assert.strictEqual(fb.selectedSq, null);
   assert.strictEqual(fb.selectedHand, null);
+});
+
+// ======================================================================
+// §J4 漂移回归：本地重放 vs 服务端权威
+//
+// 背景：感想战的棋盘此前**完全由前端本地重放**得出（服务端只发 moves/kif），
+// 一旦映射表或吃子逻辑写错（如 J3 的「馬→飛」），显示就是错的且**无从校验**——
+// 只能靠用户肉眼发现。§J4 之后服务端会下发权威局面，但**历史手浏览仍依赖本地重放**，
+// 所以这条"两边必须一致"的断言仍然是必要的护栏。
+// ======================================================================
+
+test('§J4 漂移回归：本地重放与服务端规则引擎的盘面/持驹完全一致', () => {
+  // 覆盖：普通走子 → 吃子升变 → 反吃成駒（角取馬）→ 打子
+  const moves = ['7g7f', '3c3d', '8h2b+', '3a2b', 'B*5e'];
+
+  // ① 服务端权威：逐手校验合法并推进
+  const g = newGame(STARTING_SFEN);
+  for (const usi of moves) {
+    const r = g.applyMove(usi);
+    assert.strictEqual(r.ok, true, `服务端应接受 ${usi}（${(r && r.error) || '无原因'}）`);
+  }
+  const sv = g.state();
+
+  // ② 前端本地重放：与感想战渲染走的是同一条路径
+  const model = FB.initialModel();
+  moves.forEach((usi, i) => FB.applyUsiOnModel(model, usi, i % 2 === 0 ? 'b' : 'w'));
+
+  // ③ 盘面逐格比对（忽略 sq 字段的实现差异，只比棋种/颜色/成否）
+  const norm = (x) => (x && x.piece ? { piece: x.piece, color: x.color, promoted: !!x.promoted } : null);
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      assert.deepStrictEqual(norm(model.board[r][c]), norm(sv.board[r][c]),
+        `盘面第 ${r + 1} 行第 ${c + 1} 列不一致（前端重放 vs 服务端）`);
+    }
+  }
+
+  // ④ 持驹比对
+  const hand = (h) => {
+    const m = {};
+    for (const x of (h || [])) m[x.piece] = x.count;
+    return m;
+  };
+  assert.deepStrictEqual(hand(model.hands.b), hand(sv.hands.b), '先手持驹不一致');
+  assert.deepStrictEqual(hand(model.hands.w), hand(sv.hands.w), '后手持驹不一致');
+
+  // ⑤ 关键语义断言（J3 的镜像场景）：反吃「馬」必须得到「角」
+  assert.strictEqual(hand(model.hands.w).角, 1, '后手吃马应得角');
+  assert.strictEqual(hand(model.hands.w).飛, undefined, '不得凭空得到飞车');
+  // 打子已生效：5e 是先手的角，且该角已从驹台扣除
+  assert.strictEqual(at(model, '5e').piece, '角');
+  assert.strictEqual(at(model, '5e').color, 'b');
+  assert.strictEqual(hand(model.hands.b).角, undefined, '打子后驹台应已扣除该角');
 });

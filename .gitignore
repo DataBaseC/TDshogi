@@ -14,8 +14,12 @@ data/
 .tmpdata*
 .tmp-*/
 
-# 部署产物（有独立归档，不入库）
-tdshogi-deploy-*.zip
+# 部署上传区（生成物：内容 = src/public 等的副本，由 scripts/pack.js 生成）
+# 不入主库——否则 src/public 会在仓库里出现两份
+github-upload/
+
+# §M1 拆分期间的校验基线（临时文件，拆完即删）
+.tmp-proto-*.txt
 
 # 系统文件
 .DS_Store

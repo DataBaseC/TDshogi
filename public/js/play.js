@@ -11,6 +11,9 @@
   const guest = window.NAV.renderNav('play');
   const api = window.API;
   api.connect(guest.id);
+  // §M5：聊天与观众列表已抽到 play-chat.js——WS 事件与 DOM 交互由它自己注册。
+  // 放在 connect 之后调用，保证与拆分前的注册时机一致。
+  window.PlayChat.init();
 
   const board = new window.ShogiBoard(document.getElementById('boardContainer'), {});
 
@@ -23,16 +26,10 @@
   // 棋钟状态与逻辑已抽到 play-clock.js（PLAN §M5）：本时剩余 / 读秒 / tick 都在那边
   // 统一棋盘组件（PLAN §G v6）：play 模式行棋 / 终局切感想战（demo-rules）/ 自由摆棋
   let fb = null;                  // FreeBoard 控制器（棋盘交互与拖拽）
-  let reviewActive = false;       // 感想战模式中
-  let demoInfo = null;            // 推演谱（服务端 v4 载荷）
-  let demoCursor = 0;             // 联合谱浏览位置
-  let originalPositions = null;   // 原谱各手局面缓存
-  let pendingDemoPromo = null;    // 感想战升变选择
   let spectatorViewpoint = 'b';   // 观战视角（PLAN §R1）：仅观战者生效，可切 'b' / 'w'
-  // 感想战「自由摆棋」模式（本地草稿，不入谱不同步）。
-  // 注：此前漏写声明 → 赋值时创建了**隐式全局 `window.freeMode`**（非严格模式不报错），
-  // 属跨脚本污染隐患（PLAN §P2 eslint 抓出）。必须在此显式声明。
-  let freeMode = false;
+  // 感想战的状态（推演谱 / 光标 / 原谱缓存 / 自由摆棋 / 升变待选）已整体搬进
+  // **play-demo.js**（PLAN §M5）——包括此前漏写声明、被 eslint 抓出的隐式全局
+  // `window.freeMode`：现在它位于模块内部，跨脚本污染的隐患从根上消失。
 
   // 时间控制预设（与服务端 TIME_CONTROLS 对应）
   const TIME_CONTROLS = {
@@ -156,10 +153,11 @@
     window.PlayClock.syncFromState(state);
 
     // 感想战中：棋盘由推演谱渲染（state 推送仅更新横幅/时钟等周边）
-    if (reviewActive && fb) {
+    // §M5：感想战逻辑已抽到 play-demo.js
+    if (window.PlayDemo.isActive() && fb) {
       fb.setViewpoint(viewpoint); // §R1：观战者在感想战中也能切视角
-      if (state.status === 'FINISHED') { applyDemoMode(); }
-      updateDemoUI();
+      if (state.status === 'FINISHED') { window.PlayDemo.applyMode(); }
+      window.PlayDemo.updateUI();
       return;
     }
 
@@ -177,7 +175,8 @@
     renderMoveList(state);
     // 观众列表：进场时用 state 快照初始化（此前只有 spectator_update 才渲染，
     // 导致刚进入的观战者一直看到"暂无观众"，直到有人进出才更新）
-    if (state.spectators) renderSpectators(state.spectators);
+    // §M5：渲染实现已抽到 play-chat.js
+    if (state.spectators) window.PlayChat.renderSpectators(state.spectators);
 
     // 胜负横幅
     if (state.result) {
@@ -348,18 +347,19 @@
   // 升变按钮（对局走子 / 感想战演示共用弹层）
   // 感想战分支必须走 demo_move 通道（带光标 index）；sendMove() 硬编码 type:'move' 不能复用
   $('btnPromote').addEventListener('click', () => {
-    if (pendingDemoPromo) api.send({ type: 'demo_move', data: { usi: pendingDemoPromo.usiPromote, index: demoCursor } });
+    // §M5：感想战的升变选择存放在 play-demo.js，用 takePendingPromo() 取出并清空
+    const demoPromo = window.PlayDemo.takePendingPromo();
+    if (demoPromo) window.PlayDemo.sendMove(demoPromo.usiPromote);
     else if (pendingPromote) sendMove(pendingPromote.promoteUsi);
     $('promoteOverlay').classList.remove('show');
     pendingPromote = null;
-    pendingDemoPromo = null;
   });
   $('btnNoPromote').addEventListener('click', () => {
-    if (pendingDemoPromo) api.send({ type: 'demo_move', data: { usi: pendingDemoPromo.usiMove, index: demoCursor } });
+    const demoPromo = window.PlayDemo.takePendingPromo();
+    if (demoPromo) window.PlayDemo.sendMove(demoPromo.usiMove);
     else if (pendingPromote) sendMove(pendingPromote.nonPromoteUsi);
     $('promoteOverlay').classList.remove('show');
     pendingPromote = null;
-    pendingDemoPromo = null;
   });
 
   // 认输 / 再来一局 / 退出
@@ -464,12 +464,12 @@
     isPlayer = data.isPlayer === true;
     window.PlayClock.resetTick(); // 以"此刻"为倒计时基准（原 `lastTickTs = Date.now()`）
     scrollBoardIntoViewOnce(); // §S2：手机端首屏直接落到棋盘
-    // 感想战路由（PLAN §G v6）：终局自动进入；新对局自动退出
+    // 感想战路由（PLAN §G v6）：终局自动进入；新对局自动退出（§M5：实现在 play-demo.js）
     if (state.status === 'FINISHED' && state.result) {
-      enterDemo(state);
+      window.PlayDemo.enter(state);
       return;
     }
-    if (reviewActive) exitDemo();
+    if (window.PlayDemo.isActive()) window.PlayDemo.exit();
     // 收到新状态时清空选中（如果对方走子则清）
     if (selected && mySeat !== state.turn) {
       selected = null;
@@ -480,55 +480,15 @@
 
   // 棋钟校准（PLAN §M5：处理逻辑已抽到 play-clock.js）
   api.on('clock', (data) => window.PlayClock.syncFromServer(data));
-  // 观战者名单（对局页右列观众列表，PLAN §R）
-  // 兼容两种形态：字符串数组（旧）与 {id,name,rating,level}（新）
-  function renderSpectators(list) {
-    const countEl = $('spectatorCount');
-    const el = $('spectatorList');
-    if (!el) return;
-    const items = (list || []).map((s) => (typeof s === 'string' ? { name: s } : (s || {})));
-    if (countEl) countEl.textContent = items.length;
-    el.innerHTML = items.length
-      ? items.map((s) => {
-        const attrs = s.id ? ` data-player-id="${escHtml(s.id)}"` : '';
-        const lv = (s.level !== undefined && s.level !== null) ? ` <span style="color:var(--gold-light);font-size:11px;">Lv.${s.level}</span>` : '';
-        return `<div style="padding:3px 0;">👤 <span${attrs} class="spectator-name">${escHtml(s.name || '观众')}</span>${lv}</div>`;
-      }).join('')
-      : '<div style="color:var(--text-dim);font-size:12px;">暂无观众</div>';
-  }
-  api.on('spectator_update', (d) => renderSpectators(d.spectators || []));
+  // 观众列表（PLAN §R）：渲染实现与 `spectator_update` 订阅均已抽到 play-chat.js（§M5），
+  // 此处不再保留副本——避免"两份实现、改一处漏一处"。
 
   // ==================================================================
-  // 感想战模式（PLAN §G v6 单页）：终局自动进入，同一棋盘组件切 demo-rules
+  // 感想战（PLAN §G v6 单页）：终局自动进入，同一棋盘组件切 demo-rules
   // ==================================================================
-  function demoEdge() {
-    return demoInfo ? demoInfo.baseIndex + demoInfo.moves.length : 0;
-  }
-
-  function enterDemo(st) {
-    // 终局分支会在 api.on('state') 里 enterDemo 后直接 return（不跑 render），
-    // 所以玩家栏必须在这里补渲染一次，否则重进者永远看不到双方名字与 id
-    renderPlayerBars(st);
-    if (reviewActive && fb) { applyDemoMode(); updateDemoUI(); return; }
-    reviewActive = true;
-    freeMode = false;
-    selected = null; targets = [];
-    ensureBoard(currentViewpoint());
-    demoInfo = st.demo || { moves: [], kif: [], baseIndex: (state.moves || []).length, baseCount: (state.moves || []).length, legalTargetsBySq: {}, legalMoves: [], turn: 'b', demonstratorSeat: null, demonstratorName: null };
-    demoCursor = demoEdge();
-    $('demoBar').style.display = 'flex';
-    applyDemoMode();
-    updateDemoUI();
-    if (window.Sound) window.Sound.playEnd();
-  }
-
-  function exitDemo() {
-    reviewActive = false;
-    freeMode = false;
-    demoInfo = null;
-    pendingDemoPromo = null;
-    $('demoBar').style.display = 'none';
-  }
+  // 整块（推演谱 / 光标浏览 / 演示权 / 自由摆棋 / 历史手合法走法）已抽到 **play-demo.js**（§M5）。
+  // 下面的 `ensureBoard` 属于通用棋盘，**留在 core**——对战与感想战共用同一个 FreeBoard 实例；
+  // 模块的依赖注入见本段末尾的 `PlayDemo.init(...)`。
 
   function ensureBoard(viewpoint) {
     if (fb) return;
@@ -542,11 +502,12 @@
         opp: $('oppHandPieces'), oppColor: viewpoint === 'b' ? 'w' : 'b',
       },
       onMove: (usi) => {
-        if (reviewActive) api.send({ type: 'demo_move', data: { usi, index: demoCursor } });
+        // §M5：感想战走子（带光标 index）由 play-demo.js 负责
+        if (window.PlayDemo.isActive()) window.PlayDemo.sendMove(usi);
         else api.send({ type: 'move', data: { usi } });
       },
       onPromoteChoice: ({ usiMove, usiPromote }) => {
-        if (reviewActive) pendingDemoPromo = { usiMove, usiPromote };
+        if (window.PlayDemo.isActive()) window.PlayDemo.setPendingPromo({ usiMove, usiPromote });
         else pendingPromote = { promoteUsi: usiPromote, nonPromoteUsi: usiMove };
         $('promoteOverlay').classList.add('show');
       },
@@ -555,168 +516,27 @@
     fb.bindHands($('myHandPieces'), viewpoint, $('oppHandPieces'), viewpoint === 'b' ? 'w' : 'b');
   }
 
-  function ensureOriginalPositions() {
-    if (originalPositions) return originalPositions;
-    const arr = [window.FreeBoard.initialModel()];
-    for (const usi of (state.moves || [])) {
-      const prev = arr[arr.length - 1];
-      const model = { board: JSON.parse(JSON.stringify(prev.board)), hands: JSON.parse(JSON.stringify(prev.hands)) };
-      const color = (arr.length - 1) % 2 === 0 ? 'b' : 'w';
-      window.FreeBoard.applyUsiOnModel(model, usi, color);
-      arr.push(model);
-    }
-    originalPositions = arr;
-    return arr;
-  }
+  // `ensureOriginalPositions()`（原谱逐手局面缓存）与 `applyDemoMode()`（联合谱渲染 + §J4 权威覆盖）
+  // 已搬到 **play-demo.js**（§M5）。其中 §J4 的「最新一手用服务端局面覆盖本地重放」逻辑原样保留。
 
-  function applyDemoMode() {
-    // 棋盘 = 联合谱 cursor 对应局面（原谱重放 + 推演叠加）
-    const k = Math.min(demoCursor, demoEdge());
-    const bi = demoInfo.baseIndex;
-    const ops = ensureOriginalPositions();
-    let model;
-    if (k <= bi) model = ops[k];
-    else {
-      const basePos = ops[bi];
-      model = { board: JSON.parse(JSON.stringify(basePos.board)), hands: JSON.parse(JSON.stringify(basePos.hands)) };
-      for (let i = 0; i < k - bi; i++) {
-        const color = (bi + i) % 2 === 0 ? 'b' : 'w';
-        window.FreeBoard.applyUsiOnModel(model, demoInfo.moves[i], color);
-      }
-    }
-    let lastMove = null;
-    if (k > 0) lastMove = k <= bi ? ((state.moves || [])[k - 1] || null) : (demoInfo.moves[k - bi - 1] || null);
-    fb.setModel(model, lastMove);
-    fb.setLegalTargets(demoInfo.legalTargetsBySq || {});
-  }
+  // `renderDemoMoveList()`（推演谱列表）与 `updateDemoUI()`（演示栏状态）已搬到 play-demo.js（§M5）。
+  // core 里的 `escHtml` 也随之移除——原本只有这两处用它，两个模块各自持有一份转发。
 
-  // 公共工具（PLAN §M5）：与全站同一份实现（原函数名 escHtml 保留，调用点不动）
-  function escHtml(s) { return window.UI.esc(s); }
+  // 历史手合法走法（demo_legal）、demo 按钮交互、demo_state 订阅均已搬到 play-demo.js（§M5）。
 
-  function renderDemoMoveList() {
-    const el = $('moveList');
-    if (!demoInfo) return;
-    const bi = demoInfo.baseIndex;
-    const base = demoInfo.baseCount;
-    const kifAll = (state.movesKif || []);
-    const html = [];
-    for (let no = 1; no <= base; no++) {
-      const mark = no % 2 === 1 ? '▲' : '△';
-      const cur = demoCursor === no ? ' current' : '';
-      const off = no > bi;
-      const style = off ? ' style="color:var(--text-dim);text-decoration:line-through;opacity:.55;"' : '';
-      const times = state.moveTimes || [];
-      const spent = Number(times[no - 1]) || 0;
-      let cum = 0; for (let k = 0; k <= no - 1; k++) cum += Number(times[k]) || 0;
-      const timeTxt = (spent || cum) ? ' (' + Math.floor(spent / 60) + ':' + String(spent % 60).padStart(2, '0') + '/' + Math.floor(cum / 3600) + ':' + Math.floor((cum % 3600) / 60) + ':' + String(cum % 60).padStart(2, '0') + ')' : '';
-      html.push('<div class="move-row' + cur + '" data-no="' + no + '" style="cursor:pointer;' + (off ? style : '') + '"><span class="no">' + no + '</span><span' + (off ? style : '') + '>' + mark + ' ' + escHtml(kifAll[no - 1] || (state.moves || [])[no - 1] || '') + timeTxt + '</span></div>');
-    }
-    for (let i = 0; i < demoInfo.moves.length; i++) {
-      const no = bi + i + 1;
-      const mark = no % 2 === 1 ? '▲' : '△';
-      const cur = demoCursor === no ? ' current' : '';
-      const live = no === demoEdge() ? ' 🎤' : '';
-      html.push('<div class="move-row' + cur + '" data-no="' + no + '" style="cursor:pointer;color:var(--gold-light);"><span class="no">' + no + '</span><span>' + mark + ' ' + escHtml(demoInfo.kif[i] || demoInfo.moves[i]) + live + '</span></div>');
-    }
-    el.innerHTML = html.join('');
-    el.querySelectorAll('.move-row').forEach((row) => {
-      row.addEventListener('click', () => {
-        demoCursor = Math.min(parseInt(row.dataset.no, 10), demoEdge());
-        applyDemoMode();
-        updateDemoUI();
-        const curEl = el.querySelector('.move-row.current');
-        if (curEl) curEl.scrollIntoView({ block: 'nearest' });
-      });
-    });
-    const curEl = el.querySelector('.move-row.current');
-    if (curEl) curEl.scrollIntoView({ block: 'nearest' });
-  }
-
-  function updateDemoUI() {
-    const seat = demoInfo ? demoInfo.demonstratorSeat : null;
-    const name = demoInfo ? demoInfo.demonstratorName : null;
-    const amDemo = !!mySeat && seat === mySeat;
-    let status;
-    if (freeMode) status = '✋ 自由摆棋中（本地草稿，不入谱不同步）';
-    else if (seat && amDemo) status = '🎤 正在由你演示（对方实时观看）';
-    else if (seat) status = '🎤 正在由 ' + (name || '对方') + ' 演示';
-    else status = '💤 演示暂停——点「我来演示」开始行棋';
-    $('demoStatus').textContent = status;
-    $('btnDemoClaim').style.display = (mySeat && !seat && !freeMode) ? 'inline-block' : 'none';
-    [ $('btnDemoTransfer'), $('btnDemoUndo'), $('btnDemoClear') ]
-      .forEach((b) => { b.style.display = (amDemo && !freeMode) ? 'inline-block' : 'none'; });
-    $('btnFreeMode').style.display = mySeat ? 'inline-block' : 'none';
-    $('btnFreeMode').textContent = freeMode ? '🧑‍🔧 退出自由摆棋' : '✋ 自由摆棋';
-    $('btnDemoLatest').style.display = (demoCursor < demoEdge()) ? 'inline-block' : 'none';
-    $('btnDemoRematch').style.display = isPlayer ? 'inline-block' : 'none';
-    const turn = demoInfo ? (demoInfo.turn || 'b') : 'b';
-    const turnHint = $('turnHint');
-    if (turnHint) turnHint.textContent = turn === 'b' ? '当前轮到 先手▲' : '当前轮到 後手△';
-    const topBar = $('topPlayerBar'), bottomBar = $('bottomPlayerBar');
-    if (topBar) topBar.classList.toggle('active', turn === 'w');
-    if (bottomBar) bottomBar.classList.toggle('active', turn === 'b');
-    if (fb) {
-      fb.setMode(freeMode ? 'free' : 'demo-rules');
-      // 感想战不限制驹台：演示时两方持驹都要能选（手番合法性由服务端校验），
-      // 清掉对战模式留下的手番限制
-      fb.setTurn(null);
-      // 合法走法表：最新一手用 demo_state 下发的；历史手按需向服务端请求（demo_legal）
-      const atEdge = demoCursor === demoEdge();
-      if (freeMode) fb.setLegalTargets({});
-      else if (atEdge) fb.setLegalTargets(demoInfo.legalTargetsBySq || {});
-      else requestDemoLegal(demoCursor);
-      fb.setInteractive(amDemo && (freeMode || atEdge));
-    }
-  }
-
-  // 历史手合法走法按需缓存（PLAN §H）
-  let demoLegalCache = {};
-  function requestDemoLegal(index) {
-    const key = index + ':' + demoInfo.moves.length + ':' + demoInfo.baseIndex;
-    if (demoLegalCache[key]) { fb.setLegalTargets(demoLegalCache[key]); return; }
-    api.send({ type: 'demo_legal', data: { index } });
-  }
-  api.on('demo_legal', (d) => {
-    demoLegalCache[d.index] = d.legalTargetsBySq;
-    if (fb && reviewActive && demoCursor === d.index) {
-      fb.setLegalTargets(d.legalTargetsBySq);
-      fb.render();
-    }
-  });
-
-  $('btnDemoClaim').addEventListener('click', () => api.send({ type: 'demo_claim' }));
-  $('btnDemoTransfer').addEventListener('click', () => api.send({ type: 'demo_transfer' }));
-  $('btnDemoUndo').addEventListener('click', () => api.send({ type: 'demo_undo' }));
-  $('btnDemoClear').addEventListener('click', () => { if (confirm('清空全部推演手，回到本谱终局局面？')) api.send({ type: 'demo_reset' }); });
-  $('btnDemoLatest').addEventListener('click', () => { demoCursor = demoEdge(); applyDemoMode(); updateDemoUI(); });
-  $('btnDemoRematch').addEventListener('click', () => { api.send({ type: 'rematch' }); toast('已请求再来一局，等待对方同意…'); });
-  $('btnFreeMode').addEventListener('click', () => {
-    if (!fb) return;
-    freeMode = !freeMode;
-    if (freeMode) {
-      demoCursor = Math.min(demoCursor, demoEdge());
-      applyDemoMode();
-      toast('自由摆棋开启：任意移动/吃子/双击升变（本地草稿，不入谱不同步）');
-    } else {
-      demoCursor = demoEdge();
-      applyDemoMode();
-      toast('已退出自由摆棋，回到推演谱最新一手');
-    }
-    updateDemoUI();
-  });
-
-  api.on('demo_state', (d) => {
-    if (!reviewActive) {
-      if (state && state.status === 'FINISHED' && state.result) enterDemo(state);
-      return;
-    }
-    // 光标自动跟随：之前在最新一手 → 跟进新一手；浏览历史则停留（可点「回到最新」）
-    const prevEdge = demoEdge();
-    demoInfo = d;
-    if (demoCursor >= prevEdge || demoCursor > demoEdge()) demoCursor = demoEdge();
-    applyDemoMode();
-    renderDemoMoveList();
-    updateDemoUI();
+  // ---- 依赖注入（与 play-clock.js 同一模式）----
+  // 注入的是模块内读不到的 core 闭包状态与三个既有函数：
+  //   getState / getFb / getSeat / getViewpoint   → 状态读取
+  //   ensureBoard / renderPlayerBars / clearSelection → core 既有函数
+  // 之后 core 只在「进入 / 退出 / 重绘」三个时机反向调用它（见 render() 与 api.on('state')）。
+  window.PlayDemo.init({
+    getState: function () { return state; },
+    getFb: function () { return fb; },
+    getSeat: function () { return { mySeat: mySeat, isPlayer: isPlayer }; },
+    getViewpoint: function () { return currentViewpoint(); },
+    ensureBoard: ensureBoard,
+    renderPlayerBars: renderPlayerBars,
+    clearSelection: function () { selected = null; targets = []; },
   });
 
   // ==================================================================
@@ -763,96 +583,10 @@
   });
 
   // ==================================================================
-  // 聊天
+  // 聊天（§R2 分区 / §R3 观众进出提示）
   // ==================================================================
-  const chatBox = $('chatBox');
-  const chatInput = $('chatInput');
-  // §R2 kibitz 分区：保存全量消息，切 tab 时按当前筛选整体重渲染（否则切不回来）
-  let chatLog = [];
-  let chatTab = 'all'; // all | players | spectators
-
-  /** 当前 tab 是否应显示该条 */
-  function chatMatch(msg) {
-    if (chatTab === 'all') return true;
-    if (msg.sys) return true; // 系统消息在任何分区都可见
-    if (chatTab === 'players') return msg.role === 'player-b' || msg.role === 'player-w';
-    if (chatTab === 'spectators') return msg.role === 'spectator';
-    return true;
-  }
-
-  function appendChatRow(msg) {
-    if (!chatBox) return;
-    const row = document.createElement('div');
-    // §R2：玩家金色 / 观战者冷蓝 / 系统暗色斜体（配色见 style.css）
-    const kind = msg.sys ? 'sys' : (msg.role === 'spectator' ? 'spectator' : 'player');
-    row.className = `chat-msg ${kind}`;
-    const who = document.createElement('span');
-    who.className = 'who';
-    who.textContent = msg.name || '';
-    const text = document.createElement('span');
-    text.className = 'text';
-    text.textContent = msg.text;
-    row.appendChild(who);
-    row.appendChild(text);
-    chatBox.appendChild(row);
-  }
-
-  function renderChat() {
-    if (!chatBox) return;
-    chatBox.innerHTML = '';
-    for (const m of chatLog) if (chatMatch(m)) appendChatRow(m);
-    chatBox.scrollTop = chatBox.scrollHeight;
-  }
-
-  function appendChat(msg) {
-    chatLog.push(msg);
-    while (chatLog.length > 100) chatLog.shift();
-    if (!chatMatch(msg)) return; // 当前分区不显示，但仍记入全量，切回来还在
-    appendChatRow(msg);
-    if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
-  }
-
-  function sendChat() {
-    const text = chatInput.value.trim();
-    if (!text) return;
-    api.send({ type: 'chat', data: { text } });
-    chatInput.value = '';
-  }
-  if ($('btnChatSend')) $('btnChatSend').addEventListener('click', sendChat);
-  if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
-
-  // §R2 分区切换
-  if ($('chatTabs')) {
-    $('chatTabs').addEventListener('click', (e) => {
-      const btn = e.target.closest('.chat-tab');
-      if (!btn) return;
-      chatTab = btn.getAttribute('data-tab') || 'all';
-      $('chatTabs').querySelectorAll('.chat-tab').forEach((b) => {
-        b.classList.toggle('active', b === btn);
-      });
-      renderChat();
-    });
-  }
-
-  api.on('chat', (data) => {
-    if (!data) return;
-    // §R3：观众进出提示可关闭（人多时避免刷屏）；其余系统消息不受影响
-    if (data.kind && data.kind.indexOf('spectate-') === 0
-      && window.Settings && window.Settings.get('spectatorNotices') === false) return;
-    const mark = data.role === 'spectator' ? '👁 ' : '';
-    appendChat({
-      name: mark + (data.name || ''),
-      text: data.text,
-      role: data.role || 'player',
-      sys: !!data.sys,
-      kind: data.kind || null,
-    });
-  });
-  // 观战者进入时系统提示（rebind=选手掉线重进回位，不算观战）
-  api.on('spectating', (data) => {
-    if (data && data.rebind) return;
-    appendChat({ name: '系统', text: '你已进入观战，欢迎交流！', sys: true });
-  });
+  // 整块已抽到 **play-chat.js**（PLAN §M5）：聊天记录、分区 tab、观众列表及其 WS 事件
+  // 都在那边，由 `PlayChat.init()` 统一注册。此处不再保留副本。
 
   // 仅当显式带 spectate=1 参数时才进入观战（来自观战列表/随机观战入口）
   // 玩家（建房/加入/匹配/重连）跳转不带 spectate，走 request_state，由服务端按连接身份返回对应状态

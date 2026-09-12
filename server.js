@@ -19,6 +19,7 @@ const tournaments = require('./src/tournaments');
 const netInfo = require('./src/net');
 const audit = require('./src/audit');
 const rateLimit = require('./src/ratelimit');
+const log = require('./src/logger');
 const { Protocol } = require('./src/protocol');
 
 const VERSION = require('./package.json').version;
@@ -33,6 +34,17 @@ app.use(express.json());
 // 未配置 TRUST_PROXY 时不信任任何代理头——否则伪造 X-Forwarded-For 即可伪装 IP。
 app.set('trust proxy', netInfo.trustProxySetting());
 app.use(netInfo.attachClientInfo);
+// 请求标识（PLAN §P4）：给每个 HTTP 请求分配短 id，写入响应头 `X-Request-Id`，
+// 并挂成 `req.log`（自动带 requestId 的子 logger）。
+// 价值：线上报错时用户只要报这个 id，就能在日志里直接定位到那一次请求，
+// 不必再靠"大概几点几分"去猜——这是 §P4「错误上报」要的前置能力。
+app.use((req, res, next) => {
+  const requestId = Math.random().toString(36).slice(2, 10);
+  req.id = requestId;
+  req.log = log.child({ requestId });
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
 // 速率限制（PLAN §Q7）：/api 全局兜底（宽松，默认 600 次/分钟/IP），
 // 登录与重查询在各自路由上再叠加更严的档位。
 // ⚠️ 限流键为 clientIp（遵守 TRUST_PROXY）——反代部署若未配置 TRUST_PROXY，
@@ -150,9 +162,9 @@ function adminWrite(handler) {
     try {
       r = handler(req, req.body || {}) || { ok: false, error: '无结果' };
     } catch (err) {
-      console.error('[admin] 写操作异常:', err);
+      req.log.error('admin', '写操作异常', { err });
       // 带上真实原因：吞成笼统的"服务器内部错误"会让排障无从下手（2026-09-05 备注/封禁报障教训）
-      r = { ok: false, error: `服务器内部错误: ${err.message}`, action: 'unknown' };
+      r = { ok: false, error: `服务器内部错误: ${err.message}`, action: 'unknown', requestId: req.id };
     }
     const { action, audit: detail, ...data } = r;
     audit.adminAction({
@@ -554,26 +566,27 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`TDShogi server v${VERSION} running at http://localhost:${PORT}`);
-  console.log(`WebSocket listening on ws://localhost:${PORT}/ws`);
+  // 启动横幅（PLAN §P4）：走 logger 后与其余日志同一格式（带时间戳与级别，LOG_FORMAT=json 时为 JSON 行）
+  log.info('server', `TDShogi server v${VERSION} running at http://localhost:${PORT}`);
+  log.info('server', `WebSocket listening on ws://localhost:${PORT}/ws`);
   // 注：棋谱摘要列回填已在 storage 初始化时完成（PLAN §Q7-2，见 src/storage.js initDb）
   // 数据库每日自动备份（PLAN §Q7-4）：全部资产在一个 SQLite 里，没有备份等于没保险。
   // 启动时补一次（今天没备过才备）+ 每 6 小时检查；失败只记日志，绝不影响对局服务。
   try {
     require('./src/backup').startAutoBackup();
   } catch (err) {
-    console.error('[backup] 自动备份启动失败:', err.message);
+    log.error('backup', '自动备份启动失败', { err });
   }
   // 清理过期的登录/审计日志（保留期与容量上限见 src/audit.js）
   try {
     const pruned = audit.prune();
     if (pruned.expired || pruned.overflow) {
-      console.log(`[audit] 清理日志：过期 ${pruned.expired} 条，超出容量 ${pruned.overflow} 条，保留 ${pruned.kept} 条`);
+      log.info('audit', `清理日志：过期 ${pruned.expired} 条，超出容量 ${pruned.overflow} 条，保留 ${pruned.kept} 条`);
     }
   } catch (err) {
-    console.error('[audit] 日志清理失败:', err.message);
+    log.error('audit', '日志清理失败', { err });
   }
   // 恢复上次运行未结束的对局（快照重启恢复）
   const restored = protocol.rooms.restoreSnapshots();
-  if (restored > 0) console.log(`[rooms] 已恢复 ${restored} 场未完成对局`);
+  if (restored > 0) log.info('rooms', `已恢复 ${restored} 场未完成对局`);
 });

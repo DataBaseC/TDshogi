@@ -19,6 +19,7 @@
 const crypto = require('crypto');
 const { readJson, writeJson } = require('./storage');
 const auth = require('./auth');
+const log = require('./logger');
 
 const ACCOUNTS_FILE = 'accounts.json';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'tdshogi_session_secret_change_me';
@@ -250,7 +251,7 @@ function migrateGuestData(guestId, accountId) {
     // 4. 在缓存中使 rating 缓存失效（下轮自动重读）
     try { require('./ratings').refreshCache(); } catch (_) {}
   } catch (err) {
-    console.error('[accounts] 游客数据迁移失败:', err.message);
+    log.error('accounts', '游客数据迁移失败', { err });
   }
 }
 

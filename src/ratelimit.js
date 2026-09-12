@@ -17,6 +17,8 @@
  */
 'use strict';
 
+const log = require('./logger');
+
 const DISABLED = process.env.RATE_LIMIT_DISABLED === '1';
 
 class RateLimiter {
@@ -119,7 +121,7 @@ const pruneTimer = setInterval(() => {
   let n = 0;
   for (const l of ALL) n += l.prune();
   if (n > 0 && process.env.RATE_LIMIT_DEBUG === '1') {
-    console.log(`[ratelimit] 清理 ${n} 个过期桶`);
+    log.info('ratelimit', `清理 ${n} 个过期桶`);
   }
 }, 60 * 1000);
 if (pruneTimer.unref) pruneTimer.unref();

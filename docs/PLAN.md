@@ -27,19 +27,19 @@
 
 | 优先级 | 编号 | 主题 | 状态 | 依赖 |
 |---|---|---|---|---|
-| **P0** | **§P1** | **单元测试基建（node --test + `npm test`）** | **🟨 34 项全绿（2026-09-10 新增 game.js 规则引擎 14 项）；规则边界 4 项待确认** | — |
+| **P0** | **§P1** | **单元测试基建（node --test + `npm test`）** | **✅ 73 项全绿（2026-09-11；含入玉宣言 7 项）** | — |
 | P1 | §P2 | eslint（`no-undef` 等） | ✅ 已实施（2026-09-10），首跑抓出 18 个 error | — |
 | P1 | §P3 | CI（GitHub Actions：lint + check + test + e2e 冒烟） | ✅ 已实施（2026-09-10） | §P1 |
-| P2 | §P4 | 统一 logger 与错误上报 | ⬜ 待实施 | — |
-| P2 | §P5 | WS 消息契约（类型常量 + 入参校验） | ⬜ 待实施 | — |
+| P2 | §P4 | 统一 logger 与错误上报 | ✅ 已实施（2026-09-12），含 `X-Request-Id` | — |
+| P2 | §P5 | WS 消息契约（类型常量 + 入参校验） | ✅ 已实施（2026-09-12） | — |
 | P1 | §J2 | 王手红格高亮丢失（play 页） | ✅ 已修复（`setCheck`，2026-09-08） | — |
 | **P1** | **§R1** | **观战视角切换（先手/后手）** | **✅ 已实施（2026-09-10），待实测** | — |
-| P2 | §R4 | 观战列表显示观众数 / 热门对局 | ⬜ 待实施 | — |
+| P2 | §R4 | 观战列表显示观众数 / 热门对局 | ✅ 已实施（2026-09-10），待实测 | — |
 | P2 | §R2 | kibitz 观战评论强化 | ✅ 已实施（2026-09-11），待实测 | — |
-| P1 | §J4 | demo_state 下发权威 hands，兜住前端模型漂移 | ⬜ 待定（用户暂缓） | — |
+| P1 | §J4 | demo_state 下发权威 hands，兜住前端模型漂移 | ✅ 已实施（2026-09-12），待实测 | — |
 | **P1** | **§M6** | **复盘浏览模式：FreeBoard 增 `review` 模式，统一所有看谱场景** | **✅ 已实施（2026-09-08），待用户实测** | 建议与 M5 一起做 |
-| **P1** | **§S** | **前端体验优化（设置面板 / 手机端布局 / 触屏误触 / 棋盘坐标 / 图集切换）** | **🟨 设计完成（`docs/FRONTEND-REFACTOR.md`），待实施** | 用户痛点，建议先于 §M5 |
-| P2 | §M5 | 前端拆分（play / admin 按职责内聚） | 🟨 设计完成（同文档），待实施 | 与 §S 分两轮做 |
+| **P1** | **§S** | **前端体验优化（设置面板 / 手机端布局 / 触屏误触 / 棋盘坐标 / 图集切换）** | **✅ S1–S5 已实施（2026-09-10），待实机确认** | 用户痛点 |
+| P2 | §M5 | 前端拆分（play / admin 按职责内聚） | 🟨 **`play.js` 已拆完**（2026-09-12，906→629 行；新增 `play-chat.js` / `play-demo.js`）；余 `review.js` / `admin.js` | 待实机验证 |
 | P3 | §M1 | `rooms.js` 1820 行 mixin 拆分 | ⬜ 待实施 | 功能稳定后单独窗口 |
 | P3 | §M2 | `server.js` 路由模块化 + 统一 admin 中间件 + eslint no-undef | ⬜ 待实施 | §C 的既有前提 |
 | P3 | §M4 | 存储双写统一（会话单一来源 = kv） | ⬜ 待实施 | — |
@@ -47,24 +47,30 @@
 | — | §Q1-Q7 | 商业化 / 产品候选池（见 §3） | ⏸ 待你排期 | — |
 | P4 | §D | 长期 Backlog | ⏸ | — |
 
-**推荐执行顺序**：~~§P1 单测~~ ✅ → ~~§P2 eslint~~ ✅ → ~~§P3 CI~~ ✅ →
-**§S 前端体验（1 轮）→ §M5 拆分（1 轮）→ §M2 → §M1 → §M4 → §C 剩余项**。
+**推荐执行顺序**：~~§P1 单测~~ ✅ → ~~§P2 eslint~~ ✅ → ~~§P3 CI~~ ✅ → ~~§S 前端体验~~ ✅ →
+**§P4 logger → §P5 WS 契约 → §J4 权威 hands → §M5 拆分 → §M2 → §M1 → §M4 → §C 剩余项**。
+
+> （2026-09-12 调整：§S 已全落地，故顺位提前到 §P4 / §P5 / §J4 三个**增量小改**——
+> 它们不动业务逻辑，却能直接提升线上排障能力与数据可信度，适合实机测试期间并行推进；
+> 大拆分（M5/M2/M1）仍排在实机稳定之后。）
 理由：**没有测试兜底的大拆分风险太高**——M1/M6/M5 都是结构性改动，必须有回归网；
 §P1 是纯增量（只加测试不改业务），半天可落地，且能立刻拦住 J3 那类"映射表写错一个字"的缺陷。
 
 ---
 
-## 2. 进行中 / 待验证
+## 2. 已实施待实测
 
-### J2 王手（check）红格高亮疑似丢失 — ⬜ 待核实
+### J2 王手（check）红格高亮丢失 — ✅ 已修复（2026-09-08）
 
-- `play.js:113` 调 `fb.setModel({board, hands}, state.lastMove, { check: [...] })`，
-  但 `FreeBoard.setModel(modelLike, lastMove)` 只收两个参数 → 第三个被丢弃；
+- **根因**：`play.js` 把 `{ check: [...] }` 当**第三个参数**传给 `setModel`，而
+  `FreeBoard.setModel(modelLike, lastMove)` 只收两个参数 → 该参数被**静默丢弃**；
   `FreeBoard.render()` 也不再给 `board.render` 传 `check`（旧的 `reapplySelection()` 会传）。
-- 处理：起服走一局王手局面确认；若确认丢失，给 FreeBoard 加 `setCheck(sqList)` 并在 `render()` 透传。
-  **复盘页同样没有 check 与上一步高亮**——并入 §M6 一起解决。
+- **修法**：`freeboard.js` 新增 `setCheck(sqList)` 并让 `render()` 透传给棋盘；
+  `play.js` 改为显式调用 `fb.setCheck(state.check ? [findKingSq(state, state.turn)] : [])`
+  （王手格 = 当前手番方的玉所在格）。
+- 复盘页的上一步 / 王手高亮已随 §M6（FreeBoard 第四模式 `review`）统一解决。
 
-### J4 加固建议：demo_state 下发权威 hands — ⬜ 待定
+### J4 demo_state 下发权威局面（board + hands）— ✅ 已实施（2026-09-12）
 
 - **背景**：J3 之所以能长期潜伏，是因为**感想战推演的持驹完全由前端本地重放得出**——
   服务端 `_broadcastDemo` 只发 `moves/kif/legalTargets...`，**不含 `hands`**，
@@ -72,6 +78,29 @@
 - **方案**：`_broadcastDemo` 与 `demoEnter` 载荷追加 `hands`（服务端 `_demoGame` 取 `game.hands()`，零额外计算）；
   前端 `applyDemoMode()` 以服务端 hands 覆盖本地重放结果（moves 仍走本地重放，以支持历史手跳转）。
 - **收益**：前端模型漂移被服务端权威兜住，同类 bug 不再靠肉眼发现。
+
+#### 实施记录（2026-09-12）
+
+实际下发的是 **`board` + `hands`**（不只有 hands）：`game.state()` 本就同时给出两者，零额外计算；
+而**盘面同样会漂移**（J3 的显性症状正是"吃错子"），只兜持驹等于漏一半。
+
+**三处出口必须同口径**（都取同一份 `game.state()`；漏一处就会"时灵时不灵"，很难查）：
+
+| 出口 | 覆盖场景 |
+|---|---|
+| `_gameState()` 的 `st.demo` | 重进 / 初载已结束房间（`state` 推送） |
+| `_broadcastDemo()` 的 `demo_state` | 推演走子、undo、交接演示权等实时变更 |
+| `demoEnter()` 的 `demo_init` | 显式进入感想战页 |
+
+**前端只在「最新一手」覆盖**（`play.js` 的 `applyDemoMode`）：服务端只维护**推演终局**这一个局面，
+历史手仍需本地重放（这是"任意手跳转"的必要代价），而最新一手恰是大家在看的、
+也最容易暴露漂移的地方。载荷**深拷贝**后再交给组件，避免自由摆棋等交互原地改动服务端数据；
+`demoInfo.board/hands` 缺失时静默跳过（兼容旧载荷），不会把棋盘渲染成空。
+
+**回归护栏**：`tests/freeboard.test.js` 新增「§J4 漂移回归」——用一手真实序列
+（`7g7f` → `3c3d` → `8h2b+` → `3a2b` → `B*5e`，覆盖普通走子 / 吃子升变 / 反吃成駒 / 打子）
+分别跑**服务端 `game.js`** 与**前端 `FreeBoard` 重放**，**盘面逐格 + 持驹逐种**比对必须完全相同，
+并对 J3 类问题形成第二道防线。
 
 ---
 
@@ -132,10 +161,25 @@ FreeBoard 模式（四选一）
 
 ### M5 前端拆分（按页面内聚，不做框架迁移）
 
+**进度（2026-09-12）：`play.js` 拆分完毕**（906 → **629 行**）。
+
+| 模块 | 行数 | 内容 | 耦合处理 |
+|---|---|---|---|
+| `play-clock.js` | 153 | 棋钟（本时 / 读秒 / tick） | 注入 `getState` / `getViewpoint`；导出 `advance(dtMs)` 供单测 |
+| `play-chat.js` | 151 | 聊天分区（§R2）+ 观众列表（§R） | **零耦合**：状态自带，`PlayChat.init()` 自注册 DOM 与 WS 事件（幂等） |
+| `play-demo.js` | 288 | 感想战（推演谱 / 光标浏览 / 演示权 / 自由摆棋 / 历史手合法走法） | **双向依赖**用回调注入：core 提供 `getState`/`getFb`/`getSeat`/`getViewpoint`/`ensureBoard`/`renderPlayerBars`/`clearSelection`；模块对外提供 `enter`/`exit`/`isActive`/`applyMode`/`updateUI`/`sendMove`/`setPendingPromo`/`takePendingPromo` |
+
+`play.js` 只保留 core：状态同步、走子交互、升变、玩家栏、音效、WS 事件路由。
+**额外收益**：此前被 eslint 抓出的隐式全局 `window.freeMode` 随之进入模块内部，跨脚本污染隐患从根上消失。
+
+⚠️ **行为一字未改**（纯搬运 + 依赖注入），但前端没有自动化测试，**必须实机验证**——
+重点：感想战全流程（进入 / 演示 / 待った / 清空 / 自由摆棋 / 历史手跳转）、聊天三个分区、观众列表。
+余下 `review.js` / `admin.js` 的主体拆分**未开始**。
+
 | 文件 | 现状 | 拆分 |
 |---|---|---|
 | `review.js` | 约 22 KB（本轮新增广场/管理面板后继续膨胀） | 抽出「复盘器内核」：`reviewer/{board（FreeBoard review 模式）,moves,annotations,admin}`，供 gallery → review 复用 |
-| `play.js` | 34 KB（对战+感想战+聊天+棋钟混编） | `play/{core,demo,chat,clock}.js` |
+| `play.js` | ✅ **已拆完**（2026-09-12，906 → 629 行 / 34 KB → 26 KB） | `play-clock.js` + `play-chat.js` + `play-demo.js`；`play.js` 只留 core |
 | `admin.js` | 约 20 KB（4 tab） | `admin/{records,users,tournaments,audit}.js` |
 
 建议与 M6 同期做：先统一组件（M6），再按模块拆文件（M5），顺序反了会拆两次。
@@ -161,6 +205,31 @@ FreeBoard 模式（四选一）
 
 **验收**：拆分后跑全量 e2e（用户执行）；期间**禁止**顺手改行为，纯搬运。
 
+#### 实施记录（2026-09-12，分批进行中）
+
+**装配方式（与计划的一处调整）**：**保留 `src/rooms.js` 作为装配入口**，不改名为 `rooms/index.js`。
+原因：`require('./rooms')` 的解析顺序是「先 `rooms.js`，再 `rooms/index.js`」，保留原文件意味着
+`protocol.js` 一行都不用改；mixin 文件放 `src/rooms/` 目录，两者不冲突。
+每个 mixin 形如 `module.exports = function applyX(X) { Object.assign(X.prototype, {…}); }`，
+**`this.*` 调用链完全不变**，对调用方透明。
+
+**机器验证（每批必做）**：`scripts/_dump-prototype.js` 打印 `RoomManager.prototype` 的方法名，
+与拆分前基线 `.tmp-proto-before.txt` 做 `Compare-Object`——**少一个就是漏搬，多一个就是凭空造**。
+全部拆完后删除这两份临时文件。
+
+| 批次 | 模块 | 行数 | 状态 |
+|---|---|---|---|
+| 1 | `rooms/config.js`（时间控制 / 超时常量 / 打子符号 / `initClockState`） | 76 | ✅ |
+| 2 | `rooms/demo.js`（感想战 9 个方法） | 263 | ✅ |
+| 3 | `rooms/snapshot.js`（快照 + 重启恢复 7 个方法） | 206 | ✅ |
+| 4 | `rooms/clock.js`（棋钟 4 个方法） | 92 | ✅ |
+| 5+ | 待搬：`lifecycle` / `binding` / `state` / `cleanup` | — | ⬜ |
+
+**进度**：`src/rooms.js` **2056 → 1565 行**；`RoomManager.prototype` 方法数 **76 → 76（一致）**；
+每批后 `npm test`（106 项全绿）与 `npm run lint`（0 error，warning 数与拆分前相同）。
+（顺带修正：`TICK_MS` 随棋钟搬走后主文件不再引用，已从导入中移除——**是 lint 抓出来的**，
+说明这套检查确实在干活。）
+
 ### M2 `server.js` 路由模块化
 
 - `src/http/` 目录：`routes/{home,lobby,records,accounts,admin,tournaments}.js` + `middleware/{adminAuth,error,requestCtx}.js`
@@ -176,7 +245,7 @@ FreeBoard 模式（四选一）
 > `package.json` 只有 `start/dev`。所有正确性依赖"起服 + 手工点"，
 > 因此出现了「漏 require 导致 4 条路由 500」「成驹还原表写错一个字潜伏到用户吃子才发现」这类问题。
 
-### P1 单元测试基建 — ⬜ 待实施（最高优先级）
+### P1 单元测试基建 — ✅ 已实施（2026-09-08 起，现 **73 项**全绿）
 
 - **工具**：Node 22 内置 `node --test`，**零新依赖**；`package.json` 加 `"test": "node --test tests/*.test.js"`
   （注意：Windows 下 `node --test tests/` 会把目录当模块解析失败，必须用 `*.test.js` glob）
@@ -204,25 +273,79 @@ FreeBoard 模式（四选一）
 - **浏览器模块如何在 Node 中加载**：两个文件都是 IIFE 挂 `window`，
   测试里先 `globalThis.window = {}` 再 `require`（freeboard 用到 `window.renderHands`，给个空函数即可）
 
-### P2 eslint — ⬜ 待实施（并入 §M2）
+### P2 eslint — ✅ 已实施（2026-09-10）
 
 - `eslint.config.js`（flat config）：`no-undef`、`no-unused-vars`，node + browser 双环境
 - 先只开 error 级，逐步收紧；**优先拦 `no-undef`**（今天 `server.js` 漏 `require('./src/auth')` 的那一类）
 
-### P3 CI — ⬜ 待实施
+### P3 CI — ✅ 已实施（2026-09-10）
 
 - `.github/workflows/ci.yml`：Node 22 → `npm ci --omit=dev` → `npm test` → 全量 `node --check` → 起服跑 e2e
 - 当前仓库无 remote，先写好配置，推远端时自动生效
 
-### P4 统一 logger 与错误上报 — ⬜ 待实施
+### P4 统一 logger 与错误上报 — ✅ 已实施（2026-09-12）
 
-- `src/logger.js`：级别（`LOG_LEVEL` env）、结构化输出（ts/level/ctx/msg）、roomId / playerId / requestId 上下文
-- 分批替换散落的 `console.error`；线上异常有据可查，不必等你回传日志
+**交付**：新增 `src/logger.js`（零依赖）；服务端 **21 处 `console.*` 全部迁移**（`server.js` 7 / `storage.js` 5 /
+`rooms.js` 4 / `backup.js` 2 / `protocol.js`、`ratelimit.js`、`accounts.js` 各 1），
+`server.js` + `src/` 下 `console.` 已清零。
 
-### P5 WS 消息契约 — ⬜ 待实施
+| 能力 | 说明 |
+|---|---|
+| 级别 | `debug < info < warn < error`；`LOG_LEVEL` env 或 `log.setLevel()` 运行时调整（默认 `info`） |
+| 格式 | 默认 **text**（`HH:mm:ss.SSS INFO  [scope] msg k=v`，观感贴近迁移前）；`LOG_FORMAT=json` 时每行一个 JSON（`ts`/`level`/`ctx`/`msg` + 自定义字段） |
+| 分流 | `debug`/`info` → stdout，`warn`/`error` → stderr（`npm start > srv.log 2> srv.err` 天然分离告警） |
+| 上下文 | `log.child({ roomId })` 派生；HTTP 层已挂 `req.log`（自动带 **requestId**） |
+| Error | `{ err }` 传 Error 时结构化：JSON 带 `name`/`message`/`stack`（截断 6 行）；text 模式堆栈另起缩进行 |
+| 可测性 | `setOutput(fn)` 注入输出，单测无需劫持 console（`tests/logger.test.js` **11 项**） |
+
+**requestId**（本次新增的排障能力）：`server.js` 给每个 HTTP 请求分配 8 位短 id，写入响应头 `X-Request-Id`；
+管理写接口 500 时响应体也带 `requestId`——**用户报障时只要报这个 id，就能在日志里定位到那次请求**，
+不必再靠"大概几点几分"去猜。
+
+**前端对等物：`window.debugLog`**（2026-09-12 补，挂在 `public/js/util.js`——该文件 9 个页面全部已加载，
+**零 HTML 改动**）。前端此前只有 `console.error`，没有任何可开关的调试输出，排障只能临时插
+`console.log` 再删。现在：
+
+| 项 | 说明 |
+|---|---|
+| 开关 | `?debug=1`（甩个链接给用户最快）／`localStorage.tdshogi_debug='1'`（`debugLog.enable()` 会写）／`window.TDSHOGI_DEBUG=true`（自动化用）；**刻意不进设置面板**——那是"用户偏好"，这是"排障开关" |
+| 零开销 | 关闭时函数第一行即 return，不构造字符串、不入缓冲 |
+| 格式 | `HH:mm:ss.SSS DEBUG [scope] args…`——**与服务端 text 日志同格式**，两端可对照着看；参数**原样透传**给 console（不 stringify，保留展开对象的能力） |
+| 留痕 | 环形缓冲最近 200 条，`debugLog.dump()` 整段取出——用户报障时可直接复制给开发者，不必截图 |
+| 容错 | 隐私模式下 `localStorage` 抛错时退化为关闭，**不拖垮页面** |
+
+服务端对应的便捷入口是 `require('./logger').debugLog(scope, msg, fields)`
+（与 `log.debug` 同源同行为，单独命名只为在代码里一眼分辨"排障打点"与"常规日志"）。
+
+**约定**：scope（模块名）是第一个参数，用于替代旧代码手写的 `[模块]` 前缀——迁移时**不要再把前缀写进消息**。
+
+### P5 WS 消息契约 — ✅ 已实施（2026-09-12）
 
 - `src/messages.js`：消息类型常量 + 入参校验函数；`_routeInner` 改用常量 switch
 - 非法/未知消息直接回 `error` 而不依赖 try-catch 兜底，减少"消息字段写错静默失败"
+
+**实施记录（2026-09-12）**
+
+交付 `src/messages.js`：客户端消息类型常量表 `C2S`（**26 种**，与 `protocol.js` 的 switch 分支一一对应）
++ 声明式参数校验 `validate(type, data)`。`protocol._route()` 在进入业务分支**之前**先校验，
+缺参数当场回明确错误，不再让 `undefined` 流进 rooms 层、最后被报成一句模糊的「走子失败」。
+
+| 设计点 | 说明 |
+|---|---|
+| 校验粒度 | **只校验「必填且类型明确」的参数**——`move.usi`／`chat.text`／`rename.name`／`admin_login.password`／`join_room.code`／`join_tournament.id`／`join_tournament_match.roomId`／`demo_move.usi`；可选参数一律交给业务层（校验过严比不校验更糟） |
+| 错误文案 | 形如 `move: 缺少参数 data.usi（USI 走法，如 7g7f）`——**带类型名与字段名**，前端与日志可直接定位 |
+| 未知类型 | 由 `validate` 统一拦截（原先靠 switch 的 `default`），行为不变但收敛为单一出口 |
+| 防漂移 | `tests/messages.test.js` 解析 `protocol.js` 的 `case 'x':` 列表，与 `C2S_TYPES` **双向**比对：漏登记（会误拒合法请求）与漏实现（会落 default）都被拦下 |
+
+**与原始计划的差异（取舍）**：原计划写「`_routeInner` 改用常量 switch」，实际**保留字符串 `case`**。
+常量 switch 的唯一收益是"避免拼写错误"，而**双向一致性测试已能抓到同类问题且更强**；
+代价却是 26 个 `case` 逐个改写 = 26 次串行编辑（同文件不能并行编辑）+ 大 diff 换零收益。
+留待 §M2 重构路由时顺手迁移更划算。
+
+**⚠️ 本轮真实踩坑**：初版把 `demo_enter` 的 `roomId` 设成了必填——但前端与 `scripts/e2e-freeboard.js`
+都用 `send('demo_enter', {})`（roomId 由服务端按连接身份定位）。若照此上线，**感想战直接进不去、e2e 当场失败**。
+现已移除该规则并加回归断言。**教训：必填校验必须以「调用方实际怎么发」为准，逐个核对全部调用点
+（含 `scripts/` 的 `send('x', …)` 风格），不能凭服务端函数签名臆断。**
 
 ## §Q 商业化 / 产品候选池（2026-09-07 新增，待你排期）
 
@@ -408,7 +531,7 @@ grep 复核：8 个纯管理接口全部走 `adminOnly`、7 处条件判断改�
   + `e2e`（起服 3100 跑 `scripts/e2e-*.js`；`continue-on-error`，不卡主流程）
 - 现状：**0 error / 7 warning**（warning = `play.js` 两个 v6 遗留死函数 + 测试脚本未用变量）
 
-### §P1 单元测试扩充 — 🟨 34 项（2026-09-10）
+### §P1 单元测试扩充 — ✅ 73 项（2026-09-10 起；2026-09-11 补入玉宣言 7 项）
 
 新增 `tests/game.test.js`（14 项）：初始局面与 40 子、坐标映射、**开局合法着法 = 30**、
 走子/手番/lastMove、非法着法拒绝且不留痕、无持驹不可打子、升变区判定、升变执行、
@@ -543,7 +666,7 @@ grep 复核：8 个纯管理接口全部走 `adminOnly`、7 处条件判断改�
 **验证**：新增 7 项单测（先手 28 点可宣言 / 27 点不可 / 后手 27 点可 / 玉不在敌阵 / 敌阵内不足 10 枚 /
 被王手 / **敌阵外棋子不计分**的回归用例），`npm test` **73 项全绿**。
 
-## §S 前端体验优化（2026-09-10 用户提出，设计已完成）
+## §S 前端体验优化（2026-09-10 用户提出，S1–S5 已实施）
 
 **痛点**：用户反馈「**手机端难用**」（触屏误触、按钮太小、滚动别扭）。
 

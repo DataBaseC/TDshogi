@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { DATA_DIR, DB_PATH } = require('./storage');
+const log = require('./logger');
 
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const DEFAULT_KEEP = 14;                            // 保留份数（约两周）
@@ -167,7 +168,7 @@ function runBackup(opts = {}) {
   const pruned = prune({ dir, keep, maxBytes });
 
   if (!opts.quiet) {
-    console.log(`[backup] 已备份 ${finalName}（${fmtSize(size)}）`
+    log.info('backup', `已备份 ${finalName}（${fmtSize(size)}）`
       + (pruned.length ? `，清理 ${pruned.length} 份旧备份` : ''));
   }
   return { ok: true, file: finalName, path: finalDest, size, pruned };
@@ -189,7 +190,7 @@ function startAutoBackup({ intervalMs = 6 * 3600 * 1000, keep, maxBytes, dir } =
       if (latest && backupDay(latest) === today) return; // 今天已有备份
       runBackup({ dir, keep, maxBytes });
     } catch (err) {
-      console.error('[backup] 自动备份失败:', err.message);
+      log.error('backup', '自动备份失败', { err });
     }
   };
 

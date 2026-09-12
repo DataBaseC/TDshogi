@@ -20,6 +20,8 @@
 
 const auth = require('./auth');
 const accounts = require('./accounts');
+const log = require('./logger');
+const messages = require('./messages');
 const admin = require('./admin');
 const ratings = require('./ratings');
 const audit = require('./audit');
@@ -157,10 +159,16 @@ class Protocol {
   // 路由
   // ==================================================================
   _route(clientId, player, msg) {
+    // §P5：进业务分支前先过消息契约校验——缺必填参数 / 未知类型当场回**明确错误**，
+    // 而不是让 undefined 流进 rooms 层、最后被报成一句模糊的"走子失败"。
+    // 契约表（src/messages.js）与下方 switch 分支的一致性由 tests/messages.test.js 锁定。
+    const type = msg && msg.type;
+    const checked = messages.validate(type, msg && msg.data);
+    if (!checked.ok) return this._error(clientId, checked.error);
     try {
       this._routeInner(clientId, player, msg);
     } catch (err) {
-      console.error(`[protocol] 处理 ${msg && msg.type} 出错:`, err);
+      log.error('protocol', `处理 ${type} 出错`, { err, clientId });
       this._error(clientId, '服务器内部错误');
     }
   }

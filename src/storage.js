@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const log = require('./logger');
 
 // 运行时数据根目录（可用环境变量 DATA_DIR 覆盖，便于部署到持久目录）
 const DATA_DIR = process.env.DATA_DIR
@@ -91,9 +92,9 @@ function getDb() {
   // initDb 由 getDb() 惰性触发且只执行一次，能保证**任何入口**（含脚本/测试）都已回填。
   try {
     const filled = backfillRecordSummaries();
-    if (filled) console.log(`[storage] 已为 ${filled} 条存量棋谱回填摘要列（列表/检索不再解析整谱）`);
+    if (filled) log.info('storage', `已为 ${filled} 条存量棋谱回填摘要列（列表/检索不再解析整谱）`);
   } catch (err) {
-    console.error('[storage] 棋谱摘要列回填失败:', err.message);
+    log.error('storage', '棋谱摘要列回填失败', { err });
   }
   return db;
 }
@@ -174,7 +175,7 @@ function readJson(name, fallback = null) {
     if (!row) return fallback;
     return JSON.parse(row.value);
   } catch (err) {
-    console.error(`[storage] 读取 ${name} 失败: ${err.message}`);
+    log.error('storage', `读取 ${name} 失败`, { err, name });
     return fallback;
   }
 }
@@ -188,7 +189,7 @@ function writeJson(name, data) {
     d.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)')
       .run(String(name), JSON.stringify(data));
   } catch (err) {
-    console.error(`[storage] 写入 ${name} 失败: ${err.message}`);
+    log.error('storage', `写入 ${name} 失败`, { err, name });
   }
 }
 
@@ -204,7 +205,7 @@ function listJsonByPrefix(prefix) {
       .all(`${String(prefix).replace(/[\\%_]/g, (c) => `\\${c}`)}%`, '\\');
     return rows.map((r) => JSON.parse(r.value));
   } catch (err) {
-    console.error(`[storage] 枚举 ${prefix}* 失败: ${err.message}`);
+    log.error('storage', `枚举 ${prefix}* 失败`, { err, prefix });
     return [];
   }
 }
