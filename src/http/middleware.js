@@ -44,9 +44,13 @@ function securityHeaders(req, res, next) {
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
+    // ⚠️ Google Fonts 必须显式放行：`public/css/style.css` 用 `@import` 引了
+    // Noto Serif SC / Noto Sans SC。收紧 CSP 时漏掉这两个 host，字体会**静默回退到系统字体**
+    // —— 没有任何报错，只是全站排版悄悄变了样（本次就是这样被发现的）。
+    // `@import` 取的是 CSS，走 `style-src`；真正的字体文件在 gstatic 上，走 `font-src`。
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data: blob:",
-    "font-src 'self' data:",
+    "font-src 'self' data: https://fonts.gstatic.com",
     "connect-src 'self' ws: wss:", // WS 是对局主通道，必须放行
     "frame-ancestors 'self'",
     "base-uri 'self'",
