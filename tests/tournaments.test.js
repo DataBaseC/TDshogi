@@ -371,7 +371,8 @@ test('T3 开赛门槛：不足 2 名通过审核者不能开赛', () => {
  * 那样测试里再显式调 `startTournament` 就会撞到"状态已变更"。
  * 用远大于参赛人数的档位，既避免了自动开赛，也更贴近真实（未满员开赛是允许的）。
  */
-function mkSwiss(playerCount, over) {
+function mkSwiss(playerCount, over, idPrefix) {
+  const pre = idPrefix || 's';
   const r = T.createTournament('瑞士制测试赛', 32, { id: 'owner-s', name: '主办' }, Object.assign({
     reason: '用于验证瑞士制逐轮配对与推进的测试赛事',
     format: 'swiss',
@@ -382,7 +383,7 @@ function mkSwiss(playerCount, over) {
   const id = r.tournament.id;
   T.approveTournament(id);
   for (let i = 1; i <= playerCount; i++) {
-    const j = T.joinTournament(id, { id: 's' + i, name: '棋手' + i });
+    const j = T.joinTournament(id, { id: pre + i, name: '棋手' + i });
     assert.strictEqual(j.ok, true, j.error || '');
   }
   return id;
@@ -840,4 +841,150 @@ test('T6 管理员编辑已存档赛事：仅管理员、仅 archived、每次�
 
   assert.strictEqual(T.editArchived(id, 'size', 8, admin).ok, false, '人数档位不是可编辑字段');
   assert.strictEqual(T.editArchived(id, 'note', '赛后更正说明', admin).ok, false, '内容没变化应拒绝');
+});
+
+// ======================================================================
+// 赛事荣誉（个人页"赛事荣誉栏"）
+// ======================================================================
+
+/**
+ * 4 人淘汰赛打到底，返回 { id, champ, runner, semiLosers }。
+ *
+ * ⚠️ 房间号前缀与选手 id 前缀**分开**：要验"同一人多次夺冠"时，
+ * 必须让两场赛事的选手 id 相同、而房间号不同（房间号必须全局唯一）。
+ */
+function playOutElim(roomPrefix, playerPrefix) {
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: `${roomPrefix}-${++n}` }));
+  const id = mkApproved({ requireApproval: false }); // size = 4
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: playerPrefix + i, name: '棋手' + i });
+  assert.strictEqual(T.getTournament(id).status, 'playing', '满员应自动开赛');
+
+  // ⚠️ 必须先快照半决赛的双方：对局结束后 `players` 会被清空，之后就只能读 `lastPlayers`
+  const semis = T.getTournament(id).bracket
+    .filter((x) => x.matchId)
+    .map((x) => ({ matchId: x.matchId, players: x.players.slice() }));
+  assert.strictEqual(semis.length, 2, '4 人首轮应有两场');
+
+  const champ = semis[0].players[0];
+  const runner = semis[1].players[0];
+  const semiLosers = [semis[0].players[1], semis[1].players[1]];
+
+  T.onMatchFinished(id, semis[0].matchId, champ);
+  T.onMatchFinished(id, semis[1].matchId, runner);
+
+  const finalNode = T.getTournament(id).bracket.find((x) => x.matchId);
+  assert.ok(finalNode, '半决赛结束后应建出决赛');
+  T.onMatchFinished(id, finalNode.matchId, champ);
+  return { id, champ, runner, semiLosers };
+}
+
+test('赛事荣誉：淘汰赛的冠军 / 亚军 / 四强都要算对', () => {
+  const { id, champ, runner, semiLosers } = playOutElim('hn', 'hn');
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished');
+  assert.strictEqual(t.championId, champ);
+
+  assert.strictEqual(T.placeOf(t, champ), 1, '冠军');
+  assert.strictEqual(T.placeOf(t, runner), 2, '亚军 = 决赛失利者');
+  assert.strictEqual(T.placeOf(t, semiLosers[0]), 3, '半决赛失利 = 四强');
+  assert.strictEqual(T.placeOf(t, semiLosers[1]), 3, '半决赛失利 = 四强');
+
+  const h = T.honorsOf(champ);
+  assert.strictEqual(h.stats.joined, 1);
+  assert.strictEqual(h.stats.finished, 1);
+  assert.strictEqual(h.stats.titles, 1);
+  assert.strictEqual(h.stats.runnerUps, 0);
+  assert.strictEqual(h.stats.winRate, 100);
+  assert.strictEqual(h.items.length, 1);
+  assert.strictEqual(h.items[0].place, 1);
+  assert.strictEqual(h.items[0].placeLabel, '冠军');
+  assert.strictEqual(h.items[0].tournamentId, id);
+
+  assert.strictEqual(T.honorsOf(runner).stats.runnerUps, 1);
+  assert.strictEqual(T.honorsOf(runner).items[0].placeLabel, '亚军');
+  assert.strictEqual(T.honorsOf(semiLosers[0]).stats.top4, 1);
+  assert.strictEqual(T.honorsOf(semiLosers[0]).items[0].placeLabel, '四强');
+
+  // 没参加过的人：全零，不报错
+  const none = T.honorsOf('never-played-someone');
+  assert.deepStrictEqual(none.stats, { joined: 0, finished: 0, titles: 0, runnerUps: 0, top4: 0, winRate: 0 });
+  assert.deepStrictEqual(none.items, []);
+});
+
+test('赛事荣誉：进行中的赛事只计入"参赛"，不产生名次', () => {
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'hprog-' + (++n) }));
+  const id = mkApproved({ requireApproval: false });
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'pg' + i, name: '棋手' + i });
+
+  // 半决赛打了一场：此时"打过半决赛的人"绝不能算成四强
+  const t0 = T.getTournament(id);
+  assert.strictEqual(t0.status, 'playing');
+  const semi = t0.bracket.find((x) => x.matchId);
+  T.onMatchFinished(id, semi.matchId, semi.players[0]);
+
+  const h = T.honorsOf('pg1');
+  assert.strictEqual(h.stats.joined, 1, '进行中的赛事要算进"参赛赛事"');
+  assert.strictEqual(h.stats.finished, 0, '还没结束');
+  assert.strictEqual(h.items.length, 0, '没有结论就不该出现在荣誉明细里');
+  assert.strictEqual(T.placeOf(T.getTournament(id), 'pg1'), null, '进行中不产生名次');
+});
+
+test('赛事荣誉：取消的赛事不算参赛', () => {
+  const id = mkApproved({ requireApproval: false });
+  T.joinTournament(id, { id: 'cx1', name: '棋手' });
+  assert.strictEqual(T.honorsOf('cx1').stats.joined, 1, '前置条件：已报名');
+  assert.strictEqual(T.cancelTournament(id, '测试取消').ok, true);
+  assert.strictEqual(T.honorsOf('cx1').stats.joined, 0, '取消的赛事不该算作参赛经历');
+});
+
+test('赛事荣誉：瑞士制名次取自积分榜，前四之外不算荣誉', () => {
+  stubRooms();
+  // ⚠️ 选手 id 必须用**本测试专属前缀**：荣誉是**跨赛事聚合**的，
+  // 而测试共享同一个赛事缓存 —— 用通用的 `s1`/`s2` 会把别的用例里的冠军也算进来
+  //（本测试就因为这个数到了 3 次夺冠）。
+  const id = mkSwiss(8, { totalRounds: 3 }, 'swhon');
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  for (let round = 1; round <= 3; round++) {
+    const rec = T.getTournament(id).rounds[round - 1];
+    rec.pairs.forEach(([a], i) => T.onMatchFinished(id, rec.matchIds[i], a));
+  }
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished');
+  assert.strictEqual(t.standings.length, 8);
+  assert.strictEqual(T.placeOf(t, t.standings[0].id), 1, '积分榜第一 = 冠军');
+  assert.strictEqual(T.placeOf(t, t.standings[1].id), 2, '积分榜第二 = 亚军');
+  assert.strictEqual(T.placeOf(t, t.standings[2].id), 3, '3~4 名 = 四强');
+  assert.strictEqual(T.placeOf(t, t.standings[4].id), null, '第 5 名起不算荣誉');
+
+  const h = T.honorsOf(t.standings[0].id);
+  assert.strictEqual(h.stats.titles, 1);
+  assert.strictEqual(h.items[0].formatLabel, '瑞士制（积分编排）', '荣誉明细要带上赛制');
+  assert.strictEqual(h.items[0].size, 32);
+});
+
+test('赛事荣誉：同一人多次夺冠会累积，明细按结束时间倒序', () => {
+  // 两场赛事的**房间号不同、选手 id 相同** —— 这样才是"同一个人打了两场"
+  const a = playOutElim('ha', 'same');
+  const b = playOutElim('hb', 'same');
+  const who = a.champ;
+  assert.strictEqual(b.champ, who, '同一批选手、同样的比赛顺序 → 冠军应当是同一人');
+
+  const h = T.honorsOf(who);
+  assert.strictEqual(h.stats.joined, 2, '两场都算参赛');
+  assert.strictEqual(h.stats.finished, 2);
+  assert.strictEqual(h.stats.titles, 2, '两次夺冠要累积');
+  assert.strictEqual(h.stats.winRate, 100);
+  assert.strictEqual(h.items.length, 2);
+  assert.ok((h.items[0].endedAt || 0) >= (h.items[1].endedAt || 0), '新的在前');
+});
+
+test('赛事荣誉：荣誉明细条数受 limit 限制（个人页是概览，不铺全量）', () => {
+  for (let i = 0; i < 3; i++) playOutElim('hl' + i, 'lim');
+  const h = T.honorsOf('lim1', 2);
+  assert.strictEqual(h.stats.joined, 3, '统计要覆盖全部');
+  assert.strictEqual(h.items.length, 2, '明细只给前 2 条');
 });

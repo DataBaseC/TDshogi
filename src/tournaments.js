@@ -1391,6 +1391,118 @@ function publicInfo(t) {
   };
 }
 
+// ==================================================================
+// 赛事荣誉（个人页"赛事荣誉栏"）
+//
+// 赛事结果是**公开信息**，所以这里算出来的东西可以直接下发给任何人，
+// 不需要走隐私白名单（`privacy.stripPrivate` 也不会误伤：键名与 PRIVATE_KEYS 无交集）。
+// ==================================================================
+
+/** 名次 → 文案 */
+const PLACE_LABEL = { 1: '冠军', 2: '亚军', 3: '四强' };
+
+/**
+ * 某人在该赛事中的**名次**（1 冠军 / 2 亚军 / 3 四强 / null 无名次）。
+ *
+ * ⚠️ 两种赛制的名次来源完全不同，必须分路：
+ *  - **淘汰赛**：冠军看 `championId`；亚军 = 决赛的另一位选手；
+ *    四强 = 半决赛（根的左右子树）的参赛者。
+ *    ⚠️ 对局结束后 `node.players` 会被清空（见 `onMatchFinished`），
+ *    所以只能读 `lastPlayers`——拿 `players` 反推会全部落空；
+ *  - **瑞士制**：没有淘汰，名次由积分榜（`swissStandings`）给出。
+ *    只认前四——8 人档的第 5 名谈不上"荣誉"。
+ *
+ * @returns {number|null}
+ */
+function placeOf(t, playerId) {
+  if (!t || !playerId) return null;
+
+  // ⚠️ 未结束的赛事**没有名次**：半决赛还在打的人不等于"四强"，
+  // 决赛还没开始更谈不上冠亚军。不判状态的话，进行中的赛事会被算成"满员四强"。
+  const st = normalizeStatus(t.status);
+  if (st !== 'finished' && st !== 'archived') return null;
+
+  if (t.championId === playerId) return 1;
+
+  if ((t.format || 'single-elimination') === 'swiss') {
+    const row = swissStandings(t).find((x) => x.id === playerId);
+    if (!row) return null;
+    return row.rank <= 2 ? row.rank : (row.rank <= 4 ? 3 : null);
+  }
+
+  const bracket = t.bracket || [];
+  const root = bracket[0];
+  if (!root) return null;
+
+  // 亚军：决赛的两位选手，除去冠军
+  const finalists = root.lastPlayers || (root.matchId ? root.players : null) || [];
+  if (finalists.indexOf(playerId) >= 0) return 2;
+
+  // 四强：半决赛节点（根的左右子树）的参赛者
+  const semiPlayers = [];
+  for (const i of root.pair || []) {
+    const n = bracket[i];
+    if (!n) continue;
+    const ps = n.lastPlayers || n.players || null;
+    if (ps) semiPlayers.push.apply(semiPlayers, ps);
+    else if (n.playerId) semiPlayers.push(n.playerId); // 轮空晋级的人没有 lastPlayers
+  }
+  return semiPlayers.indexOf(playerId) >= 0 ? 3 : null;
+}
+
+/**
+ * 某玩家的赛事荣誉。
+ *
+ * ⚠️ **只统计 `finished` / `archived`**：进行中的赛事还没有结论，
+ * 写进"荣誉"会误导（这也是"荣誉"与"参赛记录"的区别）。
+ * `cancelled` / `rejected` / `pending_approval` 一律不算参赛。
+ *
+ * @param {string} playerId
+ * @param {number} [limit=20] 荣誉明细上限（个人页是概览，不铺全量）
+ * @returns {{stats:object, items:Array}}
+ */
+function honorsOf(playerId, limit = 20) {
+  const stats = { joined: 0, finished: 0, titles: 0, runnerUps: 0, top4: 0, winRate: 0 };
+  if (!playerId) return { stats, items: [] };
+
+  const items = [];
+  for (const t of Object.values(getCache())) {
+    const st = normalizeStatus(t.status);
+    if (st === 'cancelled' || st === 'rejected' || st === 'pending_approval') continue;
+
+    const joined = (t.players || []).some((p) => p.id === playerId)
+      || (t.entrants || []).some((e) => e.id === playerId && e.status === 'approved');
+    if (!joined) continue;
+    stats.joined++;
+
+    if (st !== 'finished' && st !== 'archived') continue; // 还没打完：只计入"参赛"
+    stats.finished++;
+
+    const place = placeOf(t, playerId);
+    if (place === 1) stats.titles++;
+    else if (place === 2) stats.runnerUps++;
+    else if (place === 3) stats.top4++;
+    if (!place) continue; // 拿到参赛次数但没有名次 → 不进荣誉明细
+
+    items.push({
+      tournamentId: t.id,
+      name: t.name,
+      place,
+      placeLabel: PLACE_LABEL[place] || '',
+      size: t.size,
+      format: t.format || 'single-elimination',
+      formatLabel: FORMAT_LABELS[t.format || 'single-elimination'] || null,
+      playerCount: (t.players || []).length,
+      endedAt: t.endedAt || t.archivedAt || null,
+      manual: !!t.championManual, // 冠军由管理员人工裁定 → 详情页会标注
+    });
+  }
+
+  items.sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0));
+  stats.winRate = stats.finished ? Math.round((stats.titles / stats.finished) * 100) : 0;
+  return { stats, items: items.slice(0, limit) };
+}
+
 module.exports = {
   createTournament,
   joinTournament,
@@ -1432,6 +1544,9 @@ module.exports = {
   // ---- T8：瑞士制 ----
   swissStandings,     // 名次表（详情页与测试用）
   matchParticipants,  // "这一场是谁打谁"（重赛资格判定复用）
+  honorsOf,           // 赛事荣誉（个人页）
+  placeOf,            // 单赛事名次（荣誉计算用）
+  PLACE_LABEL,
   FORMAT_LABELS,
   MIN_SWISS_ROUNDS,
   MAX_SWISS_ROUNDS,
