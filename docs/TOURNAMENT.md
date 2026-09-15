@@ -331,7 +331,7 @@ tournament.html?id=<8位id>  赛事详情页（需求 12）
 | **T5 赛事详情页** | §4 的 `tournament.html` + §9 棋谱聚合 + 重赛申请 | T3 | ⬜ |
 | **T6 赛后存档** | §8 `archived` + `adminEditLog` + 自动存档定时 | T4 | ✅ **已完成（2026-09-13）** |
 | **T7 管理后台赛事页** | §13 分页 + 专属赛事管理页 | T6 | ✅ **已实施（2026-09-13）**：赛事 tab 三个列表各 20 条/页 + 存档与详情入口 |
-| **T8 赛制扩展** | 瑞士制 / 循环赛（需求 9 的"待实装"） | 全部 | 🟨 **瑞士制配对算法已完成（2026-09-15）**：`src/swiss.js` + 12 项单测；**接线与前端待做** |
+| **T8 赛制扩展** | 瑞士制 / 循环赛（需求 9 的"待实装"） | 全部 | ✅ **瑞士制已完成（2026-09-15）**：算法 `src/swiss.js` + 接线 + 前端；循环赛不做 |
 
 #### T8 实施记录（2026-09-15）——已完成的部分
 
@@ -356,17 +356,28 @@ tournament.html?id=<8位id>  赛事详情页（需求 12）
    再放弃；返回值里用 `degraded` 标注，让主办人知道"这轮不完美"。
    宁可这轮有瑕疵，也不能让整个赛事卡在"配不出对"上。
 
-**⚠️ 待做（接线 + 前端，建议单独一轮）**：
+**接线与前端（同日晚些时候完成）**：
 
-| 项 | 说明 |
+| 项 | 实现 |
 |---|---|
-| 数据模型 | 瑞士制**没有淘汰树**（每轮重新按积分配对），所以不能复用 `bracket`。需新增 `rounds: [{ round, pairs, byes, results, matchIds }]`，`format: 'swiss'` |
-| `createTournament` | `FORMATS` 加 `'swiss'`；建赛申请表加"轮数"（默认 `suggestRounds(size)`） |
-| `startTournament` | 开赛时按第一轮配对建房（替代 `makeBracket` + `assignNextMatches`） |
-| `onMatchFinished` | 瑞士制分支：记录该场结果 → 该轮**全部**结束才配下一轮 → 轮数跑完按名次定冠军 |
-| `publicInfo` | 下发 `rounds` + 名次表（`standings`） |
-| 前端 | 详情页需**轮次列表 + 名次表**（现有 `UI.bracketHtml` 是淘汰树专用，不能复用）；赛事列表页的"第 N 轮"进度显示 |
+| 数据模型 | `format: 'swiss'` + `totalRounds` + `rounds: [{ round, pairs, byes, results, matchIds, matchPairs, degraded }]` + `currentRound`。⚠️ **不复用 `bracket`**——瑞士制没有淘汰树，`bracket` 恒为空数组 |
+| `createTournament` | `FORMATS` 加 `'swiss'`；轮数不填则 `suggestRounds(size)`；限制 **3~9 轮** |
+| `startTournament` | 按赛制分支：瑞士制 → `startSwissRound(t, 1)`；淘汰赛 → 原 `makeBracket` + `assignNextMatches` |
+| `onMatchFinished` | 赛制分支 → `swissOnMatchFinished`：记赛果 → `swissRoundDone` 才推进 → 轮数跑完 `finishSwiss` |
+| `publicInfo` | 下发 `formatLabel` / `totalRounds` / `currentRound` / `rounds` / `standings` / `championTie`；**只给瑞士制算 standings**（列表页会批量调 publicInfo） |
+| 前端 | 建赛表单启用瑞士制 + 轮数下拉 + 说明；详情页 `renderSwissCard`（**轮次列表 + 名次表**）；列表页 `metaLine()` 显示"第 N/M 轮"；admin 列表显示赛制与轮次 |
 | 循环赛 | 需求原文未要求，暂不做（瑞士制已覆盖"多轮比积分"的诉求） |
+
+**实施中修掉的 3 个坑**：
+
+1. ⚠️ **取消赛事不会解散瑞士制的房间**：`cancelTournament` 只从 `bracket` 收房间 id，
+   而瑞士制的房间在各轮的 `matchIds` 里 → 返回**空数组**，赛事显示"已取消"、
+   参赛者却还在房里下棋。抽出 `liveMatchIds(t)` 按赛制分路（**已加测试盯住**）；
+2. ⚠️ **赛后定位不到"这一场是谁打谁"**：`matchIds` 在每场打完后会被清空（防重复回调），
+   于是重赛申请找不到场次。新增 `rec.matchPairs`（matchId → 双方）留档；
+3. ⚠️ **重赛在瑞士制下的语义**：没有"上游"可清，且改历史轮次的成绩会让**已经开打的后续轮次**
+   失去配对依据。处理方式：**只允许对当前轮申请**，非当前轮在申请与裁决两处都拒绝——
+   与其做一个半吊子的"改历史"，不如把规则收紧（冠军按名次算，撤回冠军比拒绝重赛伤害更大）。
 
 ### T1 实施记录（2026-09-13）
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * tournaments.js — 赛事页：我要创建赛事（需登录正式账号）、报名、对阵表渲染
  *
  * 页面只分两段展示：进行中的赛事（open/playing）与往期赛事（finished）。
@@ -75,6 +75,18 @@
     return Number.isFinite(t) ? t : null;
   }
 
+  // 赛制切换：轮数只对瑞士制有意义（淘汰赛的轮数是人数决定的）
+  const formatSel = document.getElementById('tFormat');
+  const roundsWrap = document.getElementById('tRoundsWrap');
+  const swissHint = document.getElementById('tSwissHint');
+  function syncFormatFields() {
+    const isSwiss = formatSel.value === 'swiss';
+    roundsWrap.style.display = isSwiss ? '' : 'none';
+    swissHint.style.display = isSwiss ? '' : 'none';
+  }
+  formatSel.addEventListener('change', syncFormatFields);
+  syncFormatFields();
+
   document.getElementById('btnSubmitCreate').addEventListener('click', () => {
     const name = document.getElementById('tName').value.trim();
     const size = parseInt(document.getElementById('tSize').value, 10);
@@ -85,6 +97,9 @@
     const matchStart = tsOf('tMatchStart');
     const matchEnd = tsOf('tMatchEnd');
     const requireApproval = document.getElementById('tRequireApproval').checked;
+    // 空字符串 = "按人数自动"，交给服务端给建议值（前端不重复实现那个公式）
+    const roundsRaw = document.getElementById('tRounds').value;
+    const totalRounds = roundsRaw ? parseInt(roundsRaw, 10) : null;
 
     // 前端校验只防手滑——服务端会再验一遍（`createTournament` 里的 validateSchedule），
     // 因为前端校验拦不住"直接构造 WS 消息"的人。
@@ -99,6 +114,8 @@
       data: {
         name, size, format, reason,
         registerStart, registerEnd, matchStart, matchEnd, requireApproval,
+        // 只有瑞士制才带轮数；淘汰赛服务端会忽略它
+        totalRounds: format === 'swiss' ? totalRounds : null,
       },
     });
   });
@@ -146,6 +163,20 @@
           : t.status === 'archived' ? '已存档'
             : t.status === 'rejected' ? '已拒绝'
               : t.status === 'cancelled' ? '已取消' : '已结束';
+  }
+
+  /**
+   * 状态行：状态 · 人数 [· 轮次]。
+   *
+   * ⚠️ 瑞士制必须带上轮次：光看"进行中"看不出打到哪了，
+   * 而"第 3/5 轮"才是参赛者关心的信息。
+   */
+  function metaLine(t) {
+    const parts = [statusText(t), `${joinedCount(t)}/${t.size} 人`];
+    if (t.format === 'swiss' && t.totalRounds) {
+      parts.push(`第 ${t.currentRound || 0}/${t.totalRounds} 轮`);
+    }
+    return parts.join(' · ');
   }
 
   // 各列表的当前页（2026-09-13 分页：每页 20 条，避免赛事一多把页面撑爆）
@@ -221,7 +252,7 @@
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <span style="font-weight:700;">${esc(t.name)}</span>
           ${hostedTag}
-          <span style="font-size:12px;color:var(--text-dim);">${statusText(t)} · ${joinedCount(t)}/${t.size} 人</span>
+          <span style="font-size:12px;color:var(--text-dim);">${metaLine(t)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:12px;color:var(--gold-light);">${champ}</span>
@@ -345,7 +376,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
           <div style="font-weight:700;font-size:17px;">${esc(t.name)}</div>
           <div style="display:flex;gap:12px;align-items:center;">
-            <span style="font-size:13px;color:var(--text-dim);">${statusText(t)} · ${joinedCount(t)}/${t.size} 人</span>
+            <span style="font-size:13px;color:var(--text-dim);">${metaLine(t)}</span>
             ${joinAreaOf(t)}
           </div>
         </div>

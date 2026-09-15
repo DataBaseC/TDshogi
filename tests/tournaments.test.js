@@ -200,10 +200,13 @@ test('T1 数据模型：服务端二次校验（时间自洽 / 人数档位 / �
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /参赛人数/);
 
-  // 赛制未实装
-  r = T.createTournament('x', 8, owner, { format: 'swiss' });
+  // 赛制（T8）：瑞士制已实装，但**未实装的赛制仍必须拒绝**（别把校验一并放开）
+  r = T.createTournament('x', 8, owner, { format: 'round-robin' });
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /赛制/);
+  assert.strictEqual(
+    T.createTournament('瑞士制赛', 8, owner, { format: 'swiss', reason: '理由要够长才能过校验' }).ok,
+    true, '瑞士制已实装（T8）');
 
   // 4 / 32 档应放行（Q3 用户确认扩到 32）
   assert.strictEqual(T.createTournament('小赛', 4, owner, {}).ok, true);
@@ -355,6 +358,276 @@ test('T3 开赛门槛：不足 2 名通过审核者不能开赛', () => {
   const r = T.startTournament(id, { byRole: 'owner', action: 'start' });
   assert.strictEqual(r.ok, false, '只有 1 人时不该能开赛');
   assert.match(r.error, /2 名/);
+});
+
+// ======================================================================
+// T8 瑞士制：逐轮配对与推进
+// ======================================================================
+
+/**
+ * 造一个已审核通过的瑞士制赛事（**已开赛**），返回其 id。
+ *
+ * ⚠️ 人数档故意用 32：免审核路径下"报名满 size"会**自动开赛**，
+ * 那样测试里再显式调 `startTournament` 就会撞到"状态已变更"。
+ * 用远大于参赛人数的档位，既避免了自动开赛，也更贴近真实（未满员开赛是允许的）。
+ */
+function mkSwiss(playerCount, over) {
+  const r = T.createTournament('瑞士制测试赛', 32, { id: 'owner-s', name: '主办' }, Object.assign({
+    reason: '用于验证瑞士制逐轮配对与推进的测试赛事',
+    format: 'swiss',
+    requireApproval: false,
+    totalRounds: 3,
+  }, over || {}));
+  assert.strictEqual(r.ok, true, r.error || '');
+  const id = r.tournament.id;
+  T.approveTournament(id);
+  for (let i = 1; i <= playerCount; i++) {
+    const j = T.joinTournament(id, { id: 's' + i, name: '棋手' + i });
+    assert.strictEqual(j.ok, true, j.error || '');
+  }
+  return id;
+}
+
+/** 建房替身：瑞士制每轮都会建房，用一个自增计数器给出门牌号 */
+function stubRooms() {
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'sw-' + (++n) }));
+}
+
+test('T8 建赛：瑞士制轮数默认按人数给建议值，越界要拒绝', () => {
+  const r1 = T.createTournament('瑞士制A', 8, { id: 'o', name: '主办' }, {
+    reason: '这条理由足够长可以通过服务端校验',
+    format: 'swiss',
+  });
+  assert.strictEqual(r1.ok, true, r1.error || '');
+  assert.strictEqual(r1.tournament.format, 'swiss');
+  assert.strictEqual(r1.tournament.totalRounds, 3, '8 人 → max(3, ceil(log2 8)) = 3');
+  assert.strictEqual(r1.tournament.currentRound, 0, '未开赛时轮次为 0');
+  assert.deepStrictEqual(r1.tournament.rounds, []);
+  assert.deepStrictEqual(r1.tournament.bracket, [], '瑞士制不该有淘汰树');
+
+  const bad = T.createTournament('瑞士制B', 8, { id: 'o', name: '主办' }, {
+    reason: '这条理由足够长可以通过服务端校验', format: 'swiss', totalRounds: 20,
+  });
+  assert.strictEqual(bad.ok, false, '轮数超上限应拒绝');
+  assert.match(bad.error, /轮数/);
+
+  const bad2 = T.createTournament('瑞士制C', 8, { id: 'o', name: '主办' }, {
+    reason: '这条理由足够长可以通过服务端校验', format: 'swiss', totalRounds: 1,
+  });
+  assert.strictEqual(bad2.ok, false, '轮数少于 3 应拒绝');
+});
+
+test('T8 开赛：首轮按名次配对建房，不生成对阵树', () => {
+  stubRooms();
+  const id = mkSwiss(8);
+  const r = T.startTournament(id, { byRole: 'owner', action: 'start' });
+  assert.strictEqual(r.ok, true, r.error || '');
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'playing');
+  assert.strictEqual(t.format, 'swiss');
+  assert.strictEqual(t.currentRound, 1);
+  assert.strictEqual(t.rounds.length, 1, '应只有第 1 轮');
+  assert.strictEqual(t.rounds[0].pairs.length, 4, '8 人 → 4 场');
+  assert.strictEqual(t.rounds[0].matchIds.filter(Boolean).length, 4, '4 场都要有房间');
+  assert.strictEqual(t.bracket.length, 0, '瑞士制不生成对阵树');
+});
+
+test('T8 推进：一轮没打完不配下一轮，打完整轮才配', () => {
+  stubRooms();
+  const id = mkSwiss(8);
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  let t = T.getTournament(id);
+  const r1ids = t.rounds[0].matchIds.slice();
+  assert.strictEqual(r1ids.length, 4);
+
+  // 只打 3 场 → 仍是第 1 轮
+  for (let i = 0; i < 3; i++) {
+    const res = T.onMatchFinished(id, r1ids[i], t.rounds[0].pairs[i][0]);
+    assert.strictEqual(res.ok, true, res.error || '');
+  }
+  t = T.getTournament(id);
+  assert.strictEqual(t.currentRound, 1, '还差一场，不该进入第 2 轮');
+  assert.strictEqual(t.rounds.length, 1);
+
+  // 打完第 4 场 → 自动进入第 2 轮
+  T.onMatchFinished(id, r1ids[3], t.rounds[0].pairs[3][0]);
+  t = T.getTournament(id);
+  assert.strictEqual(t.currentRound, 2, '整轮打完应自动配下一轮');
+  assert.strictEqual(t.rounds.length, 2);
+  assert.strictEqual(t.rounds[1].pairs.length, 4);
+});
+
+test('T8 收尾：轮数跑完按名次定冠军，并与名次表一致', () => {
+  stubRooms();
+  const id = mkSwiss(4, { totalRounds: 3 });
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  // 每轮把"组内前一人"判胜，制造分数分化
+  for (let round = 1; round <= 3; round++) {
+    const t = T.getTournament(id);
+    const rec = t.rounds[round - 1];
+    assert.ok(rec, `第 ${round} 轮应存在`);
+    rec.pairs.forEach(([a], i) => {
+      const res = T.onMatchFinished(id, rec.matchIds[i], a);
+      assert.strictEqual(res.ok, true, res.error || '');
+    });
+  }
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished', '轮数跑完应结束');
+  assert.ok(t.championId, '应产生冠军');
+  assert.strictEqual(t.championId, t.standings[0].id, '冠军必须是名次表第一');
+  assert.ok(t.endedAt, '结束要记 endedAt（自动存档依赖它）');
+  assert.strictEqual(t.rounds.length, 3, '不该多配出第 4 轮');
+});
+
+test('T8 名次表：胜 1 / 和 0.5 / 负 0，轮空得 1 分；奇数人有一个轮空', () => {
+  stubRooms();
+  const id = mkSwiss(5); // 奇数人
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  let t = T.getTournament(id);
+  assert.strictEqual(t.rounds[0].pairs.length, 2, '5 人 → 2 场 + 1 轮空');
+  assert.strictEqual(t.rounds[0].byes.length, 1, '奇数人必须恰好一人轮空');
+
+  const byeId = t.rounds[0].byes[0];
+  const byeRow = t.standings.find((s) => s.id === byeId);
+  assert.strictEqual(byeRow.score, 1, '轮空视同胜，得 1 分');
+  assert.strictEqual(byeRow.byes, 1);
+
+  // 打完全部对局 + 第 2、3 轮，确认名次表仍是自洽的
+  for (let round = 1; round <= 3; round++) {
+    const cur = T.getTournament(id);
+    const rec = cur.rounds[round - 1];
+    rec.pairs.forEach(([a], i) => T.onMatchFinished(id, rec.matchIds[i], a));
+  }
+  t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished');
+  const total = t.standings.reduce((s, x) => s + x.score, 0);
+  // 每轮总得分是固定的：3 场/轮（2 场分出胜负 + 1 个轮空得 1）= 3 分/轮
+  assert.strictEqual(total, 9, `3 轮总得分应为 9，实际 ${total}`);
+});
+
+test('T8 确定性：同样输入两次配对结果一致', () => {
+  stubRooms();
+  const id = mkSwiss(8);
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+  const before = JSON.stringify(T.getTournament(id).rounds[0].pairs);
+  const again = JSON.stringify(T.getTournament(id).rounds[0].pairs);
+  assert.strictEqual(before, again, '同样输入必须得到同样配对（否则测试会随机失败）');
+});
+
+test('T8 取消赛事：必须把**瑞士制的未结束房间**也交出来解散', () => {
+  stubRooms();
+  const id = mkSwiss(8);
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  const t = T.getTournament(id);
+  const live = t.rounds[0].matchIds.filter(Boolean);
+  assert.strictEqual(live.length, 4, '前置条件：第 1 轮 4 场都有房间');
+
+  // 打完一场 → 这一场不再是"进行中"
+  T.onMatchFinished(id, live[0], t.rounds[0].pairs[0][0]);
+
+  const r = T.cancelTournament(id, '测试取消');
+  assert.strictEqual(r.ok, true, r.error || '');
+  assert.strictEqual(r.tournament.status, 'cancelled');
+  // ⚠️ 本测试的重点：房间只在 `rounds` 里、不在 `bracket` 里。
+  // 若取消逻辑只看 `bracket`，这里会返回**空数组**——赛事显示已取消，
+  // 而参赛者还在房内下棋。
+  assert.strictEqual(r.matchIds.length, 3, '应交出剩余 3 个仍在进行中的房间');
+  assert.strictEqual(r.matchIds.indexOf(live[0]) >= 0, false, '已打完的那场不该包含在内');
+});
+
+test('T8 取消选手成绩：判对手胜，名次随之变化', () => {
+  stubRooms();
+  const id = mkSwiss(4, { totalRounds: 3 });
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  let t = T.getTournament(id);
+  const rec = t.rounds[0];
+  const [a, b] = rec.pairs[0];
+  T.onMatchFinished(id, rec.matchIds[0], a); // a 先赢一场
+  t = T.getTournament(id);
+  assert.strictEqual(t.standings.find((s) => s.id === a).score, 1);
+
+  const r = T.voidPlayer(id, a, { id: 'owner-s' });
+  assert.strictEqual(r.ok, true, r.error || '');
+  assert.strictEqual(r.affected, 1, '只影响到他打过的这一场');
+
+  t = T.getTournament(id);
+  assert.strictEqual(t.standings.find((s) => s.id === a).score, 0, '成绩取消后不得分');
+  assert.strictEqual(t.standings.find((s) => s.id === b).score, 1, '应改判对手胜');
+});
+
+test('T8 重赛：只允许对当前轮申请，且批准后该场回到未完赛', () => {
+  stubRooms();
+  const id = mkSwiss(4, { totalRounds: 3 });
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  let t = T.getTournament(id);
+  const rec1 = t.rounds[0];
+  const m0 = rec1.matchIds[0];
+  // 打完第 1 轮 → 进入第 2 轮
+  rec1.pairs.forEach(([a], i) => T.onMatchFinished(id, rec1.matchIds[i], a));
+  t = T.getTournament(id);
+  assert.strictEqual(t.currentRound, 2);
+
+  // 第 1 轮的场次：现在已不是当前轮 → 拒绝申请
+  const late = T.requestRematch(id, m0, '想重打上一轮', { id: rec1.pairs[0][0], name: 'x' });
+  assert.strictEqual(late.ok, false, '之前轮次不允许申请重赛');
+  assert.match(late.error, /当前第 2 轮/);
+
+  // 第 2 轮的场次：可以申请，且只有本场选手能申请
+  const rec2 = t.rounds[1];
+  const m2 = rec2.matchIds[0];
+  const [pa, pb] = rec2.pairs[0];
+  const stranger = T.requestRematch(id, m2, '路人凑热闹', { id: 'not-in-this-match' });
+  assert.strictEqual(stranger.ok, false, '非本场选手不能申请');
+
+  const reqOk = T.requestRematch(id, m2, '掉线了', { id: pa, name: 'x' });
+  assert.strictEqual(reqOk.ok, true, reqOk.error || '');
+  assert.strictEqual(reqOk.rematch.round, 2, '要记下是第几轮');
+
+  // 先打完这一场，再批准重赛 → 该场应回到"未完赛"
+  T.onMatchFinished(id, m2, pa);
+  t = T.getTournament(id);
+  assert.strictEqual(t.rounds[1].results[[pa, pb].sort().join('|')], pa, '前置条件：这一场已判 pa 胜');
+
+  const decided = T.decideRematch(id, reqOk.rematch.id, 'approve', { id: 'owner-s' }, '同意');
+  assert.strictEqual(decided.ok, true, decided.error || '');
+  t = T.getTournament(id);
+  const key = [pa, pb].sort().join('|');
+  assert.strictEqual(t.rounds[1].results[key], undefined, '重赛批准后该场赛果应被抹掉');
+  assert.ok(t.rounds[1].matchIds[0], '应重建房间');
+  assert.strictEqual(t.currentRound, 2, '仍停在第 2 轮（这一场没打完）');
+});
+
+test('T8 重赛：非当前轮的申请无法被批准（即使绕过了申请阶段的限制）', () => {
+  stubRooms();
+  const id = mkSwiss(4, { totalRounds: 3 });
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  const t0 = T.getTournament(id);
+  const rec1 = t0.rounds[0];
+  const m0 = rec1.matchIds[0];
+  const [pa, pb] = rec1.pairs[0];
+  const req = T.requestRematch(id, m0, '理由', { id: pa });
+  assert.strictEqual(req.ok, true, req.error || '');
+
+  // 打完第 1 轮进入第 2 轮后，再批准这条"第 1 轮"的申请
+  rec1.pairs.forEach(([a], i) => T.onMatchFinished(id, rec1.matchIds[i], a));
+  const decided = T.decideRematch(id, req.rematch.id, 'approve', { id: 'owner-s' }, '');
+  assert.strictEqual(decided.ok, false, '已过轮次的申请不该被批准');
+  assert.match(decided.error, /当前轮/);
+
+  // 失败不应把申请留在"已批准但没生效"的坏状态
+  const t = T.getTournament(id);
+  const rm = t.rematches.find((r) => r.id === req.rematch.id);
+  assert.strictEqual(rm.status, 'pending', '批准失败要退回 pending，不能留在 approved');
 });
 
 // ======================================================================
@@ -536,8 +809,14 @@ test('T6 自动存档：过了收尾窗口才会触发', () => {
   const H = T.ARCHIVE_AFTER_HOURS;
   assert.strictEqual(T.autoArchiveDue(ended.endedAt + (H - 1) * 3600 * 1000), 0, '窗口内不该存档');
   assert.strictEqual(T.getTournament(id).status, 'finished');
-  assert.strictEqual(T.autoArchiveDue(ended.endedAt + (H + 1) * 3600 * 1000), 1, '超过窗口应自动存档');
-  assert.strictEqual(T.getTournament(id).status, 'archived');
+
+  // ⚠️ 这里**不能断言"恰好存档 1 个"**：`autoArchiveDue` 扫的是**全局**所有已结束赛事，
+  // 而本文件里别的用例（如 T8 瑞士制）也会留下已结束的赛事，它们同样落在窗口外。
+  // 断言"数量 == 1"就变成了"依赖这个文件里没有别的已结束赛事"——加个用例就会挂。
+  // 真正要验的是：**这一个**到期后被存档了（数量只保证至少 1）。
+  const n = T.autoArchiveDue(ended.endedAt + (H + 1) * 3600 * 1000);
+  assert.ok(n >= 1, `超过窗口应自动存档，实际存档 ${n} 个`);
+  assert.strictEqual(T.getTournament(id).status, 'archived', '本赛事必须被存档');
 });
 
 test('T6 管理员编辑已存档赛事：仅管理员、仅 archived、每次留痕', () => {

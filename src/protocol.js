@@ -349,6 +349,8 @@ class Protocol {
             matchStart: data && data.matchStart,
             matchEnd: data && data.matchEnd,
             format: data && data.format,
+            // T8：瑞士制总轮数（不填则服务端按人数给建议值）
+            totalRounds: data && data.totalRounds,
             requireApproval: data && data.requireApproval,
           });
         if (res.ok) {

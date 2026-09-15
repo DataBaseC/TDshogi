@@ -313,13 +313,17 @@
   // ==================================================================
   function renderInfo() {
     const rows = [
-      ['赛制', '单败淘汰制'],
+      // ⚠️ 别再写死"单败淘汰制"：T8 起有瑞士制了，赛制必须取服务端下发的标签
+      ['赛制', T.formatLabel || '单败淘汰'],
       ['人数档位', `${T.size} 人`],
       ['报名时间', `${fmtTime(T.registerStart)} ~ ${fmtTime(T.registerEnd)}`],
       ['比赛时间', `${fmtTime(T.matchStart)} ~ ${fmtTime(T.matchEnd)}`],
       ['报名审核', T.requireApproval ? '需主办人审核' : '免审核（报名即参赛）'],
       ['提交时间', fmtTime(T.createdAt)],
     ];
+    if (T.format === 'swiss' && T.totalRounds) {
+      rows.splice(1, 0, ['轮次', `共 ${T.totalRounds} 轮${T.currentRound ? `（已进行到第 ${T.currentRound} 轮）` : ''}`]);
+    }
     const reason = T.reason
       ? `<div style="margin-top:12px;font-size:13px;line-height:1.8;"><span style="color:var(--text-dim);">举办理由：</span><br>${esc(T.reason)}</div>`
       : '';
@@ -416,8 +420,15 @@
   // ==================================================================
   // 对阵表
   // ==================================================================
+  /** 与后端 `swiss.pairKey` 同构：一对选手的稳定键（与先后顺序无关） */
+  function pairKey(a, b) {
+    return String(a) < String(b) ? `${a}|${b}` : `${b}|${a}`;
+  }
+
   function renderBracketCard() {
     const card = el('tnBracketCard');
+    // T8：瑞士制没有淘汰树，用"轮次列表 + 名次表"呈现
+    if (T.format === 'swiss') { renderSwissCard(card); return; }
     if (!(T.bracket || []).length) {
       card.style.display = 'none';
       return;
@@ -429,6 +440,89 @@
         金色边框 = 已分出胜负；「空位」= 该位置无人（报名不足时会出现，对手自动轮空晋级）
       </div>
       ${window.UI.bracketHtml(T, { myId: myPlayerId, detail: true })}`;
+  }
+
+  /**
+   * 瑞士制赛程视图（T8）：**轮次列表 + 名次表**。
+   *
+   * ⚠️ 刻意不复用 `UI.bracketHtml`：那是淘汰树的画法（按满二叉树分层），
+   * 而瑞士制每轮按积分重新配对，压根没有树——套上去只会画出一堆"待定"。
+   */
+  function renderSwissCard(card) {
+    const rounds = T.rounds || [];
+    if (!rounds.length) {
+      card.style.display = '';
+      card.innerHTML = `
+        <div class="section-title" style="margin-bottom:10px;">赛程（${esc(T.formatLabel || '瑞士制')}）</div>
+        <div style="color:var(--text-dim);font-size:13px;">
+          尚未开赛。共 ${T.totalRounds || 0} 轮，开赛后每轮按积分重新配对。
+        </div>`;
+      return;
+    }
+    card.style.display = '';
+
+    const roundsHtml = rounds.map((r) => {
+      const isCur = r.round === T.currentRound && T.status === 'playing';
+      const rows = (r.pairs || []).map(([a, b], i) => {
+        const w = (r.results || {})[pairKey(a, b)];
+        const mine = !!myPlayerId && (a === myPlayerId || b === myPlayerId);
+        const roomId = (r.matchIds || [])[i];
+        let tag;
+        if (w) {
+          tag = `<span style="color:var(--gold-light);">${esc(nameOf(w))} 胜</span>`;
+        } else if (roomId) {
+          tag = mine
+            ? `<a class="btn btn-primary btn-sm" href="play.html?room=${encodeURIComponent(roomId)}&join=1">进入对局</a>`
+            : '<span style="color:var(--text-dim);">进行中</span>';
+        } else {
+          tag = '<span style="color:var(--text-dim);">—</span>';
+        }
+        const voided = (r.voided || []).some((v) => v === a || v === b);
+        return `
+          <div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:12px;${mine ? 'font-weight:700;' : ''}">
+            <span>${esc(nameOf(a))} vs ${esc(nameOf(b))}${voided ? ' <span style="color:var(--red-light);font-size:11px;">（成绩取消）</span>' : ''}</span>
+            <span>${tag}</span>
+          </div>`;
+      }).join('');
+      const byes = (r.byes || []).length
+        ? `<div style="font-size:12px;color:var(--text-dim);padding:4px 0;">轮空：${(r.byes || []).map((id) => esc(nameOf(id))).join('、')}（视同胜，得 1 分）</div>`
+        : '';
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;${isCur ? 'border-color:var(--gold);' : ''}">
+          <div style="font-size:13px;font-weight:700;margin-bottom:6px;">
+            第 ${r.round} 轮${isCur ? ' <span style="font-size:11px;color:var(--gold-light);">进行中</span>' : ''}
+            ${r.degraded ? '<span style="font-size:11px;color:var(--red-light);">（配对经过退让，可能有重复对阵）</span>' : ''}
+          </div>
+          ${rows}${byes}
+        </div>`;
+    }).join('');
+
+    const standings = T.standings || [];
+    const rankRows = standings.map((s) => `
+      <div style="display:grid;grid-template-columns:34px 1fr 56px 56px 50px;gap:6px;font-size:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);${s.id === myPlayerId ? 'font-weight:700;' : ''}">
+        <span style="color:var(--gold-light);">${s.rank}</span>
+        <span data-player-id="${esc(s.id)}">${esc(s.name || '—')}</span>
+        <span>${s.score} 分</span>
+        <span style="color:var(--text-dim);">${s.sos}</span>
+        <span style="color:var(--text-dim);">${s.wins}-${s.draws}-${s.losses}</span>
+      </div>`).join('');
+
+    card.innerHTML = `
+      <div class="section-title" style="margin-bottom:4px;">赛程（${esc(T.formatLabel || '瑞士制')} · 共 ${T.totalRounds} 轮）</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">
+        每轮按积分重新配对：强者遇强者、不重复对阵（没有淘汰，输一两场仍有机会）。
+        当前第 ${T.currentRound || 0} 轮${T.status === 'playing' ? '' : '（已结束）'}。
+      </div>
+      ${roundsHtml}
+      <div class="section-title" style="margin:16px 0 4px;">名次表</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+        排序：积分 → 对手分（SOS）→ 参赛顺序。胜 1 分、和 0.5 分、轮空 1 分。
+        ${T.championTie ? '<span style="color:var(--gold-light);">⚠️ 与第二名同分，按对手分裁定</span>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:34px 1fr 56px 56px 50px;gap:6px;font-size:11px;color:var(--text-dim);padding-bottom:4px;border-bottom:1px solid var(--border);">
+        <span>名次</span><span>选手</span><span>积分</span><span>对手分</span><span>胜-和-负</span>
+      </div>
+      ${rankRows || '<div style="color:var(--text-dim);font-size:13px;">暂无数据。</div>'}`;
   }
 
   // ==================================================================
