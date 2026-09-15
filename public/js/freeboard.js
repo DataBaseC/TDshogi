@@ -54,10 +54,47 @@
       this.history = [];             // free 模式撤销栈
       this.selectedSq = null;
       this.selectedHand = null;      // { color, piece, sym }
+      this.danger = false;           // §U2：读秒 ≤10 秒的红色外框（由 play.js 判定后设置）
       this._onClick = (e) => this._handleClick(e);
       this._onDbl = (e) => this._handleDblClick(e);
       this._onPointerDown = (e) => this._handlePointerDown(e);
       this._drag = null;
+      this._onViewport = null;
+      this._bindViewport();
+    }
+
+    /**
+     * 视口变化（横竖屏旋转 / 窗口缩放）后重绘棋盘（PLAN §D）。
+     *
+     * ⚠️ **为什么必须补这个监听**：`render()` 只在"走子 / 装载局面"时被调用，
+     * 而**旋转屏幕并不会走子**——不补的话，手机上转屏后棋盘会停在旧尺寸
+     *（表现为错位、溢出、格子大小不匀）。
+     *
+     * 节流到 150ms：`resize` 是连续事件，而每次 `render()` 都要重建整棵树。
+     */
+    _bindViewport() {
+      const g = (typeof window !== 'undefined') ? window : null;
+      if (!g || !g.addEventListener) return;
+      let timer = null;
+      this._onViewport = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          if (this.model) this.render();
+        }, 150);
+      };
+      g.addEventListener('resize', this._onViewport);
+      g.addEventListener('orientationchange', this._onViewport);
+    }
+
+    /** 卸载视口监听（页面销毁/复用实例时调用；不调用只是多挂一个监听，不会报错） */
+    destroy() {
+      const g = (typeof window !== 'undefined') ? window : null;
+      if (g && g.removeEventListener && this._onViewport) {
+        g.removeEventListener('resize', this._onViewport);
+        g.removeEventListener('orientationchange', this._onViewport);
+      }
+      this._onViewport = null;
     }
 
     // ---------- 装载 ----------
@@ -81,6 +118,28 @@
     setCheck(squares) {
       this.checkSquares = Array.isArray(squares) ? squares.filter(Boolean) : [];
       this.render();
+    }
+
+    /**
+     * 危险状态（PLAN §U2）：读秒 ≤10 秒时给棋盘**外框**加红。
+     *
+     * ⚠️ 只负责"贴不贴 class"，**不判断该不该红**——调用方必须自行排除观战者。
+     * 需求明确要求观战者不显示红框，而本组件在观战与对局两种情形下长得完全一样，
+     * 无从区分（`PlayClock.isDanger()` 的注释写了同一条边界）。
+     *
+     * 用 class 而非重建 DOM：外框是**静态容器**，重建会打断过渡动画；
+     * 何况 `render()` 每次走子都会跑，重建外框纯属浪费。
+     */
+    setDanger(on) {
+      this.danger = !!on;
+      this._applyDanger();
+    }
+
+    /** 把危险态贴到容器上（`render()` 末尾也调一次，防止容器被重建后标记丢失） */
+    _applyDanger() {
+      if (this.board && this.board.boardEl) {
+        this.board.boardEl.classList.toggle('fb-danger', !!this.danger);
+      }
     }
 
     /** 单独更新上一步落点 */
@@ -536,6 +595,7 @@
         if (this.handsEls.opp) global.renderHands(this.handsEls.opp, this.model.hands, this.handsEls.oppColor, this.interactive ? pick(this.handsEls.oppColor) : null, vp);
         if (this.handsEls.my) global.renderHands(this.handsEls.my, this.model.hands, this.handsEls.myColor, this.interactive ? pick(this.handsEls.myColor) : null, vp);
       }
+      this._applyDanger(); // §U2：棋盘重建后重新贴危险外框
     }
   }
 

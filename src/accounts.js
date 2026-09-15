@@ -155,6 +155,18 @@ function listAccounts() {
   return Object.values(getCache()).map(publicInfo);
 }
 
+/**
+ * 账号**原始**记录（含 `guestId` 等非公开字段），仅供服务端内部逻辑使用。
+ *
+ * 为什么单独开一个而不是改 `listAccounts()`：后者走 `publicInfo()`，会剔除隐私字段——
+ * 而 §U5 的游客清理**必须**知道"这个游客后来注册了没有"，依据正是 `account.guestId`
+ * （`register()` 里注释写明"迁移后仍保留用于追溯"）。
+ * ⚠️ 返回值**绝不可**直接下发到客户端。
+ */
+function listAccountsRaw() {
+  return Object.values(getCache());
+}
+
 // ---------------- 个人资料（PLAN §F）----------------
 
 // 棋风预设（公开字段）
@@ -243,10 +255,15 @@ function migrateGuestData(guestId, accountId) {
       if (changed) storage.putRecord(rec);
     }
     // 3. 游客会话 → 账号会话（保留名字/创建时间）
-    const s = require('./storage').getSessionById(guestId);
-    if (s && !require('./storage').getSessionById(accountId)) {
-      s.id = accountId;
-      require('./storage').putSession(s);
+    //
+    // ⚠️ 会话的**唯一来源是 kv**（`sessions/<id>.json`，见 `auth.js` 顶部注释）。
+    // 这里原先读写的是 `storage` 的 `sessions` **表** —— 那是另一条路，两者互不相通：
+    // 于是"迁移"看着做了，实际游客的会话根本没搬过去（名字/创建时间丢失），
+    // 也正是"管理员用户列表偶尔拿不到昵称"的根因（PLAN §M4）。
+    // 现在统一走 `auth.getSessionRaw` / `auth.saveSession`。
+    const guestSession = auth.getSessionRaw(guestId);
+    if (guestSession && !auth.getSessionRaw(accountId)) {
+      auth.saveSession(Object.assign({}, guestSession, { id: accountId }));
     }
     // 4. 在缓存中使 rating 缓存失效（下轮自动重读）
     try { require('./ratings').refreshCache(); } catch (_) {}
@@ -319,6 +336,7 @@ module.exports = {
   issueToken,
   getAccount,
   listAccounts,
+  listAccountsRaw, // §U5 游客清理用：含 guestId 等非公开字段，仅服务端内部
   publicInfo,
   getOwnProfile,
   updateProfile,

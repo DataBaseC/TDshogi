@@ -21,6 +21,75 @@
   // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
   function esc(s) { return window.UI.esc(s); }
 
+  /**
+   * IP 掩码（PLAN §U6）：后台**默认**只显示到网段，点击才展开完整地址。
+   *
+   * 原始 IP 属隐私数据，后台又是最容易被截图的页面——
+   * 默认掩码能挡掉"随手截图外流"这类低级泄露，同时不影响管理员排查（点一下就能看全）。
+   */
+  function maskIp(ip) {
+    const s = String(ip || '');
+    if (!s) return '';
+    if (s.includes(':')) {                            // IPv6：保留前两组
+      return s.split(':').slice(0, 2).join(':') + ':*';
+    }
+    const seg = s.split('.');
+    if (seg.length === 4) return `${seg[0]}.${seg[1]}.${seg[2]}.*`;
+    return s;                                         // 非预期格式：原样返回（显示出来总比留空好）
+  }
+
+  // ==================================================================
+  // 分页（PLAN §W1 / 需求 13）：后台每个列表最多显示 20 条
+  // ==================================================================
+  const PAGE_SIZE = 20;
+  // 各列表的当前页。赛事那三个（待审核/进行中/历史）也在这里，**不要再另起一个 tnPages**
+  // ——两套页码状态并存时，翻页行为会出现"这个列表记住了、那个列表没记住"的怪象（2026-09-14 归并）。
+  const pages = {
+    records: 1, users: 1, audit: 1, tournaments: 1,
+    tnPending: 1, tnActive: 1, tnHistory: 1, ipbans: 1, announcements: 1,
+  };
+
+  /**
+   * 把"全量数据 → 列表渲染"包成分页渲染。
+   *
+   * **四个 tab 共用这一个函数**——同一份翻页逻辑抄四遍，迟早只改三处。
+   * 刻意做成"包裹"而不是改各 render 函数内部：这样 render 只管画一页，
+   * 分页状态集中在这里，两边职责不混。
+   * 服务端目前仍全量下发；真到十万级数据时再改服务端分页，那时也只需动这一处。
+   *
+   * @param {string} key         tab 标识（用来记当前页码）
+   * @param {Array}  items       全量数据
+   * @param {string} pagerElId   分页条容器 id
+   * @param {(slice:Array)=>void} render 只负责渲染传入的这一页
+   * @param {boolean} [reset]    数据来源变了（如搜索）→ 回到第 1 页
+   */
+  function renderPaged(key, items, pagerElId, render, reset) {
+    if (reset) pages[key] = 1;
+    // 统一到 `UI.paginate`（2026-09-14）：admin 原先自己实现了一份分页条，
+    // 与前台三处 + 赛事详情页那份并存——两边的按钮风格与边界行为（单页时显不显"共 N 条"、
+    // 页码越界怎么夹）迟早会不一致。现在这里只是它的薄封装，只负责"用已有 items 重画"。
+    const pg = window.UI.paginate({
+      items,
+      page: pages[key],
+      size: PAGE_SIZE,
+      container: pagerElId,
+      onPage: (n) => window.adminPage(key, n), // 翻页走统一入口（会重拉数据，保持与刷新一致）
+    });
+    pages[key] = pg.page; // 页码被夹回时同步回来，避免停在空页
+    render(pg.slice);
+  }
+
+  /** 翻页：更新页码后重跑该 tab 的加载（保持与刷新一致的数据来源） */
+  window.adminPage = function (key, page) {
+    pages[key] = page;
+    if (key === 'records') loadRecords();
+    else if (key === 'users') loadUsers();
+    else if (key === 'audit') loadAudit();
+    else if (key === 'tournaments') loadTournaments();
+    else if (key === 'ipbans') loadIpBans();
+    else if (key === 'announcements') loadAnnouncements();
+  };
+
   // 初始化：检测是否已登录
   function initUI() {
     const isAdmin = !!getToken();
@@ -28,10 +97,10 @@
     document.getElementById('adminPanel').style.display = isAdmin ? 'block' : 'none';
     document.getElementById('btnAdminLogout').style.display = isAdmin ? 'inline-block' : 'none';
     if (isAdmin) {
-      loadRecords();
-      loadUsers();
-      loadTournaments();
-      loadAudit();
+      // 只加载默认 tab（总览）。其余 tab 切过去再拉——
+      // 原先进后台会把四个重查询（棋谱/用户/赛事/审计）全跑一遍，首屏白等很久，
+      // 而多数时候管理员只看其中一两个。
+      loadOverview();
     }
   }
 
@@ -64,10 +133,19 @@
         b.classList.toggle('active', b === btn);
         b.classList.toggle('btn-ghost', b !== btn);
       });
-      ['records', 'users', 'tournaments', 'audit'].forEach((t) => {
+      ['overview', 'records', 'users', 'tournaments', 'announcements', 'audit', 'ipbans'].forEach((t) => {
         const el = document.getElementById('tab-' + t);
         if (el) el.style.display = t === btn.dataset.tab ? 'block' : 'none';
       });
+      // 切到该 tab 才拉数据（避免进后台就把所有接口白跑一遍）
+      if (btn.dataset.tab === 'ipbans') loadIpBans();
+      else if (btn.dataset.tab === 'announcements') loadAnnouncements();
+      else if (btn.dataset.tab === 'rooms') loadRooms();
+      else if (btn.dataset.tab === 'overview') loadOverview();
+      else if (btn.dataset.tab === 'records') loadRecords();
+      else if (btn.dataset.tab === 'users') loadUsers();
+      else if (btn.dataset.tab === 'tournaments') loadTournaments();
+      else if (btn.dataset.tab === 'audit') loadAudit();
     });
   });
 
@@ -107,7 +185,7 @@
     try {
       const data = await window.ApiUtils.get(`/api/history?adminToken=${encodeURIComponent(getToken())}`);
       allRecords = data.records || [];
-      renderRecords(allRecords);
+      renderPaged('records', allRecords, 'recordPager', renderRecords);
     } catch (e) {
       // token 失效则回到登录
       if (e.message && e.message.includes('403')) setToken(null);
@@ -152,12 +230,12 @@
   // 棋谱搜索（按选手名/ID）
   document.getElementById('recordSearch').addEventListener('input', (e) => {
     const q = (e.target.value || '').trim().toLowerCase();
-    if (!q) return renderRecords(allRecords);
-    renderRecords(allRecords.filter((r) => {
+    if (!q) return renderPaged('records', allRecords, 'recordPager', renderRecords, true);
+    renderPaged('records', allRecords.filter((r) => {
       const names = (r.names || []).join(' ').toLowerCase();
       const ids = [r.playerIds && r.playerIds.b, r.playerIds && r.playerIds.w].filter(Boolean).join(' ').toLowerCase();
       return names.includes(q) || ids.includes(q);
-    }));
+    }), 'recordPager', renderRecords, true);
   });
 
   // ---- 全部用户 ----
@@ -166,7 +244,7 @@
     try {
       const data = await window.ApiUtils.get(`/api/admin/users?token=${encodeURIComponent(getToken())}`);
       allUsers = data.users || [];
-      renderUsers(allUsers);
+      renderPaged('users', allUsers, 'userPager', renderUsers);
     } catch (e) {
       if (e.message && e.message.includes('403')) setToken(null);
       initUI();
@@ -188,7 +266,7 @@
         </div>
         <div class="r-result result-win">Lv.${u.level || 0} · ELO ${u.rating}</div>
         <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${u.games} 局 · 胜 ${u.wins} / 负 ${u.losses} / 平 ${u.draws} · 胜率 ${u.winRate}% · 经验 ${u.exp || 0}</div>
-        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">🌐 最近 IP：${u.lastIp ? esc(u.lastIp) : '—'}</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">🌐 最近 IP：${u.lastIp ? `<span title="点击展开完整 IP" style="cursor:pointer;border-bottom:1px dashed var(--text-dim);" onclick="this.textContent='${esc(u.lastIp)}';this.title='';">${esc(maskIp(u.lastIp))}</span>` : '—'}${u.lastSeen ? ` · <span title="最后活跃时间">${new Date(u.lastSeen).toLocaleString('zh-CN')}</span>` : ''}</div>
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="btn btn-ghost btn-sm" onclick="viewUser('${u.id}')">查看详情</button>
           ${u.banned
@@ -202,9 +280,9 @@
   // 用户搜索
   document.getElementById('userSearch').addEventListener('input', (e) => {
     const q = (e.target.value || '').trim().toLowerCase();
-    if (!q) return renderUsers(allUsers);
-    renderUsers(allUsers.filter((u) =>
-      (u.name || '').toLowerCase().includes(q) || (u.id || '').toLowerCase().includes(q)));
+    if (!q) return renderPaged('users', allUsers, 'userPager', renderUsers, true);
+    renderPaged('users', allUsers.filter((u) =>
+      (u.name || '').toLowerCase().includes(q) || (u.id || '').toLowerCase().includes(q)), 'userPager', renderUsers, true);
   });
 
   // ---- 用户详情 + 管理操作（PLAN §K4）----
@@ -393,7 +471,7 @@
     try {
       const data = await window.ApiUtils.get(`/api/admin/audit?token=${encodeURIComponent(getToken())}`);
       allAudit = data.events || [];
-      renderAudit(allAudit);
+      renderPaged('audit', allAudit, 'auditPager', renderAudit);
     } catch (e) {
       if (e.message && e.message.includes('403')) setToken(null);
     }
@@ -422,9 +500,12 @@
   let allTournaments = [];
   const TN_STATUS_LABEL = {
     pending_approval: '🕐 待审核',
+    // T1 起「报名中」的状态名是 `registration`；保留 `open` 仅作兜底
+    registration: '📌 报名中',
     open: '📌 报名中',
     playing: '⚔️ 比赛中',
     finished: '🏆 已结束',
+    archived: '📦 已存档',
     rejected: '❌ 已拒绝',
     cancelled: '⛔ 已取消',
   };
@@ -433,47 +514,102 @@
     try {
       const data = await window.ApiUtils.get(`/api/admin/tournaments?token=${encodeURIComponent(getToken())}`);
       allTournaments = data.tournaments || [];
-      renderTournaments(allTournaments);
+      // 赛事 tab **刻意不分页**：它内部已按「待审核 / 进行中 / 历史」分三块渲染，
+    // 整体切片会打乱这个分组（比如某页只剩"历史"没有"待审核"）。
+    // 历史块自带 max-height + 滚动，赛事数量级也远小于棋谱/用户，暂不需要。
+    renderTournaments(allTournaments);
     } catch (e) {
       if (e.message && e.message.includes('403')) setToken(null);
       initUI();
     }
   }
 
+  /** 时间戳 → 本地短格式；空值显示「不限」（申请表允许不填时间） */
+  function fmtTs(ts) {
+    if (!ts) return '不限';
+    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
+  /** 已确认参赛人数：开赛后看 players，报名阶段看 entrants 里 approved 的数量 */
+  function tnJoinedCount(t) {
+    const s = t.status;
+    if (s === 'playing' || s === 'finished' || s === 'archived') return t.playerCount || 0;
+    return (t.entrants || []).filter((e) => e.status === 'approved').length;
+  }
+
   function renderTournaments(list) {
     document.getElementById('tnCount').textContent = list.length;
     const pending = list.filter((t) => t.status === 'pending_approval');
-    const active = list.filter((t) => t.status === 'open' || t.status === 'playing');
-    const history = list.filter((t) => ['finished', 'rejected', 'cancelled'].includes(t.status));
+    // ⚠️ T1 起「报名中」的状态名是 `registration`（旧的 `open` 由服务端出口映射过来）
+    const active = list.filter((t) => t.status === 'registration' || t.status === 'playing');
+    // T1 起多了 `archived`（已存档）——与 finished 同属历史
+    const history = list.filter((t) => ['finished', 'archived', 'rejected', 'cancelled'].includes(t.status));
     document.getElementById('tnStats').textContent =
       `待审核 ${pending.length} · 进行中 ${active.length} · 累计 ${list.length}`;
-    fillTnList(document.getElementById('tnPendingList'), pending, '没有待审核的赛事申请');
-    fillTnList(document.getElementById('tnActiveList'), active, '暂无进行中的赛事');
-    fillTnList(document.getElementById('tnHistoryList'), history, '暂无历史赛事');
+    fillTnList('tnPendingList', 'tnPendingPager', 'tnPending', pending, '没有待审核的赛事申请');
+    fillTnList('tnActiveList', 'tnActivePager', 'tnActive', active, '暂无进行中的赛事');
+    fillTnList('tnHistoryList', 'tnHistoryPager', 'tnHistory', history, '暂无历史赛事');
   }
 
-  function fillTnList(el, list, emptyText) {
-    if (!list.length) {
+  /**
+   * 渲染一个赛事列表 + 分页条（需求 13：**一页只显示 20 个**，避免数据库信息过多时爆炸）。
+   * 三个列表各自独立记页码（共用 `pages`，键为 `tnPending` / `tnActive` / `tnHistory`）。
+   */
+  function fillTnList(listElId, pagerElId, key, fullList, emptyText) {
+    const el = document.getElementById(listElId);
+    if (!fullList.length) {
       el.innerHTML = `<div style="color:var(--text-dim);font-size:13px;">${emptyText}</div>`;
+      window.UI.paginate({ items: [], container: pagerElId }); // 清掉上一次残留的分页条
       return;
     }
-    el.innerHTML = list.map((t) => {
-      const owner = (t.players && t.players[0]) || {};
+    const pg = window.UI.paginate({
+      items: fullList,
+      page: pages[key] || 1,
+      size: 20,
+      container: pagerElId,
+      onPage: (n) => {
+        pages[key] = n;
+        // 只重画这一个列表：重新拉全量再整页重绘代价太大（管理员赛事数量本就不少）
+        fillTnList(listElId, pagerElId, key, fullList, emptyText);
+      },
+    });
+    pages[key] = pg.page;
+    el.innerHTML = pg.slice.map((t) => {
+      const approved = tnJoinedCount(t);
+      const pendingN = (t.entrants || []).filter((e) => e.status === 'pending').length;
       const meta = [
-        `${t.playerCount}/${t.size} 人`,
+        `${approved}/${t.size} 人${pendingN ? `（待批准 ${pendingN}）` : ''}`,
+        t.ownerName ? `主办 ${esc(t.ownerName)}` : '',
         new Date(t.createdAt).toLocaleString('zh-CN'),
-        owner.name ? `创建者 ${esc(owner.name)}` : '',
       ].filter(Boolean).join(' · ');
+
+      // ---- 申请表信息（T2）：审核时最需要看的就是"为什么办、什么时候办" ----
+      const schedule = [
+        (t.registerStart || t.registerEnd) ? `报名 ${fmtTs(t.registerStart)} ~ ${fmtTs(t.registerEnd)}` : '',
+        (t.matchStart || t.matchEnd) ? `比赛 ${fmtTs(t.matchStart)} ~ ${fmtTs(t.matchEnd)}` : '',
+        t.requireApproval === false ? '报名<b>免</b>审核' : '报名需审核',
+      ].filter(Boolean).join(' · ');
+      const applyInfo = `
+        <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">📅 ${schedule}</div>
+        ${t.reason ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">📝 理由：${esc(t.reason)}</div>` : ''}`;
+
       let actions = '';
       if (t.status === 'pending_approval') {
         actions = `
           <button class="btn btn-primary btn-sm" onclick="tnApprove('${t.id}')">✓ 通过</button>
           <button class="btn btn-ghost btn-sm" onclick="tnReject('${t.id}')">✗ 拒绝</button>`;
-      } else if (t.status === 'open' || t.status === 'playing') {
+      } else if (t.status === 'registration' || t.status === 'playing') {
         actions = `<button class="btn btn-ghost btn-sm" onclick="tnCancel('${t.id}')">⛔ 取消赛事</button>`;
+      } else if (t.status === 'finished') {
+        // T6：存档（存档后主办人只读，管理员仍可编辑）
+        actions = `<button class="btn btn-ghost btn-sm" onclick="tnArchive('${t.id}')">📦 存档</button>`;
       }
-      const reason = t.reason
-        ? `<div style="font-size:11px;color:var(--red-light);margin-top:3px;">原因：${esc(t.reason)}</div>` : '';
+      // 所有状态都能进详情页（那里有对阵表、赛事棋谱、重赛与变更记录）
+      actions += `<a class="btn btn-ghost btn-sm" href="tournament.html?id=${encodeURIComponent(t.id)}" target="_blank">详情 ↗</a>`;
+      // ⚠️ `t.reason` 的语义在 T1 变了：旧数据里它才是"拒绝/取消原因"，
+      // 现在是"举办理由"。拒绝原因读 `rejectReason`——服务端出口已按状态做过归位。
+      const rejectReason = t.rejectReason
+        ? `<div style="font-size:11px;color:var(--red-light);margin-top:3px;">原因：${esc(t.rejectReason)}</div>` : '';
       const champ = (t.status === 'finished' && t.championId && t.players)
         ? `<div style="font-size:12px;color:var(--gold-light);margin-top:3px;">🏆 冠军：${esc((t.players.find((p) => p.id === t.championId) || {}).name || '—')}</div>` : '';
       return `
@@ -483,7 +619,7 @@
             <span style="color:var(--text-dim);font-size:12px;">${TN_STATUS_LABEL[t.status] || t.status}</span>
           </div>
           <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${meta}</div>
-          ${reason}${champ}
+          ${applyInfo}${rejectReason}${champ}
           ${actions ? `<div style="display:flex;gap:6px;margin-top:8px;">${actions}</div>` : ''}
         </div>
       `;
@@ -524,6 +660,449 @@
     if (reason === null) return;
     tnAction(id, 'cancel', reason);
   };
+
+  // 存档赛事（T6/需求 11）：复用 `tnAction`——同样是 `/api/admin/tournaments/:id/:action`
+  // 的 POST + 审计落盘，没必要另写一份 fetch。
+  window.tnArchive = (id) => {
+    const name = (allTournaments.find((t) => t.id === id) || {}).name || '';
+    if (!confirm(`确定存档赛事「${name}」？\n存档后主办人转为只读，仅管理员可继续编辑。`)) return;
+    tnAction(id, 'archive');
+  };
+
+  // ==================================================================
+  // IP 封禁（PLAN §X）
+  //
+  // ⚠️ 服务端会**再判一次"不能封自己"**（见 `src/http/routes/admin.js`）——
+  // 前端这里只是提前提示，判定以后端为准（前端判定可被绕过）。
+  // ==================================================================
+  let allBans = [];
+  let ipbMyIp = null;
+  let ipbDurations = [];
+  let ipbFormReady = false;
+
+  async function loadIpBans() {
+    try {
+      const res = await fetch('/api/admin/ipbans', { headers: { 'x-admin-token': getToken() } });
+      const data = await res.json();
+      if (!res.ok) { toast((data && data.error) || '加载失败'); return; }
+      allBans = data.bans || [];
+      ipbMyIp = data.myIp || null;
+      ipbDurations = data.durations || [];
+      initIpBanForm();
+      renderIpBans();
+    } catch (e) { toast('加载失败：' + e.message); }
+  }
+
+  /** 表单与按钮只绑一次（列表每次刷新会重建，重复绑定会累积监听器） */
+  function initIpBanForm() {
+    if (ipbFormReady || !ipbDurations.length) return;
+    document.getElementById('ipbHours').innerHTML = ipbDurations
+      .map((d) => `<option value="${d.id}">${esc(d.label)}</option>`).join('');
+    document.getElementById('btnIpBan').addEventListener('click', submitIpBan);
+    document.getElementById('btnRefreshIpBan').addEventListener('click', loadIpBans);
+    // 多填一个 IP 就点一次封禁：回车提交比找按钮顺手
+    document.getElementById('ipbReason').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitIpBan();
+    });
+    ipbFormReady = true;
+  }
+
+  function renderIpBans() {
+    document.getElementById('ipbCount').textContent = allBans.length;
+    document.getElementById('ipbMyIp').innerHTML = ipbMyIp
+      ? `你当前的 IP：<b>${esc(maskIp(ipbMyIp))}</b> —— 不能封禁会把你自己也圈进去的规则`
+      : '';
+    renderPaged('ipbans', allBans, 'ipbPager', renderIpBanPage);
+  }
+
+  function renderIpBanPage(slice) {
+    const el = document.getElementById('ipbList');
+    if (!slice.length) {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">暂无封禁记录。</div>';
+      return;
+    }
+    const now = Date.now();
+    el.innerHTML = slice.map((b) => {
+      const st = b.permanent
+        ? '<span style="color:var(--red-light);">永久</span>'
+        : (b.active
+          ? `<span style="color:var(--gold-light);">剩余 ${fmtLeft(b.expiresAt - now)}</span>`
+          : '<span style="color:var(--text-dim);">已过期</span>');
+      const hit = b.hits
+        ? ` · 已命中 ${b.hits} 次${b.lastHitAt ? `（最近 ${fmtTs(b.lastHitAt)}）` : ''}`
+        : ' · 尚未命中';
+      return `
+        <div class="record-item">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:13px;">
+                <span class="ipb-mask" data-ip="${esc(b.ip)}" data-shown="0" style="cursor:pointer;"
+                      title="点击展开完整地址">${esc(maskIp(b.ip))}</span>
+                &nbsp;${st}
+              </div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">
+                ${esc(b.reason || '')} · 操作人 ${esc(b.bannedById || '—')} · ${fmtTs(b.bannedAt)}${hit}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              ${b.permanent ? '' : `<button class="btn btn-ghost btn-sm" data-ipb-ext="${esc(b.ip)}">延长 24h</button>`}
+              <button class="btn btn-ghost btn-sm" data-ipb-unban="${esc(b.ip)}" style="color:var(--red-light);">解封</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    // 掩码点击展开（IP 属隐私数据，与 §U6 同一口径：默认只见网段）
+    el.querySelectorAll('.ipb-mask').forEach((s) => s.addEventListener('click', () => {
+      const ip = s.getAttribute('data-ip');
+      const shown = s.getAttribute('data-shown') === '1';
+      s.textContent = shown ? maskIp(ip) : ip;
+      s.setAttribute('data-shown', shown ? '0' : '1');
+    }));
+    el.querySelectorAll('button[data-ipb-unban]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ip = btn.getAttribute('data-ipb-unban');
+        if (!confirm(`确定解封 ${ip}？`)) return;
+        ipbPost('/api/admin/ipbans/unban', { ip }, '已解封');
+      });
+    });
+    el.querySelectorAll('button[data-ipb-ext]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        ipbPost('/api/admin/ipbans/extend', { ip: btn.getAttribute('data-ipb-ext'), hours: 24 }, '已延长 24 小时');
+      });
+    });
+  }
+
+  function submitIpBan() {
+    const ip = document.getElementById('ipbIp').value.trim();
+    const reason = document.getElementById('ipbReason').value.trim();
+    const durId = document.getElementById('ipbHours').value;
+    const dur = ipbDurations.find((d) => d.id === durId) || {};
+
+    if (!ip) return toast('请填写 IP 或网段');
+    if (!reason) return toast('必须填写封禁理由');
+
+    // 永久封禁单独再确认一次：它是 NAT 共享出口误伤面最大的一档，且不会自动解除
+    if (dur.hours === null && !confirm(`确定对 ${ip} 做【永久】封禁？\n共享出口 IP 可能影响很多人，且不会自动解除。`)) return;
+    if (!confirm(`确定封禁 ${ip}？\n理由：${reason}\n时长：${dur.label || durId}`)) return;
+
+    ipbPost('/api/admin/ipbans', { ip, reason, hours: dur.hours }, '已封禁').then((ok) => {
+      if (ok) { document.getElementById('ipbIp').value = ''; document.getElementById('ipbReason').value = ''; }
+    });
+  }
+
+  /** 三个写操作共用：POST + 错误提示 + 成功后刷新列表 */
+  async function ipbPost(path, body, okMsg) {
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': getToken() },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) { toast((data && data.error) || '操作失败'); return false; }
+      toast(okMsg);
+      loadIpBans();
+      return true;
+    } catch (e) { toast('操作失败：' + e.message); return false; }
+  }
+
+  /** 剩余时长文案 */
+  function fmtLeft(ms) {
+    if (ms <= 0) return '已过期';
+    const m = Math.ceil(ms / 60000);
+    if (m < 60) return `${m} 分钟`;
+    const h = Math.floor(m / 60);
+    if (h < 48) return `${h} 小时`;
+    return `${Math.floor(h / 24)} 天`;
+  }
+
+  // ==================================================================
+  // §C1 总览仪表盘
+  // ==================================================================
+  let ovBtnReady = false;
+
+  async function loadOverview() {
+    if (!ovBtnReady) {
+      const b = document.getElementById('btnRefreshOverview');
+      if (b) b.addEventListener('click', loadOverview);
+      ovBtnReady = true;
+    }
+    try {
+      const res = await fetch('/api/admin/overview', { headers: { 'x-admin-token': getToken() } });
+      const d = await res.json();
+      if (!res.ok) { toast((d && d.error) || '加载失败'); return; }
+      renderOverview(d);
+    } catch (e) { toast('加载失败：' + e.message); }
+  }
+
+  function renderOverview(d) {
+    const cards = [
+      ['在线人数', d.stats.online, 'var(--gold-light)'],
+      ['进行中对局', d.stats.playing],
+      ['等待中', d.stats.waiting],
+      ['棋谱总数', d.recordsTotal],
+      ['用户数', d.userCount],
+      ['赛事数', d.tournamentCount],
+      ['公告数', d.announcementCount],
+      ['生效中的 IP 封禁', d.activeBanCount],
+    ];
+    document.getElementById('ovStats').innerHTML = cards.map(([label, val, color]) => `
+      <div class="card" style="padding:14px 16px;background:var(--bg-2);">
+        <div style="font-size:12px;color:var(--text-dim);">${label}</div>
+        <div style="font-size:24px;font-weight:800;margin-top:4px;${color ? `color:${color};` : ''}">${val == null ? '—' : val}</div>
+      </div>`).join('');
+
+    const au = (d.recentAudit || []).slice().reverse(); // 最新在上
+    document.getElementById('ovAudit').innerHTML = au.length ? au.map((e) => `
+      <div style="font-size:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+        <span style="color:var(--text-dim);">${fmtTs(e.ts)}</span>
+        · <span style="color:var(--gold-light);">${esc(e.action || '')}</span>
+        · ${esc(maskIp(e.ip || ''))}
+        ${e.ok === false ? ' · <span style="color:var(--red-light);">失败</span>' : ''}
+      </div>`).join('') : '<div style="color:var(--text-dim);font-size:13px;">暂无记录。</div>';
+
+    const bt = d.recentBattles || [];
+    document.getElementById('ovBattles').innerHTML = bt.length ? bt.map((r) => {
+      const names = r.names || ['先手', '後手'];
+      const res = window.UI.resultText(r, { withClass: true });
+      return `<div style="font-size:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+        ${esc(names[0])} vs ${esc(names[1])}
+        <span class="${res.cls}" style="font-size:11px;">${esc(res.text)}</span>
+        <span style="color:var(--text-dim);"> · ${r.moveCount || 0} 手 · ${fmtTs(r.createdAt)}</span>
+      </div>`;
+    }).join('') : '<div style="color:var(--text-dim);font-size:13px;">暂无对局。</div>';
+  }
+
+  // ==================================================================
+  // §C5 公告管理
+  //
+  // ⚠️ 公告删空后**不会**退回默认公告（旧实现会，表现为"删不掉"）——
+  // 由服务端 `listAnnouncements()` 只用「是不是数组」判断来保证。
+  // ==================================================================
+  let allAnn = [];
+  let anEditingId = null;
+  let anFormReady = false;
+
+  async function loadAnnouncements() {
+    initAnnForm();
+    try {
+      const res = await fetch('/api/admin/announcements', { headers: { 'x-admin-token': getToken() } });
+      const d = await res.json();
+      if (!res.ok) { toast((d && d.error) || '加载失败'); return; }
+      allAnn = d.announcements || [];
+      renderAnnouncements();
+    } catch (e) { toast('加载失败：' + e.message); }
+  }
+
+  function initAnnForm() {
+    if (anFormReady) return;
+    document.getElementById('btnAnnAdd').addEventListener('click', submitAnnouncement);
+    document.getElementById('btnAnnCancelEdit').addEventListener('click', cancelAnEdit);
+    document.getElementById('btnRefreshAnn').addEventListener('click', loadAnnouncements);
+    anFormReady = true;
+  }
+
+  function cancelAnEdit() {
+    anEditingId = null;
+    document.getElementById('anTitle').value = '';
+    document.getElementById('anContent').value = '';
+    document.getElementById('anPinned').checked = false;
+    document.getElementById('btnAnnAdd').textContent = '＋ 发布公告';
+    document.getElementById('btnAnnCancelEdit').style.display = 'none';
+    document.getElementById('anEditHint').style.display = 'none';
+  }
+
+  async function submitAnnouncement() {
+    const title = document.getElementById('anTitle').value.trim();
+    const content = document.getElementById('anContent').value.trim();
+    const pinned = document.getElementById('anPinned').checked;
+    if (!title) return toast('请填写标题');
+    if (!content) return toast('请填写内容');
+
+    if (anEditingId != null) {
+      const ok = await anPost(`/api/admin/announcements/${anEditingId}/update`, { title, content, pinned }, '公告已更新');
+      if (ok) cancelAnEdit();
+    } else {
+      const ok = await anPost('/api/admin/announcements', { title, content, pinned }, '公告已发布');
+      if (ok) cancelAnEdit();
+    }
+  }
+
+  function renderAnnouncements() {
+    document.getElementById('anCount').textContent = allAnn.length;
+    renderPaged('announcements', allAnn, 'anPager', renderAnnPage);
+  }
+
+  function renderAnnPage(slice) {
+    const el = document.getElementById('anList');
+    if (!slice.length) {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">暂无公告。用上方表单发一条吧。</div>';
+      return;
+    }
+    el.innerHTML = slice.map((a) => `
+      <div class="record-item">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:240px;">
+            <div style="font-size:13px;font-weight:700;">
+              ${a.pinned ? '<span style="color:var(--gold-light);">📌</span> ' : ''}${esc(a.title)}
+            </div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px;white-space:pre-wrap;">${esc(a.content)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
+              #${a.id} · 发布于 ${fmtTs(a.createdAt)}${a.updatedAt ? ` · 修改于 ${fmtTs(a.updatedAt)}` : ''}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" data-an-pin="${a.id}" data-an-pinned="${a.pinned ? 1 : 0}">${a.pinned ? '取消置顶' : '置顶'}</button>
+            <button class="btn btn-ghost btn-sm" data-an-edit="${a.id}">编辑</button>
+            <button class="btn btn-ghost btn-sm" data-an-del="${a.id}" style="color:var(--red-light);">删除</button>
+          </div>
+        </div>
+      </div>`).join('');
+
+    el.querySelectorAll('button[data-an-pin]').forEach((b) => {
+      b.addEventListener('click', () => {
+        anPost(`/api/admin/announcements/${encodeURIComponent(b.getAttribute('data-an-pin'))}/update`,
+          { pinned: b.getAttribute('data-an-pinned') !== '1' }, '已更新');
+      });
+    });
+    el.querySelectorAll('button[data-an-edit]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const a = allAnn.find((x) => String(x.id) === b.getAttribute('data-an-edit'));
+        if (!a) return;
+        anEditingId = a.id;
+        document.getElementById('anTitle').value = a.title;
+        document.getElementById('anContent').value = a.content;
+        document.getElementById('anPinned').checked = !!a.pinned;
+        document.getElementById('btnAnnAdd').textContent = '保存修改';
+        document.getElementById('btnAnnCancelEdit').style.display = '';
+        document.getElementById('anEditHint').style.display = '';
+        document.getElementById('anEditHint').textContent = `正在编辑 #${a.id}「${a.title}」`;
+        document.getElementById('anTitle').focus();
+      });
+    });
+    el.querySelectorAll('button[data-an-del]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const id = b.getAttribute('data-an-del');
+        const a = allAnn.find((x) => String(x.id) === String(id));
+        if (!confirm(`确定删除公告「${a ? a.title : id}」？`)) return;
+        anPost(`/api/admin/announcements/${encodeURIComponent(id)}/delete`, {}, '已删除').then((ok) => {
+          if (ok && String(anEditingId) === String(id)) cancelAnEdit();
+        });
+      });
+    });
+  }
+
+  // ==================================================================
+  // §C6 实时干预：在线房间列表 + 强制解散 / 强制下线
+  //
+  // ⚠️ 强制解散是**破坏性**操作：对局会立刻中断。所以每个按钮都带二次确认，
+  // 并且确认框里写出"房间里有谁"——避免管理员看错行、解散错房间。
+  // ==================================================================
+  let allRooms = [];
+  let rmBtnReady = false;
+
+  async function loadRooms() {
+    if (!rmBtnReady) {
+      const b = document.getElementById('btnRefreshRooms');
+      if (b) b.addEventListener('click', loadRooms);
+      rmBtnReady = true;
+    }
+    try {
+      const res = await fetch('/api/admin/rooms', { headers: { 'x-admin-token': getToken() } });
+      const d = await res.json();
+      if (!res.ok) { toast((d && d.error) || '加载失败'); return; }
+      allRooms = d.rooms || [];
+      renderRooms();
+    } catch (e) { toast('加载失败：' + e.message); }
+  }
+
+  function renderRooms() {
+    document.getElementById('rmCount').textContent = allRooms.length;
+    const el = document.getElementById('rmList');
+    if (!allRooms.length) {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">当前没有在线房间。</div>';
+      return;
+    }
+    el.innerHTML = allRooms.map((r) => {
+      const who = (r.players || []).map((p) => `
+        <span data-player-id="${esc(p.id || '')}" style="margin-right:6px;">
+          ${p.seat === 'b' ? '▲' : '△'} ${esc(p.name || '—')}
+          ${p.connected ? '' : '<span style="color:var(--red-light);font-size:11px;">（已断线）</span>'}
+          <button class="btn btn-ghost btn-sm" data-rm-kick="${esc(p.id || '')}" style="padding:1px 6px;font-size:11px;">下线</button>
+        </span>`).join('') || '<span style="color:var(--text-dim);">无人</span>';
+      const tags = [
+        r.status,
+        r.isPrivate ? '<span style="color:var(--gold-light);">私人房</span>' : '',
+        r.tournamentId ? '赛事对局' : '',
+        r.rated ? '计分' : '不计分',
+        r.spectators ? `观众 ${r.spectators}` : '',
+      ].filter(Boolean).join(' · ');
+      return `
+        <div class="record-item">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:13px;">${who}</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
+                ${esc(tags)}${r.code ? ` · 房号 ${esc(r.code)}` : ''} · ${r.moveCount} 手 · 建于 ${fmtTs(r.createdAt)}
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-ghost btn-sm" data-rm-close="${esc(r.roomId)}" style="color:var(--red-light);">强制解散</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    el.querySelectorAll('button[data-rm-close]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const roomId = b.getAttribute('data-rm-close');
+        const r = allRooms.find((x) => x.roomId === roomId);
+        const who = r ? (r.players || []).map((p) => p.name || '—').join(' vs ') : '';
+        if (!confirm(`确定强制解散房间？\n房内：${who}\n\n对局会立刻中断。`)) return;
+        roomPost(`/api/admin/rooms/${encodeURIComponent(roomId)}/close`, {}, '已解散房间');
+      });
+    });
+    el.querySelectorAll('button[data-rm-kick]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const pid = b.getAttribute('data-rm-kick');
+        if (!pid) return toast('该座位没有可下线的玩家');
+        if (!confirm('确定把该玩家强制下线？\n（对局中会走断线判负流程）')) return;
+        roomPost('/api/admin/kick', { playerId: pid }, '已强制下线');
+      });
+    });
+  }
+
+  async function roomPost(path, body, okMsg) {
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': getToken() },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) { toast((data && data.error) || '操作失败'); return false; }
+      toast(okMsg);
+      loadRooms();
+      return true;
+    } catch (e) { toast('操作失败：' + e.message); return false; }
+  }
+
+  /** 公告的三个写操作共用：POST + 错误提示 + 成功后刷新 */
+  async function anPost(path, body, okMsg) {
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': getToken() },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) { toast((data && data.error) || '操作失败'); return false; }
+      toast(okMsg);
+      loadAnnouncements();
+      return true;
+    } catch (e) { toast('操作失败：' + e.message); return false; }
+  }
 
   document.getElementById('btnRefreshAudit').addEventListener('click', loadAudit);
 

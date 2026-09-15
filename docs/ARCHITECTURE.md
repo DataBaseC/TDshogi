@@ -47,7 +47,7 @@ shogiwebapp/
 │   ├── records.js       # 棋谱：SQLite 读写 + KIF/CSA 导出 + 复盘/书签/变着 + 检索
 │   ├── kif.js           # KIF 解析（导入）
 │   ├── ratings.js       # ELO 评级
-│   ├── tournaments.js   # 单败淘汰赛事
+│   ├── tournaments.js   # 赛事（单败淘汰；2.0 设计见 docs/TOURNAMENT.md）
 │   ├── accounts.js      # 账号（scrypt 哈希 + 令牌 + 游客升级迁移）
 │   ├── auth.js          # 游客会话（基于 storage kv 的 sessions/*）
 │   ├── admin.js         # 管理员鉴权（HMAC 令牌）
@@ -56,7 +56,7 @@ shogiwebapp/
 │   ├── privacy.js       # 隐私字段出口白名单 stripPrivate/assertNoPrivate（PLAN §M3）
 │   └── announcements.js # 系统公告
 ├── public/              # 前端（静态）
-│   ├── *.html           # 9 页面：index/lobby/play/history/gallery/review/tournaments/profile/admin
+│   ├── *.html           # 10 页面：index/lobby/play/history/gallery/review/tournaments/tournament/profile/admin
 │   ├── css/             # style.css（全局+响应式）/ board.css / review.css
 │   └── js/              # 20 个脚本：settings.js(用户设置中心·须最先) util.js(公共工具 $/esc/toast) api.js(WS封装) nav.js board.js pieces.js(图集配置)
 │   │                      piece-kinds.js(棋种映射单一来源+自检)

@@ -1,0 +1,564 @@
+'use strict';
+/**
+ * tournaments.test.js — 赛事状态机与权限（`src/tournaments.js`，PLAN §V-T1）
+ *
+ * T1 的核心产出是 **`canManage()` 单点权限**与**状态机**。这两样东西的特点是：
+ * 「写对了没人夸，写错了就是越权或数据损坏」。所以这里**逐格断言权限矩阵**，
+ * 而不是只测"某条正常路径能跑通"——矩阵里漏判一格，就是一个越权后门。
+ *
+ * 断言直接从 `ACTION_ROLES` 推导出"应该允许谁"，再与实际判定比对：
+ * 将来加新动作时，只要忘了补测试，这里的遍历就会暴露出来。
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const path = require('path');
+const fs = require('fs');
+
+// 数据隔离：tournaments 会连带 require storage（首次 getDb 时定死路径）
+const TMP = path.join(__dirname, '..', '.tmpdata-tournaments');
+process.env.DATA_DIR = TMP;
+if (fs.existsSync(TMP)) fs.rmSync(TMP, { recursive: true, force: true });
+
+const T = require('../src/tournaments');
+const storage = require('../src/storage');
+
+test.after(() => {
+  // Windows 上必须先关掉 SQLite 连接，否则目录删不掉（见 cleanup.test.js 的同款处理）
+  try { storage._getDb().close(); } catch (_) { /* 忽略 */ }
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* 忽略 */ }
+});
+
+// ---------------- 测试替身 ----------------
+
+function mkTournament(over) {
+  return Object.assign({
+    id: 't1',
+    name: '测试赛',
+    size: 8,
+    ownerId: 'owner-1',
+    status: 'registration',
+    entrants: [{ id: 'player-1', status: 'approved' }],
+    players: [{ id: 'player-1' }],
+  }, over || {});
+}
+
+const actor = {
+  admin: { id: 'admin-1', isAdmin: true },
+  owner: { id: 'owner-1' },
+  player: { id: 'player-1' },
+  stranger: { id: 'nobody' },
+};
+
+/** 只有管理员能做的动作（含需求 10 被用户修正的"设冠军"） */
+const ADMIN_ONLY = ['approve_tournament', 'reject_tournament', 'set_champion', 'archive', 'edit_archived'];
+/** 管理员与主办人（未结束时）共有的管理动作 */
+const ADMIN_OR_OWNER = ['decide_entrant', 'kick_player', 'void_player', 'assign_round', 'decide_rematch', 'cancel'];
+
+// ---------------- 断言 ----------------
+
+test('T1 canManage：参数缺失 / 未知动作一律拒绝', () => {
+  assert.strictEqual(T.canManage(mkTournament(), actor.admin, 'no_such_action'), false);
+  assert.strictEqual(T.canManage(null, actor.admin, 'cancel'), false);
+  assert.strictEqual(T.canManage(mkTournament(), null, 'cancel'), false);
+  assert.strictEqual(T.canManage(mkTournament(), actor.admin, ''), false);
+});
+
+test('T1 canManage：仅管理员可用的动作 —— 主办人/选手/路人都不可', () => {
+  const t = mkTournament();
+  for (const a of ADMIN_ONLY) {
+    // 先确认这个动作确实登记在表里，避免拼错动作名导致"测试通过但没测到东西"
+    assert.ok(T.ACTION_ROLES[a], `${a} 应登记在 ACTION_ROLES`);
+    if (a === 'edit_archived') {
+      // T6：这个动作**额外要求赛事已存档**——存档前有正常管理操作可用，
+      // 那时走"编辑"会把还没定论的东西记成"赛后更正"，所以未存档时连管理员也不放行。
+      assert.strictEqual(T.canManage(t, actor.admin, a), false, `未存档时 admin 也不该能 ${a}`);
+      const archived = Object.assign({}, t, { status: 'archived' });
+      assert.strictEqual(T.canManage(archived, actor.admin, a), true, `存档后 admin 应可 ${a}`);
+      continue;
+    }
+    assert.strictEqual(T.canManage(t, actor.admin, a), true, `admin 应可 ${a}`);
+    assert.strictEqual(T.canManage(t, actor.owner, a), false, `主办人不可 ${a}（需求 10 已修正为仅管理员）`);
+    assert.strictEqual(T.canManage(t, actor.player, a), false, `选手不可 ${a}`);
+    assert.strictEqual(T.canManage(t, actor.stranger, a), false, `路人不可 ${a}`);
+  }
+});
+
+test('T1 canManage：管理员与主办人共有的管理动作', () => {
+  const t = mkTournament();
+  for (const a of ADMIN_OR_OWNER) {
+    assert.ok(T.ACTION_ROLES[a], `${a} 应登记在 ACTION_ROLES`);
+    assert.strictEqual(T.canManage(t, actor.admin, a), true, `admin 应可 ${a}`);
+    assert.strictEqual(T.canManage(t, actor.owner, a), true, `主办人应可 ${a}（赛事未结束）`);
+    assert.strictEqual(T.canManage(t, actor.player, a), false, `选手不可 ${a}`);
+    assert.strictEqual(T.canManage(t, actor.stranger, a), false, `路人不可 ${a}`);
+  }
+});
+
+test('T1 canManage：存档后主办人只读、管理员仍可编辑（需求 11）', () => {
+  const t = mkTournament({ status: 'archived' });
+  for (const a of ADMIN_OR_OWNER) {
+    assert.strictEqual(T.canManage(t, actor.owner, a), false, `已存档 → 主办人不可 ${a}`);
+  }
+  // 管理员仍保有全权（cancel 除外——已收尾的赛事谁都不能取消）
+  assert.strictEqual(T.canManage(t, actor.admin, 'decide_entrant'), true, '管理员对已存档赛事仍有全权');
+  assert.strictEqual(T.canManage(t, actor.admin, 'edit_archived'), true, '管理员仍可编辑存档赛事');
+  assert.strictEqual(T.canManage(t, actor.owner, 'edit_archived'), false, '主办人不可编辑存档赛事');
+  assert.strictEqual(T.canManage(t, actor.owner, 'cancel'), false, '已存档更不可取消');
+});
+
+test('T1 canManage：主办人「结束后不能取消」（用户 2026-09-13 明确）', () => {
+  for (const st of ['finished', 'archived', 'cancelled', 'rejected']) {
+    const t = mkTournament({ status: st });
+    assert.strictEqual(T.canManage(t, actor.owner, 'cancel'), false, `${st} 状态主办人不可取消`);
+    // 管理员对已收尾的赛事同样不可取消（与主办人限制保持一致）
+    assert.strictEqual(T.canManage(t, actor.admin, 'cancel'), false, `${st} 状态管理员也不可取消`);
+  }
+  // finished 是"收尾窗口"：其他管理动作主办人仍可做
+  assert.strictEqual(T.canManage(mkTournament({ status: 'finished' }), actor.owner, 'decide_entrant'), true,
+    'finished 仍属收尾期，主办人应可处理报名等事务');
+});
+
+test('T1 canManage：选手只在「比赛中」可申请重赛', () => {
+  assert.strictEqual(T.canManage(mkTournament({ status: 'playing' }), actor.player, 'request_rematch'), true);
+  assert.strictEqual(T.canManage(mkTournament({ status: 'registration' }), actor.player, 'request_rematch'), false,
+    '还没开赛谈不上重赛');
+  assert.strictEqual(T.canManage(mkTournament({ status: 'playing' }), actor.stranger, 'request_rematch'), false,
+    '非参赛者不能申请重赛');
+  assert.strictEqual(T.canManage(mkTournament({ status: 'playing' }), actor.owner, 'request_rematch'), false,
+    '主办人若未参赛，不能替选手申请重赛');
+});
+
+test('T1 状态机：合法迁移', () => {
+  assert.strictEqual(T.canTransition('pending_approval', 'registration'), true);
+  assert.strictEqual(T.canTransition('pending_approval', 'rejected'), true);
+  assert.strictEqual(T.canTransition('registration', 'playing'), true);
+  assert.strictEqual(T.canTransition('registration', 'cancelled'), true);
+  assert.strictEqual(T.canTransition('playing', 'finished'), true);
+  assert.strictEqual(T.canTransition('playing', 'cancelled'), true);
+  assert.strictEqual(T.canTransition('finished', 'archived'), true);
+});
+
+test('T1 状态机：非法迁移一律拒绝', () => {
+  assert.strictEqual(T.canTransition('pending_approval', 'playing'), false, '不能跳过报名直接开赛');
+  assert.strictEqual(T.canTransition('pending_approval', 'finished'), false);
+  assert.strictEqual(T.canTransition('archived', 'playing'), false, 'archived 是终态');
+  assert.strictEqual(T.canTransition('archived', 'finished'), false);
+  assert.strictEqual(T.canTransition('rejected', 'registration'), false);
+  assert.strictEqual(T.canTransition('cancelled', 'playing'), false);
+  assert.strictEqual(T.canTransition('registration', 'archived'), false, '必须先打完（finished）才能存档');
+});
+
+test('T1 状态机：旧状态名 open 映射为 registration（历史数据不能卡死）', () => {
+  assert.strictEqual(T.normalizeStatus('open'), 'registration');
+  assert.strictEqual(T.normalizeStatus('playing'), 'playing');
+  assert.strictEqual(T.normalizeStatus(undefined), 'pending_approval');
+  assert.strictEqual(T.canTransition('open', 'playing'), true, '旧数据（open）应能正常开赛');
+  assert.strictEqual(T.canTransition('open', 'registration'), false, 'open 已经等价于 registration');
+});
+
+test('T1 数据模型：新建赛事带上申请表字段，且默认"报名需审核"', () => {
+  const r = T.createTournament('集成测试赛', 8, { id: 'owner-x', name: '主办人' }, {
+    reason: '这是一条足够长的举办理由说明',
+    registerStart: 1000,
+    registerEnd: 2000,
+    matchStart: 3000,
+    matchEnd: 4000,
+    format: 'single-elimination',
+  });
+  assert.strictEqual(r.ok, true, r.error || '');
+  const t = r.tournament;
+  assert.strictEqual(t.status, 'pending_approval');
+  assert.strictEqual(t.size, 8);
+  assert.strictEqual(t.requireApproval, true, '未显式关闭时应默认需审核');
+  assert.strictEqual(t.reason, '这是一条足够长的举办理由说明');
+  assert.strictEqual(t.registerEnd, 2000);
+  assert.strictEqual(t.ownerName, '主办人');
+  // 2026-09-13 用户要求：主办人**不自动参赛**（办赛与参赛是两件事）
+  assert.strictEqual(t.entrants.length, 0, '主办人不自动进入报名池');
+  assert.strictEqual(t.players.length, 0, '主办人不自动占一个参赛名额');
+  assert.strictEqual(t.ownerId, 'owner-x', '但主办人身份仍要记下（权限判定要用）');
+});
+
+test('T1 数据模型：服务端二次校验（时间自洽 / 人数档位 / 赛制）', () => {
+  const owner = { id: 'owner-y', name: '主办人' };
+  // 时间倒置
+  let r = T.createTournament('x', 8, owner, { registerStart: 5000, registerEnd: 1000 });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /报名结束时间/);
+
+  r = T.createTournament('x', 8, owner, { matchStart: 9000, matchEnd: 8000 });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /比赛结束时间/);
+
+  // 比赛开始早于报名结束
+  r = T.createTournament('x', 8, owner, { registerEnd: 5000, matchStart: 3000 });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /报名结束时间/);
+
+  // 人数档位（6 不是 2 的幂）
+  r = T.createTournament('x', 6, owner, {});
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /参赛人数/);
+
+  // 赛制未实装
+  r = T.createTournament('x', 8, owner, { format: 'swiss' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /赛制/);
+
+  // 4 / 32 档应放行（Q3 用户确认扩到 32）
+  assert.strictEqual(T.createTournament('小赛', 4, owner, {}).ok, true);
+  assert.strictEqual(T.createTournament('大赛', 32, owner, {}).ok, true);
+});
+
+test('T1 数据模型：publicInfo 对旧数据兜底（缺字段不炸、reason 语义归位）', () => {
+  // 模拟一条 T1 之前的旧数据：没有 entrants/logs/rejectReason，状态写的是 open
+  // 且 reason 存的是"拒绝原因"（旧语义）
+  const legacy = {
+    id: 'old', name: '旧赛事', size: 4, status: 'rejected', ownerId: 'o1',
+    players: [{ id: 'o1', name: '主办' }], bracket: [], championId: null, reason: '资料不全',
+  };
+  const info = T.publicInfo(legacy);
+  assert.strictEqual(info.status, 'rejected');
+  assert.deepStrictEqual(info.entrants, [], '缺字段应兜底为空数组而不是 undefined');
+  assert.strictEqual(info.rejectReason, '资料不全', '旧 reason 应归位到 rejectReason');
+  assert.strictEqual(info.reason, '', '旧数据的 reason 不应被显示成"举办理由"');
+  assert.strictEqual(info.requireApproval, true, '缺字段时默认需审核');
+
+  // 非终态的旧数据（open）：reason 归为举办理由
+  const open = T.publicInfo({ id: 'o2', name: 'x', size: 4, status: 'open', reason: '办个比赛' });
+  assert.strictEqual(open.status, 'registration', 'open 应映射为 registration');
+  assert.strictEqual(open.reason, '办个比赛');
+});
+
+// ======================================================================
+// T3 报名两段式 + 未满员轮空
+// ======================================================================
+
+/** 造一个已通过管理员审核（registration 状态）的赛事，返回其 id */
+function mkApproved(over) {
+  const r = T.createTournament('T3 测试赛', 4, { id: 'owner-1', name: '主办' }, Object.assign({
+    reason: '用于验证报名与轮空逻辑的测试赛事',
+  }, over || {}));
+  assert.strictEqual(r.ok, true, r.error || '');
+  T.approveTournament(r.tournament.id);
+  return r.tournament.id;
+}
+
+test('T3 免审核报名：报名即参赛，满员才自动开赛', () => {
+  const id = mkApproved({ requireApproval: false });
+  const j = (n) => T.joinTournament(id, { id: 'p' + n, name: '棋手' + n });
+
+  const first = j(1);
+  assert.strictEqual(first.ok, true);
+  assert.strictEqual(first.pending, false, '免审核应当立即通过');
+  assert.strictEqual(T.getTournament(id).status, 'registration', '没满员不该开赛');
+
+  j(2); j(3);
+  assert.strictEqual(T.getTournament(id).status, 'registration');
+  const last = j(4);
+  assert.strictEqual(last.started, true, '满员应自动开赛');
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'playing');
+  assert.strictEqual(t.players.length, 4, '开赛时把 approved 冻结进 players');
+});
+
+test('T3 需审核报名：进报名池等待，pending 不占名额也不进 players', () => {
+  const id = mkApproved({ requireApproval: true });
+  const r = T.joinTournament(id, { id: 'q1', name: '甲' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.pending, true, '需审核时应是 pending');
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.entrants.length, 1);
+  assert.strictEqual(t.entrants[0].status, 'pending');
+  assert.strictEqual(t.players.length, 0, '还没批准，不该进 players');
+  assert.strictEqual(T.approvedCount(t), 0, 'pending 不计入已批准人数');
+
+  assert.strictEqual(T.joinTournament(id, { id: 'q1', name: '甲' }).ok, false, '重复报名应被拒');
+});
+
+test('T3 名额按「已批准」计：一堆 pending 不会把名额占满', () => {
+  const id = mkApproved({ requireApproval: true }); // size = 4
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'r' + i, name: '乙' + i });
+  assert.strictEqual(T.joinTournament(id, { id: 'r5', name: '乙5' }).ok, true,
+    '待审核的人不该把名额占满（否则真正被批准的反而报不进来）');
+  assert.strictEqual(T.getTournament(id).status, 'registration', '全是 pending，不能开赛');
+});
+
+test('T3 批准 / 拒绝报名：权限只在主办人与管理员', () => {
+  const id = mkApproved({ requireApproval: true });
+  T.joinTournament(id, { id: 's1', name: '丙' });
+  const owner = { id: 'owner-1' };
+  const admin = { id: 'adm', isAdmin: true };
+  const stranger = { id: 'nobody' };
+
+  assert.strictEqual(T.decideEntrant(id, 's1', 'approve', stranger).ok, false, '路人不能批准');
+  assert.strictEqual(T.decideEntrant(id, 's1', 'approve', { id: 'p-other' }).ok, false, '非主办人不能批准');
+  assert.strictEqual(T.decideEntrant(id, 's1', 'approve', admin).ok, true, '管理员可以批准');
+  assert.strictEqual(T.getTournament(id).entrants[0].status, 'approved');
+  assert.strictEqual(T.decideEntrant(id, 's1', 'reject', owner).ok, false, '已处理过的报名不该能二次处置');
+
+  T.joinTournament(id, { id: 's2', name: '丁' });
+  assert.strictEqual(T.decideEntrant(id, 's2', 'reject', owner).ok, true);
+  assert.strictEqual(T.getTournament(id).entrants.find((e) => e.id === 's2').status, 'rejected');
+});
+
+test('T3 踢出报名者：仅报名阶段可用，被踢后不能立刻再报', () => {
+  const id = mkApproved({ requireApproval: false });
+  T.joinTournament(id, { id: 'k1', name: '戊' });
+  assert.strictEqual(T.kickPlayer(id, 'k1').ok, true);
+  assert.strictEqual(T.getTournament(id).entrants[0].status, 'kicked');
+  assert.strictEqual(T.joinTournament(id, { id: 'k1', name: '戊' }).ok, false);
+  assert.strictEqual(T.kickPlayer(id, 'nobody').ok, false, '踢不存在的人应报错');
+});
+
+test('T3 未满员开赛：多出的位置首轮轮空，但**绝不能**直接判成冠军', () => {
+  const id = mkApproved({ requireApproval: false }); // size = 4，只来 3 人
+  T.joinTournament(id, { id: 'a1', name: 'A' });
+  T.joinTournament(id, { id: 'a2', name: 'B' });
+  T.joinTournament(id, { id: 'a3', name: 'C' });
+  assert.strictEqual(T.getTournament(id).status, 'registration', '未满员不该自动开赛');
+
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'room-' + (++n) })); // 建房替身：不碰真实房间
+  const r = T.startTournament(id, { byRole: 'owner', action: 'start' });
+  assert.strictEqual(r.ok, true, r.error || '');
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'playing');
+  assert.strictEqual(t.players.length, 3);
+
+  // 4 人档 / 3 名选手：一棵子树有两人（建房）、另一棵只有一人（轮空）
+  const byeNodes = t.bracket.filter((x) => x.winnerId && !x.players);
+  assert.strictEqual(byeNodes.length, 1, '应恰好有 1 个轮空位');
+  assert.strictEqual(byeNodes[0].winnerId, 'a3', '轮空应判给唯一的那个人');
+
+  // 这是本测试的重点：轮空者**不能**因此在决赛被直接判成冠军
+  const root = t.bracket[0];
+  assert.strictEqual(root.winnerId, null, '另一场还没打完，冠军不该产生');
+  assert.strictEqual(root.matchId, null, '决赛应等另一场出结果后再建房');
+  assert.strictEqual(t.championId, null, '绝不能提前产生冠军');
+
+  // 另一场打完后，决赛才该建房
+  const liveMatch = t.bracket.find((x) => x.matchId);
+  assert.ok(liveMatch, '两个真选手之间应已建房');
+  const finished = T.onMatchFinished(id, liveMatch.matchId, 'a1');
+  assert.strictEqual(finished.ok, true);
+  const after = T.getTournament(id);
+  const finalNode = after.bracket[0];
+  assert.ok(finalNode.matchId, '另一场结束后，决赛才建房');
+});
+
+test('T3 开赛门槛：不足 2 名通过审核者不能开赛', () => {
+  const id = mkApproved({ requireApproval: false });
+  T.joinTournament(id, { id: 'b1', name: '独占' });
+  const r = T.startTournament(id, { byRole: 'owner', action: 'start' });
+  assert.strictEqual(r.ok, false, '只有 1 人时不该能开赛');
+  assert.match(r.error, /2 名/);
+});
+
+// ======================================================================
+// T4 取消选手成绩 / 设置冠军
+// ======================================================================
+
+test('T4 设置冠军：**仅管理员**（主办人也不行）', () => {
+  const id = mkApproved({ requireApproval: false });
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'c' + i, name: '选手' + i });
+  assert.strictEqual(T.getTournament(id).status, 'playing');
+
+  assert.strictEqual(T.setChampion(id, 'c1', { id: 'owner-1' }).ok, false, '主办人不能设冠军（用户 2026-09-13 明确）');
+  assert.strictEqual(T.setChampion(id, 'c1', { id: 'passer-by' }).ok, false, '路人不能设冠军');
+
+  const r = T.setChampion(id, 'c1', { id: 'adm', isAdmin: true });
+  assert.strictEqual(r.ok, true, r.error || '');
+  const t = T.getTournament(id);
+  assert.strictEqual(t.championId, 'c1');
+  assert.strictEqual(t.championManual, true, '人工裁定要打标，避免被自动收尾覆盖');
+  assert.strictEqual(T.setChampion(id, 'nobody', { id: 'adm', isAdmin: true }).ok, false, '不在名单里的人不能当冠军');
+});
+
+test('T4 取消选手成绩：判对手胜，且下游重算（冠军不该是已取消的人）', () => {
+  const id = mkApproved({ requireApproval: false }); // size = 4
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'v' + i, name: '选手' + i });
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'vroom-' + (++n) }));
+  T.startTournament(id, { byRole: 'owner', action: 'start' });
+
+  let t = T.getTournament(id);
+  assert.strictEqual(t.status, 'playing');
+  const semis = t.bracket.filter((x) => x.matchId);
+  assert.strictEqual(semis.length, 2, '4 人首轮应有两场');
+
+  // 让第一场（v1 vs v2）由 v1 胜出 → v1 站到决赛位
+  const m0 = semis[0];
+  const finished = T.onMatchFinished(id, m0.matchId, 'v1');
+  assert.strictEqual(finished.ok, true, finished.error || '');
+  t = T.getTournament(id);
+  assert.strictEqual(t.bracket.find((x) => x.index === m0.index).winnerId, 'v1');
+
+  // 取消 v1 的成绩 → 对手 v2 应改为晋级
+  const r = T.voidPlayer(id, 'v1', { id: 'owner-1' });
+  assert.strictEqual(r.ok, true, r.error || '');
+  t = T.getTournament(id);
+  assert.strictEqual(
+    t.bracket.find((x) => x.index === m0.index).winnerId, 'v2',
+    '取消成绩后应判对手晋级'
+  );
+  assert.strictEqual(
+    t.bracket.filter((x) => x.winnerId === 'v1').length, 0,
+    'v1 不该残留在任何"已晋级"位置上（下游必须一起清）'
+  );
+  assert.notStrictEqual(t.championId, 'v1', '冠军绝不能是已被取消成绩的人');
+});
+
+test('T4 取消选手成绩：权限与名单校验', () => {
+  const id = mkApproved({ requireApproval: false });
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'z' + i, name: '选手' + i });
+
+  assert.strictEqual(T.voidPlayer(id, 'z1', { id: 'passer-by' }).ok, false, '路人不能取消成绩');
+  assert.strictEqual(T.voidPlayer(id, 'z1', { id: 'owner-1' }).ok, true, '主办人可以在开赛后取消成绩');
+  assert.strictEqual(T.voidPlayer(id, 'ghost', { id: 'owner-1' }).ok, false, '不在参赛名单里的人应报错');
+});
+
+// ======================================================================
+// T6 重赛 / 赛后存档 / 管理员编辑
+// ======================================================================
+
+/** 造一个 4 人已开赛的赛事，返回首场的 matchId（建房替身在开赛前就位） */
+function mkPlaying() {
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'room-' + (++n) })); // 必须先于开赛
+  const id = mkApproved({ requireApproval: false });
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'r' + i, name: '选手' + i });
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'playing', '4 人满员应自动开赛');
+  const first = t.bracket.filter((x) => x.matchId)[0];
+  assert.ok(first, '首轮应已建房');
+  return { id, matchId: first.matchId };
+}
+
+test('T6 重赛申请：只有本场选手能提（同赛事的其他选手也不行）', () => {
+  const { id, matchId } = mkPlaying();
+  T.onMatchFinished(id, matchId, 'r1'); // 首场结束（r1 vs r2）
+
+  // ⚠️ 这是本测试的重点：同样是"参赛者"，没打这一场的人不能对别人的对局申诉
+  const other = T.requestRematch(id, matchId, '我也想重赛', { id: 'r3', name: '选手3' });
+  assert.strictEqual(other.ok, false, '非本场选手不能申请重赛');
+  assert.match(other.error, /本场参赛者/);
+
+  const mine = T.requestRematch(id, matchId, '网络卡顿', { id: 'r1', name: '选手1' });
+  assert.strictEqual(mine.ok, true, mine.error || '');
+  assert.strictEqual(mine.rematch.status, 'pending');
+
+  // 同一场不能重复申请（对手也不行，否则主办人要处理一堆重复申诉）
+  assert.strictEqual(T.requestRematch(id, matchId, '再来一次', { id: 'r2', name: '选手2' }).ok, false);
+});
+
+test('T6 重赛裁决：批准后作废该场结果并重建这一局', () => {
+  const { id, matchId } = mkPlaying();
+  T.onMatchFinished(id, matchId, 'r1');
+  const rm = T.requestRematch(id, matchId, '掉线了', { id: 'r1', name: '选手1' }).rematch;
+
+  assert.strictEqual(T.decideRematch(id, rm.id, 'approve', { id: 'not-owner' }).ok, false, '路人不能裁决');
+
+  const r = T.decideRematch(id, rm.id, 'approve', { id: 'owner-1' }, '同意重赛');
+  assert.strictEqual(r.ok, true, r.error || '');
+
+  const t = T.getTournament(id);
+  const node = t.bracket.find((x) => x.index === rm.nodeIndex);
+  assert.strictEqual(node.winnerId, null, '批准后该场结果应被作废');
+  assert.ok(node.matchId, '应重新建房');
+  assert.notStrictEqual(node.matchId, matchId, '应是新房间，而不是把旧房间挂回去');
+  assert.strictEqual(t.rematches.find((x) => x.id === rm.id).status, 'approved');
+  // 旧申请不能二次处置
+  assert.strictEqual(T.decideRematch(id, rm.id, 'reject', { id: 'owner-1' }).ok, false);
+});
+
+test('T6 重赛裁决：驳回则对阵原样不动', () => {
+  const { id, matchId } = mkPlaying();
+  T.onMatchFinished(id, matchId, 'r1');
+  const rm = T.requestRematch(id, matchId, '手滑', { id: 'r2', name: '选手2' }).rematch;
+
+  const r = T.decideRematch(id, rm.id, 'reject', { id: 'owner-1' }, '结果有效');
+  assert.strictEqual(r.ok, true, r.error || '');
+  const node = T.getTournament(id).bracket.find((x) => x.index === rm.nodeIndex);
+  assert.strictEqual(node.winnerId, 'r1', '驳回后结果应保持不变');
+  assert.strictEqual(node.matchId, null, '不该重新建房');
+});
+
+/**
+ * 造一个**已结束**（finished）的 4 人赛事，返回其 id。
+ *
+ * ⚠️ 不能用 2 人档走捷径：`SIZE_OPTIONS` 只认 4/8/16/32（2 的幂且下限 4），
+ * 所以最小的"打完一场即结束"也是 4 人赛 → 半决赛两场 + 决赛一场。
+ */
+function mkFinished() {
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'fin-' + (++n) }));
+  const id = mkApproved({ requireApproval: false });
+  for (let i = 1; i <= 4; i++) T.joinTournament(id, { id: 'w' + i, name: '选手' + i });
+
+  const semis = T.getTournament(id).bracket.filter((x) => x.matchId);
+  assert.strictEqual(semis.length, 2, '4 人首轮应有两场');
+  T.onMatchFinished(id, semis[0].matchId, 'w1');
+  T.onMatchFinished(id, semis[1].matchId, 'w3');
+
+  const finalNode = T.getTournament(id).bracket.filter((x) => x.index === 0 && x.matchId)[0];
+  assert.ok(finalNode, '半决赛出结果后决赛应建房');
+  T.onMatchFinished(id, finalNode.matchId, 'w1');
+
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished', '决赛结束应产生冠军');
+  assert.ok(t.endedAt, '结束时要记 endedAt，否则自动存档无从计算');
+  return id;
+}
+
+test('T6 存档：仅管理员；存档后主办人只读、管理员仍可编辑', () => {
+  const id = mkFinished();
+  const owner = { id: 'owner-1' };
+  const admin = { id: null, isAdmin: true };
+
+  assert.strictEqual(T.archiveTournament(id, owner).ok, false, '主办人不能存档');
+  assert.strictEqual(T.archiveTournament(id, admin).ok, true, '管理员可以存档');
+  assert.strictEqual(T.getTournament(id).status, 'archived');
+
+  const t = T.getTournament(id);
+  assert.strictEqual(T.canManage(t, owner, 'void_player'), false, '存档后主办人不能取消成绩');
+  assert.strictEqual(T.canManage(t, owner, 'cancel'), false, '存档后主办人不能取消赛事');
+  assert.strictEqual(T.canManage(t, owner, 'decide_entrant'), false, '存档后主办人不能批报名');
+  assert.strictEqual(T.canManage(t, admin, 'edit_archived'), true, '管理员仍可编辑');
+});
+
+test('T6 自动存档：过了收尾窗口才会触发', () => {
+  const id = mkFinished();
+  const ended = T.getTournament(id);
+
+  const H = T.ARCHIVE_AFTER_HOURS;
+  assert.strictEqual(T.autoArchiveDue(ended.endedAt + (H - 1) * 3600 * 1000), 0, '窗口内不该存档');
+  assert.strictEqual(T.getTournament(id).status, 'finished');
+  assert.strictEqual(T.autoArchiveDue(ended.endedAt + (H + 1) * 3600 * 1000), 1, '超过窗口应自动存档');
+  assert.strictEqual(T.getTournament(id).status, 'archived');
+});
+
+test('T6 管理员编辑已存档赛事：仅管理员、仅 archived、每次留痕', () => {
+  const id = mkFinished();
+  const owner = { id: 'owner-1' };
+  const admin = { id: null, isAdmin: true };
+
+  assert.strictEqual(T.editArchived(id, 'note', 'x', admin).ok, false, '未存档不该走编辑通道');
+
+  T.archiveTournament(id, admin);
+  assert.strictEqual(T.editArchived(id, 'note', '赛后更正', owner).ok, false, '主办人不能编辑已存档赛事');
+
+  const r = T.editArchived(id, 'note', '赛后更正说明', admin, '补充说明');
+  assert.strictEqual(r.ok, true, r.error || '');
+  const t = T.getTournament(id);
+  assert.strictEqual(t.note, '赛后更正说明');
+  assert.strictEqual((t.adminEditLog || []).length, 1, '每次编辑必须留痕');
+  assert.strictEqual(t.adminEditLog[0].field, 'note');
+  assert.strictEqual(t.adminEditLog[0].to, '赛后更正说明');
+  assert.strictEqual(t.adminEditLog[0].note, '补充说明');
+
+  assert.strictEqual(T.editArchived(id, 'size', 8, admin).ok, false, '人数档位不是可编辑字段');
+  assert.strictEqual(T.editArchived(id, 'note', '赛后更正说明', admin).ok, false, '内容没变化应拒绝');
+});

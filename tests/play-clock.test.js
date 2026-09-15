@@ -30,8 +30,15 @@ global.document = { getElementById: (id) => (els[id] || (els[id] = makeEl(id))) 
 global.UI = { $: (id) => global.document.getElementById(id), esc: (s) => s, toast: () => {} };
 
 const sounds = [];
+// §U1：三种音**分别计数**——只数总数的话，"该响的响、不该响的不响"这类断言会被掩盖
+// （比如整分钟音误响、逐秒音漏响，总数仍可能对上）。
+const marks = { byoyomi: 0, byoyomiMark: 0, minute: 0 };
 global.window = global;               // play-clock.js 里用 window.Sound / window.PlayClock
-global.Sound = { playByoyomi: () => sounds.push(1) };
+global.Sound = {
+  playByoyomi: () => { sounds.push(1); marks.byoyomi++; },
+  playByoyomiMark: () => { marks.byoyomiMark++; },
+  playMinuteWarning: () => { marks.minute++; },
+};
 
 require(path.resolve(__dirname, '..', 'public', 'js', 'play-clock.js'));
 const Clock = global.PlayClock;
@@ -183,4 +190,108 @@ test('syncFromState：服务端下发 clock 字段时覆盖本地值', () => {
   });
   assert.strictEqual(bottom(), '0:01');
   assert.strictEqual(top(), '0:02');
+});
+
+// ======================================================================
+// §U1 时间提醒（两种新音：本时整分钟 / 读秒每 10 秒）
+//
+// 音效类问题在实机上极难复现——没人会盯着秒表数"刚才到底响了几声"。
+// 所以这批断言是这条需求**唯一可靠**的护栏。
+// ======================================================================
+
+test('§U1 本时：每跨过一个整分钟提醒 1 次，进对局不补响历史分钟', () => {
+  marks.minute = 0;
+  setup({ vp: 'b', turn: 'b', b: 3 * 60 * 1000 }); // 3:00 → mm=3
+  assert.strictEqual(marks.minute, 0, '刚进入（syncFromState）不得补响');
+
+  Clock.advance(30 * 1000); // 2:30，mm 仍为 3
+  assert.strictEqual(marks.minute, 0, '同一分钟内不重复响');
+
+  Clock.advance(30 * 1000); // 2:00，mm 3→2
+  assert.strictEqual(marks.minute, 1, '跨过整分钟应响 1 次');
+
+  Clock.advance(60 * 1000); // 1:00，mm 2→1
+  assert.strictEqual(marks.minute, 2);
+
+  Clock.advance(60 * 1000); // 0:00，mm 1→0
+  assert.strictEqual(marks.minute, 3, '跨到 0:00 也要响（若条件写 mm>=1 会吞掉这条）');
+
+  Clock.advance(5000); // 已归零
+  assert.strictEqual(marks.minute, 3, '归零后不重复响');
+});
+
+test('§U1 读秒：每跨过 10 秒报时一次，10 秒以内交给逐秒音', () => {
+  marks.byoyomiMark = 0;
+  marks.byoyomi = 0;
+  setup({
+    vp: 'b', turn: 'b',
+    inByoyomi: { b: true, w: false }, byoyomi: 60,
+    curByoyomi: { b: 60000, w: 0 },
+  });
+
+  Clock.advance(1000); // 60 → 59 秒：仍是第 6 档
+  assert.strictEqual(marks.byoyomiMark, 0, '同一档内不重复报');
+
+  Clock.advance(9000); // → 50 秒，档位 6→5
+  assert.strictEqual(marks.byoyomiMark, 1, '跨过 10 秒应报 1 次');
+
+  Clock.advance(10000); // → 40 秒
+  assert.strictEqual(marks.byoyomiMark, 2);
+
+  Clock.advance(30000); // → 10 秒，档位到 1
+  assert.strictEqual(marks.byoyomiMark, 2, '10 秒档不报时，避免与逐秒「嗒」重叠');
+
+  Clock.advance(1000); // 10 → 9 秒
+  assert.ok(marks.byoyomi >= 1, '10 秒以内由逐秒「嗒」接管');
+});
+
+test('§U1 提醒边界：服务端校准后以新值为基准，不因时间跳变连响', () => {
+  marks.minute = 0;
+  setup({ vp: 'b', turn: 'b', b: 2 * 60 * 1000 }); // 2:00
+
+  // ⚠️ 两个最容易写错的点，都在这里固化成断言：
+  //  ① mm = ceil(剩余/60000)，跨界点是**整分钟那一刻**（2:00 扣到 1:59 仍是 mm=2）；
+  //  ② 重置基准后的**第一拍只记录、不发声**——否则进对局/重连瞬间会补响一串。
+  Clock.advance(1000); // 1:59：首拍，只记录 mm=2
+  assert.strictEqual(marks.minute, 0, '首拍只记录，不补响');
+
+  Clock.advance(60 * 1000); // 0:59，mm 2→1
+  assert.strictEqual(marks.minute, 1, '跨过整分钟应响 1 次');
+
+  // 模拟重连：服务端说只剩 30 秒（本地以为还有 1:59）→ 时间"跳"了
+  Clock.syncFromServer({ b: 30000, w: 300000 });
+  assert.strictEqual(marks.minute, 1, '校准动作本身不应发声');
+
+  Clock.advance(1000); // 0:29，但换基准后的第一拍只记录
+  assert.strictEqual(marks.minute, 1, '校准后第一拍只记录基准，不补响');
+
+  Clock.advance(29 * 1000); // 0:00，mm 1→0
+  assert.strictEqual(marks.minute, 2, '之后的正常跨界仍要响');
+});
+
+// ======================================================================
+// §U2 危险外框：棋钟只回答「当前手番方是否读秒 ≤10 秒」
+// 「是不是自己 / 是不是观战者」由 play.js 判断（需求明确要求观战者不显示）
+// ======================================================================
+
+test('§U2 isDanger：仅当当前手番方读秒 ≤10 秒时为真', () => {
+  const byo = (ms) => ({ vp: 'b', turn: 'b', inByoyomi: { b: true, w: false }, byoyomi: 60, curByoyomi: { b: ms, w: 0 } });
+
+  setup(byo(30000));
+  assert.strictEqual(Clock.isDanger(), false, '读秒还剩 30 秒不算危险');
+
+  setup(byo(11000));
+  assert.strictEqual(Clock.isDanger(), false, '11 秒尚未进入危险（边界）');
+
+  setup(byo(10000));
+  assert.strictEqual(Clock.isDanger(), true, '读秒 10 秒进入危险');
+
+  setup(byo(5000));
+  assert.strictEqual(Clock.isDanger(), true, '读秒 5 秒仍是危险');
+
+  setup({ vp: 'b', turn: 'b', b: 5000, inByoyomi: { b: false, w: false } });
+  assert.strictEqual(Clock.isDanger(), false, '本时阶段不算危险（红框只针对读秒）');
+
+  setup({ vp: 'b', turn: 'b', status: 'FINISHED', inByoyomi: { b: true, w: false }, byoyomi: 60, curByoyomi: { b: 5000, w: 0 } });
+  assert.strictEqual(Clock.isDanger(), false, '终局不显示');
 });

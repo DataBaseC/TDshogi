@@ -182,3 +182,152 @@ test('UI.resultText：纯文本形态与带样式形态（历史页/复盘页两
     sf({ result: null }, { withClass: true }),
     { text: '未完成', cls: 'result-draw' });
 });
+
+// ======================================================================
+// UI.paginate（2026-09-13：棋谱页 / 赛事页 / 后台三处共用）
+// ======================================================================
+// ⚠️ 复用文件顶部既有的 `loadUtil(opts)`（它返回 `{ win, logs, store, debugLog }`）。
+// 这里**不要**再定义同名函数：函数声明同名会**静默覆盖**（不报错、不警告），
+// 先前所有用例会突然拿到另一份实现——本次就踩了这个坑。
+// 分页算错的表现是「一片空白页」或「最后一页只有一条」——都不报错、也很难描述，
+// 所以这里把边界一次性钉死：空数组、单页、末页、页码越界、按钮禁用态、回调触发。
+
+/** 最小分页条替身：从 innerHTML 里解析出按钮，模拟 querySelectorAll + 点击 */
+function mkPagerBox() {
+  return {
+    innerHTML: '',
+    _cache: null,
+    _cachedHtml: null,
+    querySelectorAll() {
+      // ⚠️ 解析结果必须**缓存**：真实 DOM 里 `querySelectorAll` 每次返回的是**同一批节点**，
+      // 而 `paginate` 是"内部绑回调、测试再取按钮去点"。替身若每次新建对象，
+      // 绑上去的 _cb 就落在另一批对象上 —— 测试会变成"点了但没反应"，且看起来像产品 bug。
+      if (this._cache && this._cachedHtml === this.innerHTML) return this._cache;
+      const out = [];
+      const re = /<button[^>]*data-pg="(-?\d+)"([^>]*)>/g;
+      let m;
+      while ((m = re.exec(this.innerHTML))) {
+        // ⚠️ 必须先把 `m[1]`/`m[2]` 取成局部常量再进闭包：`m` 是循环变量，
+        // 循环结束后会变 null —— 直接引用它，按钮回调一执行就炸。
+        const pg = m[1];
+        const attrs = m[2];
+        out.push({
+          disabled: / disabled/.test(attrs),
+          _cb: null,
+          getAttribute() { return pg; },
+          addEventListener(ev, cb) { if (ev === 'click') this._cb = cb; },
+        });
+      }
+      this._cache = out;
+      this._cachedHtml = this.innerHTML;
+      return out;
+    },
+  };
+}
+
+test('UI.paginate：切片与页数计算', () => {
+  const { win } = loadUtil();
+  const pg = win.UI.paginate;
+  const items = Array.from({ length: 45 }, (_, i) => i + 1); // 1..45
+
+  let r = pg({ items, page: 1, size: 20 });
+  assert.strictEqual(r.total, 45);
+  assert.strictEqual(r.totalPages, 3);
+  assert.deepStrictEqual(r.slice, items.slice(0, 20), '第 1 页取前 20 条');
+
+  r = pg({ items, page: 2, size: 20 });
+  assert.deepStrictEqual(r.slice, items.slice(20, 40));
+  assert.strictEqual(r.slice.length, 20);
+
+  r = pg({ items, page: 3, size: 20 });
+  assert.deepStrictEqual(r.slice, [41, 42, 43, 44, 45], '末页只剩余数条');
+});
+
+test('UI.paginate：空数组 / 单页 / 页码越界都夹回合法范围', () => {
+  const { win } = loadUtil();
+  const pg = win.UI.paginate;
+
+  let r = pg({ items: [], page: 1, size: 20 });
+  assert.deepStrictEqual(r.slice, []);
+  assert.strictEqual(r.totalPages, 1, '空数组也算 1 页（前端要显示「共 0 条」而不是 NaN）');
+  assert.strictEqual(r.page, 1);
+
+  const items = Array.from({ length: 5 }, (_, i) => i + 1);
+  r = pg({ items, page: 9, size: 20 });
+  assert.strictEqual(r.page, 1, '只有 1 页时越界页码应夹回 1');
+
+  const many = Array.from({ length: 45 }, (_, i) => i + 1);
+  r = pg({ items: many, page: 99, size: 20 });
+  assert.strictEqual(r.page, 3, '页码超出末尾应夹回最后一页');
+  assert.strictEqual(r.slice.length, 5, '夹回后必须拿到真实数据，而不是空数组');
+
+  r = pg({ items: many, page: 0, size: 20 });
+  assert.strictEqual(r.page, 1, 'page=0 夹回 1');
+  r = pg({ items: many, page: -3, size: 20 });
+  assert.strictEqual(r.page, 1, '负数页码夹回 1');
+});
+
+test('UI.paginate：默认每页 20 条，size 可覆盖且非法值兜底', () => {
+  const { win } = loadUtil();
+  const pg = win.UI.paginate;
+  const items = Array.from({ length: 50 }, (_, i) => i + 1);
+
+  assert.strictEqual(pg({ items, page: 1 }).slice.length, 20, '不传 size 时默认 20');
+  assert.strictEqual(pg({ items, page: 1, size: 10 }).slice.length, 10, 'size 可覆盖（个人页最近对局用 10）');
+  assert.strictEqual(pg({ items, page: 1, size: 0 }).slice.length, 20, 'size=0 视为非法，回落默认值');
+  assert.strictEqual(pg({ items: null, page: 1 }).slice.length, 0, 'items 为 null 不该抛错');
+});
+
+test('UI.paginate：分页条渲染、按钮禁用态与翻页回调', () => {
+  const { win } = loadUtil();
+  const pg = win.UI.paginate;
+  const items = Array.from({ length: 45 }, (_, i) => i + 1);
+
+  // ---- 单页：只显示总数，不出翻页按钮 ----
+  const one = mkPagerBox();
+  pg({ items: items.slice(0, 5), page: 1, container: one });
+  assert.match(one.innerHTML, /共 5 条/);
+  assert.strictEqual(one.querySelectorAll().length, 0, '单页不该出现翻页按钮');
+
+  // ---- 空列表：不显示任何东西（连「共 0 条」也不占位）----
+  const empty = mkPagerBox();
+  pg({ items: [], page: 1, container: empty });
+  assert.strictEqual(empty.innerHTML, '');
+
+  // ---- 多页：两个按钮 + 页码信息 ----
+  const box = mkPagerBox();
+  let clicked = null;
+  pg({ items, page: 2, container: box, onPage: (n) => { clicked = n; } });
+  assert.match(box.innerHTML, /第 2 \/ 3 页/, '应显示当前页/总页数');
+  assert.match(box.innerHTML, /共 45 条/);
+
+  const btns = box.querySelectorAll();
+  assert.strictEqual(btns.length, 2, '中间页应有两个按钮');
+  assert.strictEqual(btns[0].disabled, false);
+  assert.strictEqual(btns[1].disabled, false);
+
+  btns[0]._cb(); // 上一页
+  assert.strictEqual(clicked, 1, '「上一页」应回调 page-1');
+  btns[1]._cb(); // 下一页
+  assert.strictEqual(clicked, 3, '「下一页」应回调 page+1');
+
+  // ---- 首页：上一页禁用，且点了不触发回调 ----
+  const first = mkPagerBox();
+  clicked = null;
+  pg({ items, page: 1, container: first, onPage: (n) => { clicked = n; } });
+  const fb = first.querySelectorAll();
+  assert.strictEqual(fb[0].disabled, true, '首页「上一页」应禁用');
+  assert.strictEqual(fb[1].disabled, false);
+  fb[0]._cb();
+  assert.strictEqual(clicked, null, '禁用按钮不该触发翻页回调');
+
+  // ---- 末页：下一页禁用 ----
+  const last = mkPagerBox();
+  pg({ items, page: 3, container: last, onPage: () => {} });
+  const lb = last.querySelectorAll();
+  assert.strictEqual(lb[0].disabled, false);
+  assert.strictEqual(lb[1].disabled, true, '末页「下一页」应禁用');
+
+  // ---- 不传 container：只切片，不报错 ----
+  assert.doesNotThrow(() => pg({ items, page: 1 }));
+});

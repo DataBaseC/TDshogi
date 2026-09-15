@@ -240,3 +240,41 @@ test('§J4 漂移回归：本地重放与服务端规则引擎的盘面/持驹�
   assert.strictEqual(at(model, '5e').color, 'b');
   assert.strictEqual(hand(model.hands.b).角, undefined, '打子后驹台应已扣除该角');
 });
+
+// ======================================================================
+// §U2 危险外框：FreeBoard 只负责"贴不贴 class"
+// 「该不该红」由 play.js 判断——需求要求观战者不显示，而本组件
+// 在观战与对局两种情形下长得一样，无从区分。
+// ======================================================================
+
+test('§U2 setDanger：给棋盘容器贴 / 摘 .fb-danger，且幂等', () => {
+  const el = {
+    _s: new Set(),
+    classList: {
+      toggle(c, on) { if (on) el._s.add(c); else el._s.delete(c); },
+      has(c) { return el._s.has(c); },
+    },
+  };
+  // 用原型造实例：本用例只碰 setDanger → _applyDanger，不必真的构造棋盘
+  // （构造 FreeBoard 需要 ShogiBoard 实例与 DOM，成本高且与本用例无关）
+  const fb = Object.create(FB.prototype);
+  fb.board = { boardEl: el, render: () => {} };
+  fb.danger = false;
+
+  fb.setDanger(true);
+  assert.ok(el._s.has('fb-danger'), '危险时应贴上 class');
+  fb.setDanger(true);
+  assert.ok(el._s.has('fb-danger'), '重复设为 true 应幂等');
+
+  fb.setDanger(false);
+  assert.ok(!el._s.has('fb-danger'), '解除危险应摘掉 class');
+  fb.setDanger(false);
+  assert.ok(!el._s.has('fb-danger'), '重复设为 false 应幂等');
+
+  fb.setDanger(1);
+  assert.strictEqual(fb.danger, true, '真值应归一化为布尔（避免 truthy 值外泄）');
+
+  // 容器缺失时不得抛错：棋钟每 500ms 就会调一次，抛错会刷屏
+  fb.board = null;
+  assert.doesNotThrow(() => fb.setDanger(true));
+});

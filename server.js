@@ -30,10 +30,11 @@ const audit = require('./src/audit');
 const rateLimit = require('./src/ratelimit');
 const log = require('./src/logger');
 const { protocol, VERSION } = require('./src/http/context');
-const { requestId, adminEntryGate } = require('./src/http/middleware');
+const { requestId, securityHeaders, adminEntryGate, ipBanGate } = require('./src/http/middleware');
 const registerPublic = require('./src/http/routes/public');
 const registerRecords = require('./src/http/routes/records');
 const registerAccounts = require('./src/http/routes/accounts');
+const registerTournaments = require('./src/http/routes/tournaments');
 const registerAdmin = require('./src/http/routes/admin');
 
 const PORT = process.env.PORT || 3000;
@@ -42,6 +43,8 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 ensureDataDirs();
 
 const app = express();
+// 安全响应头（§Q7）：挂在**最前**，保证静态资源、API、错误响应都带上。
+app.use(securityHeaders);
 app.use(express.json());
 // 客户端信息（IP/UA）地基，PLAN §M3：供 §K 的登录记录与管理员审计使用。
 // 未配置 TRUST_PROXY 时不信任任何代理头——否则伪造 X-Forwarded-For 即可伪装 IP。
@@ -50,6 +53,11 @@ app.use(netInfo.attachClientInfo);
 // 请求标识（PLAN §P4）：每个请求分配短 id（响应头 `X-Request-Id` + `req.log`）。
 // 线上报错时用户只要报这个 id，就能在日志里直接定位到那一次请求。
 app.use(requestId);
+// IP 封禁门（PLAN §X4 第一个生效点）。位置是刻意的：
+//  - 在 `requestId` 之后 → 被封的请求也能带上 requestId，用户报障时可对账；
+//  - 在**限流之前** → 被封的 IP 不该继续消耗限流计数，也不该污染限流统计。
+// ⚠️ 这里只挡 HTTP；WS 那侧在同文件的 `verifyClient` 拦，两处都要有。
+app.use(ipBanGate);
 // 速率限制（PLAN §Q7）：/api 全局兜底（宽松，默认 600 次/分钟/IP），
 // 登录与重查询在各自路由上再叠加更严的档位。
 // ⚠️ 限流键为 clientIp（遵守 TRUST_PROXY）——反代部署若未配置 TRUST_PROXY，
@@ -73,6 +81,7 @@ app.use(express.static(PUBLIC_DIR, {
 registerPublic(app);
 registerRecords(app);
 registerAccounts(app);
+registerTournaments(app); // T3/T6：赛事管理（报名审批 / 踢人 / 开赛 / 取消成绩 / 重赛裁决）
 registerAdmin(app);
 
 // ==================================================================
@@ -80,7 +89,27 @@ registerAdmin(app);
 // ==================================================================
 const server = http.createServer(app);
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  // IP 封禁的**第二个生效点**（PLAN §X4）：在握手阶段就拒绝。
+  //
+  // ⚠️ 少了这里就是**假封禁**：WS 才是对局主通道，只挡 HTTP 的话，
+  // 被封的 IP 照样能连上、照样能下棋——只是刷不出页面而已（看起来"封了"）。
+  verifyClient: (info) => {
+    try {
+      const ip = netInfo.clientIp(info.req);
+      const r = require('./src/ipban').check(ip);
+      if (r.banned) {
+        log.warn('ipban', '拒绝已封禁 IP 的 WebSocket 握手', { ip, reason: r.record.reason });
+        return false;
+      }
+    } catch (err) {
+      // 判定本身出错时**放行**：宁可漏封，也不能因为一个异常把所有人挡在 WS 外面
+      log.error('ipban', 'WS 握手封禁判定异常，已放行', { err });
+    }
+    return true;
+  },
+});
 
 wss.on('connection', (ws, req) => {
   // 解析 guestId（从查询参数）
@@ -102,6 +131,13 @@ server.listen(PORT, () => {
   } catch (err) {
     log.error('backup', '自动备份启动失败', { err });
   }
+  // 游客数据清理（PLAN §U5）：超期未登录的游客会话，及其"双方皆为游客"的棋谱。
+  // ⚠️ 删除不可逆——首次上线建议先用 `CLEANUP_DRY_RUN=1` 启动一次，看清清单再放开。
+  try {
+    require('./src/cleanup').startAutoCleanup();
+  } catch (err) {
+    log.error('cleanup', '游客清理启动失败', { err });
+  }
   // 清理过期的登录/审计日志（保留期与容量上限见 src/audit.js）
   try {
     const pruned = audit.prune();
@@ -110,6 +146,19 @@ server.listen(PORT, () => {
     }
   } catch (err) {
     log.error('audit', '日志清理失败', { err });
+  }
+  // 赛事赛后自动存档（T6/需求 11）：启动补一次（进程重启期间可能已过窗口）+ 每小时检查。
+  // ⚠️ 放在 listen 回调里、与其他定时器同处——放模块顶层会在 **require 时**就跑，
+  // 那时数据库/缓存还没初始化，也违背"服务真正起来后再开定时器"的语义。
+  try {
+    const tournaments = require('./src/tournaments');
+    tournaments.autoArchiveDue();
+    const archiveTimer = setInterval(() => {
+      try { tournaments.autoArchiveDue(); } catch (err) { log.error('tournament', '自动存档失败', { err }); }
+    }, 3600 * 1000);
+    if (archiveTimer.unref) archiveTimer.unref(); // 不阻止进程退出
+  } catch (err) {
+    log.error('tournament', '自动存档定时器启动失败', { err });
   }
   // 恢复上次运行未结束的对局（快照重启恢复）
   const restored = protocol.rooms.restoreSnapshots();
