@@ -188,7 +188,9 @@ async function main() {
   await T(65000); // 双方都不回归
   const stats3 = await (await fetch(`${BASE}/api/home`)).json();
   ok(stats3.stats.playing === 0, `无人回归的恢复局 60s 判负自愈（playing=${stats3.stats.playing}）`);
-  const hist = await (await fetch(`${BASE}/api/history?player=${encodeURIComponent(A.guestId)}`)).json();
+  // ⚠️ `/api/history?player=` 自 §Q7-1 起仅管理员可用（匿名 403，响应里没有 records），
+  //    玩家查自己的棋谱改走 `/api/profile?player=`。
+  const hist = await (await fetch(`${BASE}/api/profile?player=${encodeURIComponent(A.guestId)}`)).json();
   const lastRec = (hist.records || [])[0];
   ok(lastRec && lastRec.resultDetail === '接続切断', `自愈判负原因=接続切断（${lastRec && lastRec.resultDetail}）`);
   A3.close(); B3.close();

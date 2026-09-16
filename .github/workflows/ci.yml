@@ -1,5 +1,7 @@
-# TDShogi 无构建步骤，CI 只做「语法/静态检查 + 单元测试 + e2e 冒烟」。
-# e2e 套件需要真实起服（默认 3100），故单独一个 job，失败不阻塞前两项的结论。
+# TDShogi 无构建步骤，CI 只做「语法/静态检查 + 单元测试 + e2e」。
+# e2e 需要真实起服，故单独一个 job；`continue-on-error` 只是为了不让**时序抖动**
+# 卡住主流程（e2e 里确有等待窗口类的用例），并非"允许它一直红"——
+# 若 e2e 长期失败，请看 job 日志里 `npm run e2e` 的汇总表。
 name: CI
 
 on:
@@ -44,19 +46,10 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci
-      - name: 启动服务
-        run: |
-          PORT=3100 ADMIN_PASSWORD=admin123 node server.js > server.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:3100/api/home > /dev/null && break
-            sleep 1
-          done
+      # ⚠️ 以前这里是"手工起服 :3100 + 循环跑 scripts/e2e-*.js"，
+      #    但 e2e 脚本**写死的端口是 3999**（只有 test-records/test-reconnect 认 PORT 环境变量），
+      #    于是这个 job 其实一直在"连不上、全部失败"，又被 continue-on-error 掩盖成了绿。
+      #    改成走 `npm run e2e`：它自己起**正确端口 + 正确 ADMIN_PASSWORD** 的隔离实例，
+      #    跑完汇总、非零退出码即真实失败。
       - name: 运行 e2e 套件
-        run: |
-          for f in scripts/e2e-*.js; do
-            echo "=== $f ==="
-            node "$f" || echo "!! $f 失败（不阻塞）"
-          done
-      - name: 失败时输出服务端日志
-        if: failure()
-        run: tail -n 100 server.log
+        run: npm run e2e

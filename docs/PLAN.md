@@ -1469,8 +1469,14 @@ admin 新增 tab「IP 封禁」（复用 §W1 的分页组件）：
 
 ## 6. §D 长期 Backlog
 
-- **安全**：~~`/api/history?player=` 越权枚举~~ ✅ 已修（§Q7-1，2026-09-10）；令牌存 localStorage 的 XSS 面；隐私数据保留期与导出脱敏（部分由 §K 覆盖）；**接口速率限制**（进行中）
+- **安全**：~~`/api/history?player=` 越权枚举~~ ✅ 已修（§Q7-1，2026-09-10）；
+  ~~接口速率限制~~ ✅ **已完成**（`src/ratelimit.js`：HTTP `api`/`auth`/`heavy` + WS `wsMsg`/`wsNotice`
+  + `adminLogin` 防爆破，见 §Q7）；
+  剩余：令牌存 localStorage 的 XSS 面；隐私数据保留期与导出脱敏（部分由 §K 覆盖）
 - **性能**：`_pushState` 全量推送（增量 diff 是演进方向）
-- **玩法**：AI 对战（USI 引擎）、駒落ち让子、多轮/循环赛制、i18n
-- **运维**：PM2/systemd 脚本已在 `DEPLOY.md`，尚未完整线上验证；Nginx 需补 `X-Forwarded-For`（§K1 已补）
-- **前端**：横竖屏旋转自动重建棋盘；review.css 手机端细调；对局页玩家栏显示等级
+- **玩法**：AI 对战（USI 引擎，**用户明确不做**）、駒落ち让子、**循环赛**（需求原文未要求，暂不做；
+  多轮比积分的诉求已由瑞士制覆盖）、i18n
+- **运维**：PM2/systemd 脚本已在 `DEPLOY.md`，尚未完整线上验证
+- **前端**：~~横竖屏旋转自动重建棋盘~~ ✅ 已完成（`FreeBoard` 监听 `resize`/`orientationchange`，
+  节流 150ms 重绘）；~~对局页玩家栏显示等级~~ ✅ 已完成（§R3/§R5：等级 / ELO / 称号）；
+  剩余：`review.css` 手机端细调

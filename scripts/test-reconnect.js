@@ -96,7 +96,10 @@ async function main() {
   await sleep(500);
   const err1 = host.inbox.filter(m=>m.type==='error').slice(preErrCount).pop();
   const created2 = host.inbox.filter(m=>m.type==='room_created').length > preCreatedCount;
-  console.log(`对局中用户建房: ${created2 ? 'BUG: 成功建房' : (err1 ? 'OK 被拒: ' + err1.data.message : '无响应')}`);
+  // ⚠️ 这里**不是 BUG**：对局中建房 = 先自动认输退出旧局、再建新房，
+  //    是 §T2 起刻意保留的行为（`e2e-test.js` 有对应断言：
+  //    "对局中建房 = 自动认输退出旧局并创建新房间"）。别再按旧预期"修"回去。
+  console.log(`对局中用户建房: ${created2 ? 'OK 自动认输旧局并建新房（预期行为）' : (err1 ? '被拒: ' + err1.data.message : '无响应')}`);
 
   // 3) 加入其他房间
   host.send('join_room', { code: c2.data.code });
@@ -108,7 +111,12 @@ async function main() {
   const hostState = host.states().pop();
   if (hostState) {
     const opp = hostState.data.players[hostState.data.seat === 'b' ? 'w' : 'b'];
-    console.log(`\n===== 掉线状态字段 =====\n对手(players.w/b) 字段: ${JSON.stringify(opp)}\n${opp && opp.connected === false ? 'OK 有 connected 字段' : '!! 缺 connected 字段，前端无法显示对手断线'}`);
+    // ⚠️ 判的是**字段是否存在**，不是它的值：对手此刻在线时 `connected === true`，
+    //    旧写法（只在 false 时才说"有字段"）会误报"缺字段"。
+    console.log(`\n===== 掉线状态字段 =====\n对手(players.w/b) 字段: ${JSON.stringify(opp)}\n${
+      opp && 'connected' in opp
+        ? `OK 有 connected 字段（当前 ${opp.connected}；对手掉线时会变 false）`
+        : '!! 缺 connected 字段，前端无法显示对手断线'}`);
   }
 
   process.exit(0);

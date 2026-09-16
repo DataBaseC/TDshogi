@@ -311,7 +311,10 @@ async function main() {
   let reCreated2 = null;
   try { reCreated2 = await D.wait('room_created', 3000); } catch (_) {}
   ok(!!reCreated2, '对局中建房 = 自动认输退出旧局并创建新房间');
-  const oldGame = (await (await fetch('http://localhost:3999/api/history?player=' + D.guestId)).json()).records[0];
+  // ⚠️ `/api/history?player=` 自 §Q7-1 起**仅管理员可用**（防越权枚举他人棋谱），
+  //    匿名调用只会拿到 403、响应里根本没有 `records`。玩家查自己的棋谱走
+  //    `/api/profile?player=`（公开，含最近 20 局）。
+  const oldGame = (await (await fetch('http://localhost:3999/api/profile?player=' + D.guestId)).json()).records[0];
   ok(oldGame && oldGame.resultDetail === '投了', `旧对局被自动认输（${oldGame && oldGame.resultDetail}）`);
   // E 不退出直接建房也应成功（E 仍绑定在刚结束的房间里，_autoLeaveFinished 应先解绑）
   E.send('create_room', {});

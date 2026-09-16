@@ -1,10 +1,19 @@
 /**
  * e2e-tournament.js — 赛事端到端测试（4 人单败淘汰全流程）
  *
- * 流程：4 名玩家报名 → 满员开赛 → 首轮 2 场对局自动创建 →
- *       对局各自走完/认输 → 胜者晋级 → 决赛 → 冠军产生。
+ * 流程：创建赛事 → 管理员审核 → 4 人报名（**默认需主办人批准**）→ 逐个批准 →
+ *       满员自动开赛 → 首轮 2 场对局自动创建 → 各自认输 → 胜者晋级 → 决赛 → 冠军产生。
  *
- * 用法：服务器运行于 :3999 且 DATA_DIR 独立，直接 node scripts/e2e-tournament.js
+ * ⚠️ 起服务必须带 `ADMIN_PASSWORD=admin123`（脚本用这个口令登录管理员）；
+ *    不设则落到内置默认口令，`admin_login` 会一直等不到 `admin_logged_in`：
+ *        $env:PORT='3999'; $env:DATA_DIR='<独立目录>'; $env:ADMIN_PASSWORD='admin123'; node server.js
+ *
+ * ⚠️ 下面两条是**产品行为变更**后的写法，改动时别看错成 bug：
+ *    1. 「报名中」的状态名是 `registration`（旧数据里的 `open` 由 normalizeStatus 映射），
+ *       所以创建/审核后拿到的 `status` 不再是 `open`；
+ *    2. **主办人不自动参赛**（2026-09-13 用户要求）——创建者也要自己报名，
+ *       否则人数永远差一个、永远不开赛；
+ *    3. 建赛默认 `requireApproval: true`，报名先进 pending，**必须显式批准**才计入名额。
  */
 'use strict';
 const WebSocket = require('ws');
@@ -95,29 +104,51 @@ async function main() {
     await T(120);
     players.push(p);
   }
-  players[0].send('create_tournament', { name: '测试赛', size: 4 });
+  players[0].send('create_tournament', {
+    name: '测试赛', size: 4, reason: 'e2e 端到端测试用赛事，走完整报名与淘汰流程',
+  });
   const created = await players[0].wait('tournament_created');
   ok(!!created.id, '账号创建赛事成功');
   ok(created.status === 'pending_approval', '新赛事进入待审核状态（B3）');
+  ok(created.requireApproval === true, '默认「报名需主办人批准」');
 
-  // 管理员审核通过 → open
+  // 管理员审核通过 → registration（**不是旧名 `open`**，T1 起出口已归一）
   const ap = await (await fetch(`http://localhost:3999/api/admin/tournaments/${created.id}/approve`, {
     method: 'POST',
     headers: { 'x-admin-token': adminTok },
   })).json();
-  ok(ap.ok === true && ap.tournament && ap.tournament.status === 'open', '管理员审核通过 → 报名中');
+  ok(ap.ok === true && ap.tournament && ap.tournament.status === 'registration', '管理员审核通过 → 报名中');
 
   const tid = created.id;
 
-  for (let i = 1; i < 4; i++) {
+  // ⚠️ 4 人全部报名（含创建者）：主办人**不自动参赛**，否则永远差一人、永远不开赛
+  for (let i = 0; i < 4; i++) {
     players[i].send('join_tournament', { id: tid });
-    await players[i].wait('tournament_joined');
+    const joined = await players[i].wait('tournament_joined');
+    if (i === 0) ok(joined.pending === true, '需审核时报名先进 pending（不占名额）');
+  }
+  await T(300);
+  let t = (await (await fetch('http://localhost:3999/api/tournaments')).json())
+    .tournaments.find((x) => x.id === tid);
+  ok(t && t.status === 'registration', '全是 pending，赛事尚未开赛');
+  ok((t.entrants || []).filter((e) => e.status === 'approved').length === 0, 'pending 不计入已批准人数');
+
+  // 主办人逐个批准（走 T3 新增的 REST 接口，身份用账号 token）
+  for (const e of t.entrants) {
+    const r = await (await fetch(
+      `http://localhost:3999/api/tournaments/${tid}/entrants/${encodeURIComponent(e.id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-account-token': reg.token },
+        body: JSON.stringify({ decision: 'approve' }),
+      })).json();
+    if (!r.ok) ok(false, `批准 ${e.name || e.id} 失败：${r.error}`);
   }
   await T(500);
-  // 满员后应自动开赛并创建首轮对局
+  // 批准到满员应自动开赛并创建首轮对局
   const data = await (await fetch('http://localhost:3999/api/tournaments')).json();
-  const t = data.tournaments.find((x) => x.id === tid);
+  t = data.tournaments.find((x) => x.id === tid);
   ok(t && t.status === 'playing', '满员后赛事进入 playing 状态');
+  ok((t.players || []).length === 4, `名单冻结为 4 人（实际 ${(t.players || []).length}）`);
   const firstRound = (t.bracket || []).filter((n) => n.pair && n.matchId);
   ok(firstRound.length === 2, `首轮创建 2 场对局（实际 ${firstRound.length}）`);
 
