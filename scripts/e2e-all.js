@@ -84,6 +84,23 @@ async function main() {
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+
+  /**
+   * ⚠️ **必须把 stdout 读出来**（2026-09-20 修）。
+   *
+   * `stdio: 'pipe'` 且**没人读**时，子进程向 stdout 写满管道缓冲区（约 64KB）就会
+   * **阻塞在写调用上** —— 整个服务端事件循环停住，后续所有请求都没有响应。
+   * 症状极具误导性：某个脚本（`e2e-test.js`）在套件里偶发
+   * "create_room 等待回执超时"，而**单独跑必定通过** —— 因为日志量取决于前面跑过哪些脚本。
+   * 这里只读走、不打印（避免刷屏），只留一份末尾快照供排障。
+   */
+  let serverOut = '';   // 末尾快照（排障用）
+  let serverOutBytes = 0; // 累计字节数——若曾逼近 64KB，说明这条管道曾经是"堵住的"
+  const keepTail = (d) => {
+    serverOutBytes += d.length;
+    serverOut = (serverOut + d.toString()).slice(-8000);
+  };
+  server.stdout.on('data', keepTail);
   let serverErr = '';
   server.stderr.on('data', (d) => { serverErr += d.toString(); });
 
@@ -144,6 +161,15 @@ async function main() {
       const lines = (b.out || '').split('\n').filter((l) => /✗|FAIL|异常|Error/.test(l)).slice(0, 4);
       lines.forEach((l) => console.log(`       ${l.trim().slice(0, 130)}`));
     }
+    // 脚本自己报的错往往只是"等回执超时"，真正的原因常在服务端——把末尾日志带出来
+    console.log(`\n  服务端输出末尾（累计 ${(serverOutBytes / 1024).toFixed(1)} KB）：`);
+    (serverOut || '(无)').split('\n').slice(-12).forEach((l) => console.log(`       ${l.slice(0, 150)}`));
+    if (serverErr) {
+      console.log('  服务端 stderr 末尾：');
+      serverErr.split('\n').slice(-8).forEach((l) => console.log(`       ${l.slice(0, 150)}`));
+    }
+  } else {
+    console.log(`\n  服务端输出累计 ${(serverOutBytes / 1024).toFixed(1)} KB（管道缓冲约 64 KB，务必保持被读取）`);
   }
   if (STANDALONE.length) {
     console.log(`\n  需单独跑（自带服务器）：${STANDALONE.join('、')}`);

@@ -56,7 +56,15 @@ class Client {
       }
       const timer = setTimeout(() => {
         this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
-        reject(new Error(`${this.name} 等待 ${type} 超时`));
+        // ⚠️ 超时信息里**带上"到底收到了什么"**（2026-09-20）：
+        // 光说"等待 X 超时"无法区分三种完全不同的原因——
+        // 服务端没收到 / 回了 `error`（比如"你已在房间中"）/ 回了别的类型。
+        // 这条信息在套件里偶发失败过几次（单独跑必过），没有它就只能靠猜。
+        const seen = this.queue.map((m) => {
+          const detail = m.type === 'error' && m.data && m.data.message ? `(${m.data.message})` : '';
+          return m.type + detail;
+        }).slice(-8).join(', ');
+        reject(new Error(`${this.name} 等待 ${type} 超时（已收到: ${seen || '什么都没收到'}）`));
       }, timeoutMs);
       const fn = (data) => { clearTimeout(timer); resolve(data); };
       this.listeners.push({ type, fn, once: true });

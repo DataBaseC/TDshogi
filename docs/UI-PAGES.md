@@ -161,7 +161,7 @@
   人数档位扩到 **4 / 8 / 16 / 32**
 - 每个赛事卡片 → `tournament.html?id=<8位id>`（需求 8 的"每个赛事唯一 id"）
 
-## 6.5 tournament.html（赛事详情页）— `js/tournament.js` — 🟨 待实施（需求 12）
+## 6.5 tournament.html（赛事详情页）— `js/tournament.js`
 
 **职责**：单个赛事的完整视图，**所有用户均可访问**（含游客）。
 
@@ -206,13 +206,14 @@
 | 🚩 举报 | `GET/POST /api/admin/reports` | 玩家在对局页提交；可标记已处理/驳回 + 备注（一次性，不可重复处理） |
 
 - 登录：输入管理密码 → WS `admin_login` → 换 12 小时 HMAC token 存 localStorage（ADMIN_KEY）；退出仅清本地
-- Tab「全部棋谱」：`GET /api/history?adminToken=`（无 player= 全库）；按名字/ID 前端过滤；每条 [回放][KIF][CSA]（链接携带 adminToken 或 token）；📥 KIF 批量导入（POST /api/admin/records/import，逐文件上传统计成败）
-- Tab「全部用户」：`GET /api/admin/users?token=`；每行显示**昵称 (id)** 与 ELO/战绩（未下过棋的纯会话用户显示默认 1500/0 局）；详情弹层 `GET /api/admin/users/:id`（评分四卡 + 该用户对局列表）；按名字/ID 过滤
-- Tab「赛事管理」：`GET /api/admin/tournaments`（全量含待审核/已拒/已取消）；统计条 + 待审核队列（通过/拒绝）+ 进行中（取消，解散对局并提示解散场数）+ 历史；写操作 `POST /api/admin/tournaments/:id/{approve,reject,cancel}`，幂等，二次确认
-  - 🟨 **需求 13 起升级为「专属赛事管理页」**（待实施）：报名审核 / 重赛裁决 / 设冠军 / 取消成绩 /
-    存档后编辑（留痕），见 `docs/TOURNAMENT.md` 与 PLAN §V-T7
-- 🟨 **分页（需求 13，待实施）**：所有列表 **20 条/页**，**四个 tab 复用同一个分页组件**；
-  服务端列表出口支持 `?page=&limit=`，返回 `{ items, total, page, limit }`
+- Tab「赛事管理」：统计条 + 待审核队列（通过/拒绝）+ 进行中（取消，解散对局并提示解散场数）+ 历史；
+  每行带**存档与详情入口**，详情里可做报名审核 / 重赛裁决 / 设冠军 / 取消成绩 / 存档后编辑（留痕）；
+  写操作 `POST /api/admin/tournaments/:id/{approve,reject,cancel}` 幂等、二次确认
+- **分页（需求 13）—— ✅ 已完成**：所有列表 **20 条/页**，共用 `renderPaged()` 一个组件
+  （`window.UI.paginate` 的薄封装）；当前覆盖 **7 个列表**：
+  棋谱 / 用户 / 赛事（待审核·进行中·历史）/ 审计 / IP 封禁 / 公告 / 举报。
+  ⚠️ **新加 tab 必须一并接上分页**：列表一长就会把整页撑爆，而"共 N 条"还显示着全量。
+  ⚠️ 服务端目前仍**全量下发**，分页在前端做；真到十万级再改服务端，那时只需动 `renderPaged` 一处。
 - token 失效统一处理：403 → 清 token 回登录态
 
 服务端侧密码优先级：`ADMIN_PASSWORD` env > data/admin.json > 内置 `Cplusplus123`（v1.2.0 起；token 签名密钥未配置 `ADMIN_SECRET` 时从密码派生）。

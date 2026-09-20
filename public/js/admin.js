@@ -46,7 +46,7 @@
   // ——两套页码状态并存时，翻页行为会出现"这个列表记住了、那个列表没记住"的怪象（2026-09-14 归并）。
   const pages = {
     records: 1, users: 1, audit: 1, tournaments: 1,
-    tnPending: 1, tnActive: 1, tnHistory: 1, ipbans: 1, announcements: 1,
+    tnPending: 1, tnActive: 1, tnHistory: 1, ipbans: 1, announcements: 1, reports: 1,
   };
 
   /**
@@ -88,6 +88,7 @@
     else if (key === 'tournaments') loadTournaments();
     else if (key === 'ipbans') loadIpBans();
     else if (key === 'announcements') loadAnnouncements();
+    else if (key === 'reports') loadReports();
   };
 
   // 初始化：检测是否已登录
@@ -702,6 +703,9 @@
   // 举报处理（2026-09-20）
   // ==================================================================
   let allReports = [];
+  // ⚠️ 声明必须在 `renderReports` 之前：虽然调用发生在加载完成之后、运行时踩不到 TDZ，
+  // 但"先用后声明"读起来就像 bug，下一个改这里的人会先愣一下。
+  let reportCategories = [];
 
   async function loadReports() {
     const status = document.getElementById('rpFilter').value;
@@ -715,13 +719,16 @@
       reportCategories = data.categories || reportCategories;
       document.getElementById('rpPending').textContent = data.pending || 0;
       document.getElementById('rpCount').textContent = allReports.length;
-      renderReports();
+      // 与其余 tab 一致走统一分页（PLAN §W1 / 需求 13：后台每个列表最多 20 条）。
+      // ⚠️ 新加的 tab 容易漏掉这一步——列表一长就把整页撑爆，而"共 N 条"还显示着全量。
+      renderPaged('reports', allReports, 'rpPager', renderReports);
     } catch (e) { toast('加载失败：' + e.message); }
   }
 
-  function renderReports() {
+  /** @param {Array} slice 本页的举报（全量在 `allReports`） */
+  function renderReports(slice) {
     const box = document.getElementById('rpList');
-    if (!allReports.length) {
+    if (!slice.length) {
       box.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">没有符合条件的举报。</div>';
       return;
     }
@@ -734,7 +741,7 @@
       handled: ['✅ 已处理', 'var(--text-dim)'],
       rejected: ['↩️ 已驳回', 'var(--text-dim)'],
     };
-    box.innerHTML = allReports.map((r) => {
+    box.innerHTML = slice.map((r) => {
       const st = statusMeta[r.status] || [r.status, 'var(--text-dim)'];
       const ops = r.status === 'pending'
         ? `<button class="btn btn-primary btn-sm" data-rp="handled" data-id="${esc(r.id)}">标记已处理</button>
@@ -762,10 +769,12 @@
     }).join('');
   }
 
-  let reportCategories = [];
-
   document.getElementById('btnRefreshReports').addEventListener('click', loadReports);
-  document.getElementById('rpFilter').addEventListener('change', loadReports);
+  // 换了筛选条件 = 数据来源变了 → 回到第 1 页（否则筛选后停在旧页码上会看到"空列表"）
+  document.getElementById('rpFilter').addEventListener('change', () => {
+    pages.reports = 1;
+    loadReports();
+  });
   document.getElementById('rpList').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-rp]');
     if (!btn) return;

@@ -174,6 +174,60 @@ test('规则 R-b：桂跳到最下两段同样强制升变', () => {
   assert.ok(targets.every((t) => t.usi.endsWith('+')));
 });
 
+test('规则 R-b 反面：已成子走底线**不该**被判「必须升变」（2026-09-20 修）', () => {
+  // ⚠️ 曾经的 bug：强制升变守卫用 `Piece.unpromote(piece.kind)` 判棋子种类，
+  // 于是把**已成子还原成原始种类**（と金→歩、成香→香、成桂→桂）再判定，
+  // 必然得到"必须升变" → 把合法的「と金进底线」判成非法。
+  // 而 `candidateMovesFrom` 的 `canPromote` 明确排除了已成子（只提供"不成"一种），
+  // 两条路径口径不一致 → **前端高亮可点、服务端却拒绝**，
+  // 还回一句对と金毫无意义的"该棋子走到此位置必须升变"。
+  // と金进底线在终盘是常见着法，所以这不是边角案例。
+  const cases = [
+    ['と金', '8k/4+P4/9/9/9/9/9/9/K8 b - 1'],
+    ['成香', '8k/4+L4/9/9/9/9/9/9/K8 b - 1'],
+    ['成桂', '8k/4+N4/9/9/9/9/9/9/K8 b - 1'],
+  ];
+  for (const [label, sfen] of cases) {
+    const g = new Game(sfen);
+    const list = g.legalMovesUsi();
+    assert.ok(list.indexOf('5b5a') >= 0, `${label}：候选里应提供 5b5a`);
+    const r = g.applyMove('5b5a');
+    assert.strictEqual(r.ok, true, `${label} 走 5b5a 应当合法（实际：${r.error || 'ok'}）`);
+    // 已成子不能再次升变 → 不该提供带 + 的变体
+    assert.strictEqual(list.indexOf('5b5a+'), -1, `${label}：不该提供带 + 的走法`);
+  }
+  // 对照组：金本来就不可升变，修复前后都应正常（确认没有把校验整条废掉）
+  const gold = new Game('8k/4G4/9/9/9/9/9/9/K8 b - 1');
+  assert.strictEqual(gold.applyMove('5b5a').ok, true, '金走底线应当合法');
+});
+
+test('不变量：候选列表里的每一个着法，applyMove 都必须接受', () => {
+  // 这条不变量是「前端高亮可点、服务端却拒绝」这类 bug 的**唯一护栏**：
+  // `candidateMovesFrom`（候选生成）与 `applyMove`（执行校验）是两条独立代码路径，
+  // 一旦判定口径漂移（上面 R-b 反面那条就是这么来的），玩家就会遇到
+  // "点了没反应 / 莫名报错"。只挑固定局面写用例发现不了，必须靠随机抽样兜。
+  //
+  // ⚠️ 用**定种子**的伪随机：既可复现，又不会偶发失败（测试里用 Math.random 是禁忌）。
+  let seed = 20260920;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+  let checked = 0;
+  for (let game = 0; game < 3; game++) {
+    const g = new Game();
+    for (let ply = 0; ply < 200 && !g.isGameOver(); ply++) {
+      const list = g.legalMovesUsi();
+      if (!list.length) break;
+      const mv = list[Math.floor(rnd() * list.length)];
+      const r = g.applyMove(mv);
+      assert.strictEqual(r.ok, true,
+        `第 ${game + 1} 局第 ${ply + 1} 手：${mv} 在候选列表里，applyMove 却拒绝（${r.error}）`);
+      checked++;
+    }
+  }
+  // 抽到的着法要足够多才有意义（修复前那条 bug 在第 175 手才暴露）
+  assert.ok(checked > 300, `抽样应覆盖足够多着法，实际 ${checked}`);
+});
+
 test('规则 R-c：普通千日手（双方均无将军）判和', () => {
   // 双方玉在相邻两格来回走（4 步一循环），重复 4 次后同一局面出现 5 次
   const g = new Game('4k4/9/9/9/9/9/9/9/4K4 b - 1');
