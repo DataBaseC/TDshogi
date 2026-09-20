@@ -197,13 +197,14 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 ## 开发与测试
 
 - **单元测试**：`npm test`（`tests/*.test.js`，Node 内置 `node --test`，纯函数不需起服）。
-  当前 **232 项**：棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换与视角切换、坐标换算、初始盘面、
+  当前 **235 项**：棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换与视角切换、坐标换算、初始盘面、
   （含駒落ち让子各手合割的 SFEN 生成）、`game.js` 规则引擎、赛事状态机与权限、瑞士制配对与积分、
   等级特权、举报、多语言词典自检、棋钟、限流、隐私脱敏等
 - **静态检查**：`npm run lint`（eslint；`no-undef` 正是"路由层漏 require 导致接口 500"那类事故的克星）
-- **多语言**：`npm run i18n` 报告**还有哪些界面文案没有英文词条**（加 `--js` 连提示语一起报）。
-  词典在 `public/js/i18n.js`，**以中文原文为键**；导航右上角的 `中/EN` 按钮切换。
-  当前面向玩家的页面已 100% 覆盖，见 `docs/PLAN.md` §Z5
+- **多语言**：`npm run i18n` 报告**还有哪些界面文案没有词条**（`--locale=ja` 看日语，
+  `--js` 连提示语一起报）。词典在 `public/js/i18n.js`，**以中文原文为键**；
+  导航右上角的 `中/EN/JA` 按钮点一下轮换一种语言。
+  当前 **en 与 ja 面向玩家的页面都已 100% 覆盖**（`admin.html` 刻意不翻），见 `docs/PLAN.md` §Z5 / §Z7
 - **CI**：`.github/workflows/ci.yml`（语法检查 + lint + 单测 + e2e 冒烟）
 - **e2e 回归**：`npm run e2e` —— **自动起隔离实例**（临时 `DATA_DIR` + `ADMIN_PASSWORD=admin123`）
   后跑完整套，**15 个脚本 / 224 项断言**，末尾汇总并停服。

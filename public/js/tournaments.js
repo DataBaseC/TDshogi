@@ -297,7 +297,7 @@
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:12px;color:var(--gold-light);">${champ}</span>
           ${joinAreaOf(t)}
-          <a class="btn btn-ghost btn-sm" href="tournament.html?id=${encodeURIComponent(t.id)}">详情</a>
+          <a class="btn btn-ghost btn-sm" href="tournament.html?id=${encodeURIComponent(t.id)}">查看详情 →</a>
         </div>
       </div>`;
   }
@@ -373,7 +373,7 @@
   //（`tournament.html` → `js/tournament.js` 的管理面板）。
   // 这里曾经也有一份 `ownerPanelOf()`：列表页每张卡片都挂一套审批按钮，
   // 于是"办赛管理"散落在两个页面，改一处忘一处，用户也说不清该去哪儿操作。
-  // 列表页现在只负责"看"——要管理就点「查看详情 / 管理 →」。
+  // 列表页现在只负责"看"——要管理就点「查看详情 →」进详情页（管理面板在那里）。
 
   function renderCard(t) {
     const entrants = t.entrants || [];

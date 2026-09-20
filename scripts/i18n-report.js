@@ -79,6 +79,9 @@ function extractJs(src) {
 const withJs = process.argv.includes('--js') || process.argv.includes('--all');
 const full = process.argv.includes('--all');
 const LIMIT = full ? 100000 : 40;
+/** 目标语言：`--locale=ja`（默认 en）。多语言并存时，覆盖率要**按语言分别看** */
+const LOCALE = (process.argv.find((a) => a.startsWith('--locale=')) || '').split('=')[1]
+  || (process.argv.includes('--ja') ? 'ja' : 'en');
 
 const groups = [];
 const excluded = [];
@@ -86,7 +89,7 @@ const htmlFiles = fs.readdirSync(path.join(ROOT, 'public')).filter((f) => f.ends
 for (const f of htmlFiles) {
   if (EXCLUDE_FILES.has(f)) { excluded.push(f); continue; }
   const src = fs.readFileSync(path.join(ROOT, 'public', f), 'utf8');
-  const miss = [...extractHtml(src)].filter((t) => !SKIP.has(t) && I18N._lookup('en', t) === undefined);
+  const miss = [...extractHtml(src)].filter((t) => !SKIP.has(t) && I18N._lookup(LOCALE, t) === undefined);
   if (miss.length) groups.push({ name: `public/${f}`, miss });
 }
 if (withJs) {
@@ -96,13 +99,13 @@ if (withJs) {
     const src = fs.readFileSync(path.join(ROOT, 'public/js', f), 'utf8');
     for (const t of extractJs(src)) all.add(t);
   }
-  const miss = [...all].filter((t) => !SKIP.has(t) && I18N._lookup('en', t) === undefined).sort();
+  const miss = [...all].filter((t) => !SKIP.has(t) && I18N._lookup(LOCALE, t) === undefined).sort();
   if (miss.length) groups.push({ name: 'public/js/*.js（含提示语/动态文案）', miss });
 }
 
 let total = 0;
-console.log('=== 多语言覆盖率报告（en）===');
-console.log(`词条数：${Object.keys(I18N._dict.en).length}\n`);
+console.log(`=== 多语言覆盖率报告（${LOCALE}）===`);
+console.log(`词条数：${Object.keys(I18N._dict[LOCALE] || {}).length}\n`);
 for (const g of groups) {
   total += g.miss.length;
   console.log(`▸ ${g.name} —— 缺 ${g.miss.length} 条`);
@@ -110,8 +113,8 @@ for (const g of groups) {
   if (g.miss.length > LIMIT) console.log(`    …（还有 ${g.miss.length - LIMIT} 条，用 --all 看全）`);
   console.log('');
 }
-if (!total) console.log('✔ 已扫描的界面文案全部有英文词条');
-else console.log(`合计缺 ${total} 条（把要翻的补进 public/js/i18n.js 的 DICT.en 即可）`);
+if (!total) console.log(`✔ 已扫描的界面文案全部有 ${LOCALE} 词条`);
+else console.log(`合计缺 ${total} 条（把要翻的补进 public/js/i18n.js 的 DICT.${LOCALE} 即可）`);
 if (excluded.length) {
   console.log(`\n（已排除，刻意不翻：${excluded.join('、')} —— 只有站长用，且站长是中文用户）`);
 }

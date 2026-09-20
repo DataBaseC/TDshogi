@@ -64,24 +64,42 @@ test('查词宽松匹配：空白差异与"开头 emoji"都能命中（不必为
   I18N.setLocale('zh-CN');
 });
 
-test('词典自检：值非空、不是键的复制、键在源码里只定义一次', () => {
+/** 取某个语言在源码里的那一段（重复键要**按语言分别数**：同一个键在各语言里各出现一次是正常的） */
+function blockOf(locale) {
   const src = fs.readFileSync(I18N_PATH, 'utf8');
-  const keys = Object.keys(DICT.en);
-  assert.ok(keys.length >= 150, `词条数量偏少（${keys.length}）——是不是漏了一大块？`);
-  for (const k of keys) {
-    const v = DICT.en[k];
-    assert.strictEqual(typeof v, 'string', `「${k}」的译文必须是字符串`);
-    assert.ok(v.trim().length > 0, `「${k}」的译文不能为空`);
-    assert.notStrictEqual(v, k, `「${k}」的译文与原文完全相同（复制粘贴漏改？）`);
-    // 重复键：JS 对象字面量里后一个会**静默覆盖**前一个，表现为"改了没生效"
-    const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`^\\s{6}(?:'${esc}'|${esc})\\s*:`, 'gm');
-    const n = (src.match(re) || []).length;
-    assert.strictEqual(n, 1, `词条「${k}」在源码里出现 ${n} 次（重复键会被静默覆盖）`);
+  const start = src.indexOf(`\n    ${locale}: {`);
+  assert.ok(start > 0, `源码里找不到 ${locale} 词典块`);
+  const others = Object.keys(DICT)
+    .map((l) => src.indexOf(`\n    ${l}: {`))
+    .filter((i) => i > start);
+  const end = others.length ? Math.min(...others) : src.indexOf('\n  };');
+  return src.slice(start, end);
+}
+
+test('词典自检：各语言值非空，且**本语言块内**键不重复', () => {
+  for (const [loc, dict] of Object.entries(DICT)) {
+    const block = blockOf(loc);
+    const keys = Object.keys(dict);
+    assert.ok(keys.length >= 100, `${loc} 词条数量偏少（${keys.length}）——是不是漏了一大块？`);
+    for (const k of keys) {
+      const v = dict[k];
+      assert.strictEqual(typeof v, 'string', `${loc}「${k}」的译文必须是字符串`);
+      assert.ok(v.trim().length > 0, `${loc}「${k}」的译文不能为空`);
+      // 重复键：JS 对象字面量里后一个会**静默覆盖**前一个，表现为"改了没生效"
+      const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`^\\s{6}(?:'${esc}'|${esc})\\s*:`, 'gm');
+      const n = (block.match(re) || []).length;
+      assert.strictEqual(n, 1, `${loc} 的词条「${k}」在本语言块里出现 ${n} 次（重复键会被静默覆盖）`);
+    }
   }
 });
 
-test('词典自检：英文词条里不许残留中文（漏翻的高频形态）', () => {
+test('词典自检 en：译文与原文相同 = 漏翻（日语不适用：将棋术语本就同形）', () => {
+  const same = Object.entries(DICT.en).filter(([k, v]) => k === v).map(([k]) => k);
+  assert.deepStrictEqual(same, [], '以下英文词条与原文完全相同（复制粘贴漏改？）：\n' + same.join('\n'));
+});
+
+test('词典自检 en：值里不许残留中文（漏翻的高频形态）', () => {
   const bad = [];
   for (const [k, v] of Object.entries(DICT.en)) {
     const cjk = (v.match(CJK) || []).length;
@@ -92,6 +110,20 @@ test('词典自检：英文词条里不许残留中文（漏翻的高频形态�
     if (ratio > 0.15) bad.push(`${k} → ${v}（中文占比 ${(ratio * 100).toFixed(0)}%）`);
   }
   assert.deepStrictEqual(bad, [], '以下词条的英文里残留中文过多：\n' + bad.join('\n'));
+});
+
+test('词典自检 ja：不许出现明显的简体字（照抄中文忘了改日文写法）', () => {
+  // ⚠️ 黑名单只放**确定不在日文里使用**的字。像「学 / 画 / 声 / 連 / 通 / 数 / 体」这些
+  //    中日同形字一旦进黑名单，就会把正确译文误判成错的 —— 这个自检要的是"能信"，
+  //    不是"查得全"。
+  const SIMPLIFIED_ONLY = '飞车让时图标准样员问题录详击举变处备关开长门间从众决办务单发复头应总报择无显术机权极构检电确种积签类紧经结续统编联节见观规计记论设证评词试说读课调谢贝财责费边过运还这进远选递邮';
+  const bad = [];
+  for (const [k, v] of Object.entries(DICT.ja)) {
+    for (const ch of v) {
+      if (SIMPLIFIED_ONLY.includes(ch)) { bad.push(`${k} → ${v}（含简体字「${ch}」）`); break; }
+    }
+  }
+  assert.deepStrictEqual(bad, [], '以下日语词条里出现简体字：\n' + bad.join('\n'));
 });
 
 test('语言列表自检：id 唯一、有可显示的短标签（导航按钮要用）', () => {

@@ -132,15 +132,38 @@
     global.I18N.cycle();
   }
 
-  // 切语言要重建导航（它由 JS 渲染，不在静态 HTML 里）——记下当前页以便原样重建
-  let lastNavId = null;
-
-  function rerender() {
-    if (lastNavId && document.querySelector('.nav')) renderNav(lastNavId);
+  /**
+   * 语言切换后**就地**更新导航文案（**不重建元素**）。
+   *
+   * ⚠️ 这里绝不能用 `nav.innerHTML = ...` 整块重建：**语言按钮就在导航里**，
+   * 重建会把用户"正在点的那个按钮"换掉 —— `mousedown` 与 `mouseup` 落在两个不同元素上
+   * 就不再产生 `click` 事件，于是"连点几下之后点了没反应"，看起来像卡死。
+   * （2026-09-20 用户反馈"反复点切换语言会卡死"，根因就是这个；
+   *   实测切语言本身只要几毫秒，12k 节点也才 36ms，慢的从来不是词典与扫描。）
+   *
+   * 导航文案由 JS 渲染、不在静态 HTML 里，所以语言一变必须**主动更新一次** ——
+   * 但只能是"改文字"，不能是"换元素"。
+   */
+  function applyLocale() {
+    document.querySelectorAll('.nav-links a[data-nav]').forEach((a) => {
+      const item = NAV.find((n) => n.id === a.getAttribute('data-nav'));
+      if (item) a.textContent = tr(item.label);
+    });
+    const lang = document.getElementById('langToggle');
+    if (lang) { lang.textContent = localeShort(); lang.title = tr('语言'); }
+    const theme = document.getElementById('themeToggle');
+    if (theme) theme.title = tr('切换主题');
+    const settings = document.getElementById('settingsToggle');
+    if (settings) settings.title = tr('设置');
+    const user = document.querySelector('.nav-user');
+    if (user) {
+      const g = getGuest();
+      const isAcc = typeof g.id === 'string' && g.id.includes('.');
+      user.title = isAcc ? tr('个人 · 已登录账号') : tr('个人 · 游客');
+    }
   }
 
   function renderNav(current) {
-    lastNavId = current;
     const guest = getGuest();
     const isAccount = typeof guest.id === 'string' && guest.id.includes('.');
     // 头像（2026-09-20）：徽标改成显示头像；**登录态改由 title 表达**——
@@ -164,7 +187,7 @@
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" id="langToggle" title="${tr('语言')}" onclick="NAV.toggleLocale()">${localeShort()}</button>
           <button class="theme-toggle" id="themeToggle" title="${tr('切换主题')}" onclick="NAV.toggleTheme()">🌙</button>
-          <button class="theme-toggle" title="${tr('设置')}" onclick="Settings.openPanel()">⚙️</button>
+          <button class="theme-toggle" id="settingsToggle" title="${tr('设置')}" onclick="Settings.openPanel()">⚙️</button>
           ${adminEntryHtml()}
           <a class="nav-user" href="profile.html" title="${isAccount ? tr('个人 · 已登录账号') : tr('个人 · 游客')}">
             <span>${displayName}</span>
@@ -179,12 +202,12 @@
       n.innerHTML = `
         <a class="brand" href="index.html"><span class="brand-logo">TDShogi</span><span class="brand-stamp">将棋</span></a>
         <nav class="nav-links">
-          ${NAV.map((x) => `<a href="${x.href}" class="${x.id === current ? 'active' : ''}">${tr(x.label)}</a>`).join('')}
+          ${NAV.map((x) => `<a href="${x.href}" class="${x.id === current ? 'active' : ''}" data-nav="${x.id}">${tr(x.label)}</a>`).join('')}
         </nav>
         <div style="display:flex;align-items:center;gap:10px;">
           <button class="theme-toggle" id="langToggle" title="${tr('语言')}" onclick="NAV.toggleLocale()">${localeShort()}</button>
           <button class="theme-toggle" id="themeToggle" title="${tr('切换主题')}" onclick="NAV.toggleTheme()">🌙</button>
-          <button class="theme-toggle" title="${tr('设置')}" onclick="Settings.openPanel()">⚙️</button>
+          <button class="theme-toggle" id="settingsToggle" title="${tr('设置')}" onclick="Settings.openPanel()">⚙️</button>
           ${adminEntryHtml()}
         </div>
       `;
@@ -201,5 +224,5 @@
     applyTheme();
   }
 
-  global.NAV = { renderNav, rerender, toggleLocale, getGuest, saveGuest, updateUserName, updateAvatar, randomName, genId, GUEST_KEY, THEME_KEY, ADMIN_KEY, isAdminSession, toggleTheme, getTheme, applyTheme };
+  global.NAV = { renderNav, applyLocale, toggleLocale, getGuest, saveGuest, updateUserName, updateAvatar, randomName, genId, GUEST_KEY, THEME_KEY, ADMIN_KEY, isAdminSession, toggleTheme, getTheme, applyTheme };
 })(window);
