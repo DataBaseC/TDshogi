@@ -30,7 +30,7 @@
     if (logged) {
       document.getElementById('accountName').textContent = guest.name;
       document.getElementById('accountId').textContent = guest.id.split('.')[0];
-      document.getElementById('accountAvatar').textContent = guest.name[0] || '棋';
+      renderAvatars(); // 头像（2026-09-20）：统一走这一处，别再直接写 textContent
       document.getElementById('pRoleLabel').innerHTML = '正式账号 · ID: <span id="pId"></span>';
       document.getElementById('pId').textContent = guest.id.split('.')[0];
       loadMyProfile();
@@ -143,7 +143,66 @@
 
   document.getElementById('pName').textContent = guest.name;
   document.getElementById('pId').textContent = isLoggedIn(guest.id) ? guest.id.split('.')[0] : guest.id;
-  document.getElementById('avatar').textContent = guest.name[0] || '棋';
+
+  // ==================================================================
+  // 头像（2026-09-20）
+  //
+  // ⚠️ 候选列表**由服务端下发**（`hello.avatars`，源头是 `src/auth.js` 的 `AVATARS`），
+  // 前端不另抄一份 —— 抄了就会出现"服务端认、前端画不出"或反过来。
+  //
+  // ⚠️ `myAvatar` 必须**在 `renderAccountUI()` 之前**声明：后者会调 `renderAvatars()`，
+  // 而 `let` 有 TDZ——先调用就会抛 "Cannot access before initialization"。
+  // ==================================================================
+  let myAvatar = null;
+
+  function renderAvatars() {
+    const glyph = window.UI.avatarGlyph(myAvatar, guest.name);
+    for (const id of ['avatar', 'accountAvatar']) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = glyph;
+    }
+  }
+
+  function renderAvatarOptions() {
+    const box = document.getElementById('avatarOptions');
+    if (!box) return;
+    const list = api.avatars || [];
+    if (!list.length) return; // 白名单还没到（hello 未回）：宁可为空，也别画一份猜的
+    box.innerHTML = list.map((a) => {
+      const on = a === myAvatar ? ' avatar-pick-on' : '';
+      return `<button type="button" class="avatar-pick${on}" data-avatar="${esc(a)}">${esc(a)}</button>`;
+    }).join('');
+  }
+
+  function togglePicker() {
+    const p = document.getElementById('avatarPicker');
+    if (!p) return;
+    p.style.display = p.style.display === 'none' ? '' : 'none';
+  }
+
+  document.getElementById('btnPickAvatar').addEventListener('click', togglePicker);
+  document.getElementById('avatar').addEventListener('click', togglePicker);
+  document.getElementById('avatarOptions').addEventListener('click', (e) => {
+    const b = e.target.closest('.avatar-pick');
+    if (!b) return;
+    api.send({ type: 'set_avatar', data: { avatar: b.getAttribute('data-avatar') } });
+  });
+  api.on('hello', (d) => {
+    if (!d) return;
+    if (d.avatar) myAvatar = d.avatar;
+    renderAvatars();
+    renderAvatarOptions();
+  });
+  api.on('avatar_updated', (d) => {
+    if (!d || !d.avatar) return;
+    myAvatar = d.avatar;
+    renderAvatars();
+    renderAvatarOptions();
+    if (window.NAV && window.NAV.updateAvatar) window.NAV.updateAvatar(d.avatar);
+    toast('头像已更新');
+  });
+
+  // 放在头像块之后：`renderAccountUI()` 会经 `renderAvatars()` 读 `myAvatar`
   renderAccountUI();
 
   // 改名
@@ -156,7 +215,7 @@
     guest.name = data.name;
     window.NAV.saveGuest(guest);
     document.getElementById('pName').textContent = data.name;
-    document.getElementById('avatar').textContent = data.name[0];
+    renderAvatars(); // 名字变了，兜底字形（无头像时用名字首字）也要跟着变
     toast('改名成功');
   });
   api.on('error', (data) => {

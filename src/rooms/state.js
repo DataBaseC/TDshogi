@@ -46,8 +46,8 @@ module.exports = function applyState(X) {
         // connected：该座位当前是否在线（前端据此显示「对手断线，等待重连」）
         // level：等级系统（PLAN §K7），供对局页玩家栏展示
         // title：称号（PLAN §R5）——注意 `ratings.profile()` **不含** title，它只存在于会话中
-        b: room.players.b ? { id: room.players.b.playerId, name: room.players.b.name, rating: profB.rating, level: profB.level, title: this._playerTitle(room.players.b.playerId), connected: room.players.b.connected !== false } : null,
-        w: room.players.w ? { id: room.players.w.playerId, name: room.players.w.name, rating: profW.rating, level: profW.level, title: this._playerTitle(room.players.w.playerId), connected: room.players.w.connected !== false } : null,
+        b: room.players.b ? { id: room.players.b.playerId, name: room.players.b.name, rating: profB.rating, level: profB.level, title: this._playerTitle(room.players.b.playerId), avatar: this._playerAvatar(room.players.b.playerId), connected: room.players.b.connected !== false } : null,
+        w: room.players.w ? { id: room.players.w.playerId, name: room.players.w.name, rating: profW.rating, level: profW.level, title: this._playerTitle(room.players.w.playerId), avatar: this._playerAvatar(room.players.w.playerId), connected: room.players.w.connected !== false } : null,
       };
       // §P1 R-d：当前手番方能否入玉宣言——前端据此决定是否亮出「入玉宣言」按钮。
       // 规则只在 `game.canDeclareNyugyoku()` 实现一处，前端不自己算点数；条件不满足时
@@ -264,6 +264,7 @@ module.exports = function applyState(X) {
           name: info.name || '观众',
           rating: prof.rating,
           level: prof.level,
+          avatar: this._playerAvatar(info.playerId), // 2026-09-20：观众列表也显示头像
         });
       }
       return [...map.values()];

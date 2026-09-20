@@ -52,6 +52,13 @@
 
 **职责**：对战 / 观战 / 重连三合一。布局：顶部信息栏 + 棋盘（上=对手栏，下=自己栏）+ 左对手持驹/右自己持驹 + 右侧聊天与走子记录。
 
+> **2026-09-20 新增**：
+> - 玩家栏两侧显示**头像**（`state.players[].avatar`，服务端按 playerId 查会话）；
+> - 聊天框下方是**快捷语胶囊**（`play-chat.js` 的 `QUICK_PHRASES`，点击即发，仍受 2 秒节流）；
+> - 操作区新增「🚩 举报对手」→ 类别下拉 + 补充说明（类别由 `hello.reportCategories` 下发）；
+> - 聊天区会播报**选手状态**：离开页面 / 超时判负 / 主动退出 / 回到对局（`kind` 前缀 `player-`，
+>   不受「观众进出提示」开关影响）。原先只有玩家栏上一句瞬时的「⚠️ 断线」，聊天区没有留痕。
+
 > 规划中（见 PLAN §G）：终局后自动进入感想战——**演示行棋**模式：演示者（默认房主）自由行棋全场实时同步，演示权可「交给对方」，常驻提示「正在由 xx 演示」，可回到终局。
 
 进入分支（URL 参数决定，onopen 后发送）：
@@ -184,7 +191,19 @@
 
 ## 8. admin.html（管理后台）— `js/admin.js`
 
-**职责**：管理员控制台（现状仅两个 tab，增强设计见 PLAN §C）。
+**职责**：管理员控制台。当前已实现 9 个 tab（增强设计见 PLAN §C）：
+
+| Tab | 数据源 | 说明 |
+|---|---|---|
+| 📊 总览 | `GET /api/admin/overview` | 统计、在线对局数、待处理举报数 |
+| 全部棋谱 | `GET /api/history?adminToken=` | 全库棋谱；按名字/ID 前端过滤；每条 [回放][KIF][CSA]；📥 KIF 批量导入 |
+| 全部用户 | `GET /api/admin/users` | 昵称 (id) + ELO/战绩；详情弹层；改名/封禁/重置/改等级 |
+| 赛事管理 | `GET /api/admin/tournaments` | 全量含待审核；审核队列 + 进行中（取消并解散对局）+ 已存档编辑 |
+| 📢 公告 | `GET /api/admin/announcements` | 新增/下线公告 |
+| 🕹 对局干预 | `GET /api/admin/rooms` | 在线对局列表 + 强制结束 / 解散 |
+| 操作审计 | `GET /api/admin/audit` | 全部管理写操作流水 |
+| 🚫 IP 封禁 | `GET /api/admin/ipbans` | 网段支持；**服务端硬性拒绝"封到自己"** |
+| 🚩 举报 | `GET/POST /api/admin/reports` | 玩家在对局页提交；可标记已处理/驳回 + 备注（一次性，不可重复处理） |
 
 - 登录：输入管理密码 → WS `admin_login` → 换 12 小时 HMAC token 存 localStorage（ADMIN_KEY）；退出仅清本地
 - Tab「全部棋谱」：`GET /api/history?adminToken=`（无 player= 全库）；按名字/ID 前端过滤；每条 [回放][KIF][CSA]（链接携带 adminToken 或 token）；📥 KIF 批量导入（POST /api/admin/records/import，逐文件上传统计成败）

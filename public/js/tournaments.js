@@ -67,6 +67,46 @@
     if (e.target === modalEl) modalEl.style.display = 'none';
   });
 
+  // ==================================================================
+  // 等级特权（2026-09-20 用户要求：等级 5 才能举办赛事）
+  //
+  // ⚠️ 门槛数值**不在前端写死**：服务端随 hello 下发
+  // `privileges.create_tournament = { need, ok }`（由 `LEVEL_PRIVILEGES` 表推导）。
+  // 前端抄一份，改门槛时就会出现"服务端放行了但按钮还是灰的"。
+  // ⚠️ 这一层只是"别让用户点一个必然失败的按钮"；**真正的拦截在服务端**
+  // （`tournaments.createTournament` 里的 `ratings.hasPrivilege`）——绕过前端照样建不了赛。
+  // ==================================================================
+  const btnCreate = document.getElementById('btnCreateTournament');
+  const createHint = document.getElementById('createLevelHint');
+  const isAccount = !!guest.id && String(guest.id).includes('.');
+
+  function applyCreatePrivilege(priv, level) {
+    // 游客真正的阻碍是"没登录"——按等级提示反而误导，让点击时给登录引导
+    if (!isAccount || !priv) {
+      btnCreate.disabled = false;
+      btnCreate.title = '';
+      createHint.style.display = 'none';
+      return;
+    }
+    if (priv.ok) {
+      btnCreate.disabled = false;
+      btnCreate.title = '';
+      createHint.style.display = 'none';
+      return;
+    }
+    btnCreate.disabled = true;
+    btnCreate.title = `需要 Lv.${priv.need}`;
+    createHint.style.display = '';
+    createHint.textContent =
+      `🏆 举办赛事需要 Lv.${priv.need}（你当前 Lv.${level == null ? 0 : level}）—— 多下几局攒经验即可解锁。`;
+  }
+
+  api.on('hello', (d) => {
+    if (d && d.privileges) applyCreatePrivilege(d.privileges.create_tournament, d.level);
+  });
+  // hello 可能已经先到了（connect() 在本行之前调用），补判一次
+  if (api.privileges) applyCreatePrivilege(api.privileges.create_tournament, api.level);
+
   /** `datetime-local` 的值 → 时间戳；留空 → null（视为"不限"） */
   function tsOf(id) {
     const v = document.getElementById(id).value;

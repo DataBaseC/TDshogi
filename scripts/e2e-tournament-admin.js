@@ -129,6 +129,16 @@ async function main() {
   const creatorClient = new Client('Creator', creator.token);
   await creatorClient.connect();
 
+  // 等级特权（2026-09-20 用户要求）：举办赛事需要 Lv.5，而刚注册的账号是 Lv.0。
+  // 这里先用管理接口把经验提上去——顺带把「管理员改等级」这条链路也走了一遍。
+  // 等级由经验推导：Lv.5 ⟺ 累计经验 ≥ 2^(5+2) - 2 = 126。
+  const grant = await (await fetch(`${BASE}/api/admin/users/${creator.account.id}/elo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-token': adminTok },
+    body: JSON.stringify({ exp: 128 }),
+  })).json();
+  if (!grant.ok) throw new Error('提升等级失败: ' + (grant.error || ''));
+
   // ---- 1. 游客创建被拒 ----
   await section('游客创建被拒（B2 服务端校验）');
   const guest = new Client('Guest');

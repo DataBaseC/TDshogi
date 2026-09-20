@@ -114,16 +114,20 @@ module.exports = function applyGameplay(X) {
       const seat = this.clientToPlayer.get(clientId);
       let name = '观众';
       let role = 'spectator';
+      let speakerId = null;
       if (seat && room.players[seat.seat]) {
         name = room.players[seat.seat].name;
+        speakerId = room.players[seat.seat].playerId || null;
         role = seat.seat === 'b' ? 'player-b' : 'player-w';
       } else {
         const info = this.playerRegistry ? this.playerRegistry(clientId) : null;
         if (info && info.name) name = info.name;
+        if (info) speakerId = info.playerId || null;
       }
       this._broadcast(roomId, {
         type: 'chat',
-        data: { name, text: msg, ts: now, role },
+        // 头像（2026-09-20）：聊天行上显示发言者头像，靠 playerId 查（不是靠名字）
+        data: { name, text: msg, ts: now, role, avatar: this._playerAvatar(speakerId) },
       });
       return { ok: true };
     },
@@ -290,6 +294,9 @@ module.exports = function applyGameplay(X) {
       // 对局中离开 → 判「离开座位」负（而不是当前手番方）
       // 修复：原 resultDetail 写「投了」误导对手；中途退出/断线超时应提示「接続切断」
       if (room.status === 'PLAYING' && !room.game.isGameOver()) {
+        // 聊天区留痕（2026-09-20）：与「掉线等待重连」区分——主动退出是**立即判负**，
+        // 对手看到的消息必须说清是哪一种，否则会以为还有 60 秒宽限。
+        this._sysChat(room, `🚪 ${(room.players[seat.seat] || {}).name || '对手'} 退出了对局（判负）`, 'player-exit');
         room.game.result = seat.seat === 'b' ? 'w' : 'b';
         room.game.resultDetail = '接続切断';
         this._checkGameOver(room);

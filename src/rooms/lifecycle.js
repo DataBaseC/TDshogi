@@ -449,6 +449,47 @@ module.exports = function applyLifecycle(X) {
     },
 
     /**
+     * 头像变更后刷新（2026-09-20）：清缓存 + 按需重推 state。
+     *
+     * ⚠️ 必须**主动失效缓存**：`_playerAvatar` 带 30 秒 TTL，
+     * 不失效的话改完头像要等半分钟才在对局页生效——用户会以为"没保存上"再点一次。
+     */
+    refreshAvatar(playerId) {
+      if (!playerId) return;
+      this._avatarCache.delete(playerId);
+      // 该玩家若在某个房间里，重推一次，让对手与观战者立刻看到新头像
+      for (const room of this.rooms.values()) {
+        for (const seat of ['b', 'w']) {
+          const p = room.players[seat];
+          if (p && p.playerId === playerId) { this._pushState(room); return; }
+        }
+      }
+    },
+
+    /**
+     * 玩家头像（2026-09-20）。
+     *
+     * ⚠️ 与 `_playerTitle` 完全同款：同样要**缓存**——`auth.load()` 是同步读磁盘，
+     * 而本函数在 `_gameState()` 里每次走子都会调用（玩家栏要显示对手头像），
+     * 不缓存就等于把磁盘 I/O 塞进对局主循环。
+     */
+    _playerAvatar(playerId) {
+      if (!playerId) return null;
+      const TTL_MS = 30000;
+      const now = Date.now();
+      const cached = this._avatarCache.get(playerId);
+      if (cached && now - cached.at < TTL_MS) return cached.avatar;
+      let avatar = null;
+      try {
+        const sess = require('../auth').load(playerId);
+        avatar = (sess && sess.avatar) || null;
+      } catch (_) { avatar = null; }
+      if (this._avatarCache.size > 1000) this._avatarCache.clear();
+      this._avatarCache.set(playerId, { avatar, at: now });
+      return avatar;
+    },
+
+    /**
      * 玩家主动进入自己的赛事对局（建局时可能不在线）。
      */
     joinTournamentMatch(clientId, roomId, playerId) {

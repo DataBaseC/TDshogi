@@ -37,6 +37,7 @@ const SUITES = [
   'e2e-test.js',
   'e2e-tournament.js',
   'e2e-tournament-admin.js',
+  'e2e-player-features.js',
   'test-records.js',
   'test-reconnect.js',
   'test-spectate-rejoin.js',

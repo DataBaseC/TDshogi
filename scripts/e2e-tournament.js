@@ -90,6 +90,16 @@ async function main() {
   adminClient.send('admin_login', { password: 'admin123' });
   const adminTok = (await adminClient.wait('admin_logged_in')).token;
 
+  // 等级特权（2026-09-20 用户要求）：举办赛事需要 Lv.5，而刚注册的账号是 Lv.0。
+  // 这里先用管理接口把经验提上去——顺带把「管理员改等级」这条链路也走了一遍。
+  // 等级由经验推导：Lv.5 ⟺ 累计经验 ≥ 2^(5+2) - 2 = 126。
+  const grant = await (await fetch(`http://localhost:3999/api/admin/users/${reg.account.id}/elo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-token': adminTok },
+    body: JSON.stringify({ exp: 128 }),
+  })).json();
+  if (!grant.ok) throw new Error('提升等级失败: ' + (grant.error || ''));
+
   // ============ 报名阶段 ============
   await section('4 人报名 → 满员自动开赛');
   const players = [];
@@ -104,6 +114,8 @@ async function main() {
     await T(120);
     players.push(p);
   }
+  ok(grant.level >= 5, `管理员可提升等级（当前 Lv.${grant.level}），满足建赛门槛`);
+
   players[0].send('create_tournament', {
     name: '测试赛', size: 4, reason: 'e2e 端到端测试用赛事，走完整报名与淘汰流程',
   });

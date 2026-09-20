@@ -32,6 +32,7 @@ const tournaments = require('./tournaments');
 const { listPlayerRecords, getRecord, exportRecord, recentSummaries, searchRecords } = require('./records');
 const { countRecords, listSummaries } = require('./storage');
 const { listAnnouncements } = require('./announcements');
+const reports = require('./reports');
 
 class Protocol {
   constructor({ onBroadcast }) {
@@ -105,6 +106,17 @@ class Protocol {
         clientId,
         playerId: session.id,
         name: session.name,
+        // 等级与等级特权（2026-09-20）：随 hello 下发，前端不必再单发一次请求。
+        // `privileges` 由 `LEVEL_PRIVILEGES` 表推导（含 need/ok 两项），
+        // 前端可以直接渲染"需要 Lv.5（你当前 Lv.2）"而不必抄门槛数值。
+        level: ratings.levelOf(session.id),
+        privileges: ratings.privilegesOf(session.id),
+        // 头像（2026-09-20）：当前头像 + 可选白名单。白名单只维护在 `auth.AVATARS` 一处，
+        // 前端直接拿它渲染选择器，不另抄一份表。
+        avatar: session.avatar || null,
+        avatars: auth.AVATARS,
+        // 举报类别（2026-09-20）：同样只在服务端维护一份，前端拿来直接渲染下拉
+        reportCategories: reports.CATEGORIES,
         reconnect: pending ? { ok: true, ...pending } : null,
         stats: this._stats(), // 统一统计出口（§T1）：在线人数按「唯一身份数」计
       },
@@ -272,6 +284,37 @@ class Protocol {
           // 同步进行中对局里该玩家的名字（对手即时看到新名）
           this.rooms.updatePlayerName(player.playerId, res.name);
           this._broadcastStats();
+        } else {
+          this._error(clientId, res.error);
+        }
+        break;
+      }
+      case 'report': {
+        // 举报（2026-09-20）：`targetId` 由客户端给（对局页就是对面座位），
+        // 但**被举报人的显示名由服务端查会话**——不信客户端传的名字，
+        // 否则举报记录里的"被举报人"可以被伪造成任意人。
+        const rp = reports.submit({
+          byId: player.playerId,
+          byName: player.name,
+          targetId: data && data.targetId,
+          targetName: data && data.targetName,
+          category: data && data.category,
+          detail: data && data.detail,
+          context: data && data.context,
+        });
+        if (rp.ok) this._send(clientId, { type: 'reported', data: { id: rp.report.id } });
+        else this._error(clientId, rp.error);
+        break;
+      }
+      case 'set_avatar': {
+        // 头像（2026-09-20）：与改名同款，走**会话文件**——游客也能换头像，
+        // 不必为了换个头像去注册账号。白名单校验在 `auth.setAvatar` 里。
+        const res = auth.setAvatar(player.playerId, data && data.avatar);
+        if (res.ok) {
+          player.avatar = res.avatar;
+          this._send(clientId, { type: 'avatar_updated', data: { avatar: res.avatar } });
+          // 进行中的对局要**立刻**生效：清掉房间侧的头像缓存并重推 state
+          this.rooms.refreshAvatar(player.playerId);
         } else {
           this._error(clientId, res.error);
         }

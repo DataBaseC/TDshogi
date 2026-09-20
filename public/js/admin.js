@@ -146,6 +146,7 @@
       else if (btn.dataset.tab === 'users') loadUsers();
       else if (btn.dataset.tab === 'tournaments') loadTournaments();
       else if (btn.dataset.tab === 'audit') loadAudit();
+      else if (btn.dataset.tab === 'reports') loadReports();
     });
   });
 
@@ -696,6 +697,94 @@
       renderIpBans();
     } catch (e) { toast('加载失败：' + e.message); }
   }
+
+  // ==================================================================
+  // 举报处理（2026-09-20）
+  // ==================================================================
+  let allReports = [];
+
+  async function loadReports() {
+    const status = document.getElementById('rpFilter').value;
+    try {
+      const res = await fetch(`/api/admin/reports?status=${encodeURIComponent(status)}`, {
+        headers: { 'x-admin-token': getToken() },
+      });
+      const data = await res.json();
+      if (!res.ok) { toast((data && data.error) || '加载失败'); return; }
+      allReports = data.reports || [];
+      reportCategories = data.categories || reportCategories;
+      document.getElementById('rpPending').textContent = data.pending || 0;
+      document.getElementById('rpCount').textContent = allReports.length;
+      renderReports();
+    } catch (e) { toast('加载失败：' + e.message); }
+  }
+
+  function renderReports() {
+    const box = document.getElementById('rpList');
+    if (!allReports.length) {
+      box.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">没有符合条件的举报。</div>';
+      return;
+    }
+    const catLabel = (id) => {
+      const c = reportCategories.find((x) => x.id === id);
+      return c ? c.label : id;
+    };
+    const statusMeta = {
+      pending: ['🕐 待处理', 'var(--gold-light)'],
+      handled: ['✅ 已处理', 'var(--text-dim)'],
+      rejected: ['↩️ 已驳回', 'var(--text-dim)'],
+    };
+    box.innerHTML = allReports.map((r) => {
+      const st = statusMeta[r.status] || [r.status, 'var(--text-dim)'];
+      const ops = r.status === 'pending'
+        ? `<button class="btn btn-primary btn-sm" data-rp="handled" data-id="${esc(r.id)}">标记已处理</button>
+           <button class="btn btn-ghost btn-sm" data-rp="rejected" data-id="${esc(r.id)}">驳回</button>`
+        : '';
+      const ctx = r.context && (r.context.roomId || r.context.recordId)
+        ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">上下文：${
+          [r.context.roomId ? `房间 ${esc(r.context.roomId)}` : '', r.context.recordId ? `棋谱 ${esc(r.context.recordId)}` : '']
+            .filter(Boolean).join(' · ')}</div>`
+        : '';
+      return `
+        <div class="record-item">
+          <div style="font-size:13px;display:flex;justify-content:space-between;gap:10px;">
+            <span><span data-player-id="${esc(r.targetId)}">${esc(r.targetName)}</span>
+              <span style="color:var(--text-dim);font-size:12px;">被 ${esc(r.byName)} 举报</span></span>
+            <span style="color:${st[1]};font-size:12px;">${st[0]}</span>
+          </div>
+          <div style="font-size:12px;margin-top:4px;">类别：${esc(catLabel(r.category))}${
+  r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${new Date(r.at).toLocaleString('zh-CN')}</div>
+          ${ctx}
+          ${r.note ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">处理备注：${esc(r.note)}</div>` : ''}
+          ${ops ? `<div style="display:flex;gap:6px;margin-top:8px;">${ops}</div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  let reportCategories = [];
+
+  document.getElementById('btnRefreshReports').addEventListener('click', loadReports);
+  document.getElementById('rpFilter').addEventListener('change', loadReports);
+  document.getElementById('rpList').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-rp]');
+    if (!btn) return;
+    const status = btn.getAttribute('data-rp');
+    const id = btn.getAttribute('data-id');
+    const note = prompt(status === 'handled' ? '处理备注（可留空）：' : '驳回理由（可留空）：');
+    if (note === null) return;
+    try {
+      const res = await fetch(`/api/admin/reports/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': getToken() },
+        body: JSON.stringify({ status, note }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) { toast((data && data.error) || '处理失败'); return; }
+      toast(status === 'handled' ? '已标记为处理' : '已驳回');
+      loadReports();
+    } catch (err) { toast('处理失败：' + err.message); }
+  });
 
   /** 表单与按钮只绑一次（列表每次刷新会重建，重复绑定会累积监听器） */
   function initIpBanForm() {

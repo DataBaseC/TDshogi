@@ -41,6 +41,22 @@
     if (badge) badge.textContent = name;
   }
 
+  /**
+   * 头像到达后更新（2026-09-20）：写进本地 guest 记录并刷新导航徽标。
+   * 服务端在 `hello` 里下发头像，所以任意页面一进来就能显示。
+   */
+  function updateAvatar(avatar) {
+    if (!avatar) return;
+    const g = getGuest();
+    if (g.avatar === avatar) return;
+    g.avatar = avatar;
+    saveGuest(g);
+    const el = document.querySelector('.nav-user .nav-avatar');
+    if (el && global.UI && global.UI.avatarGlyph) {
+      el.textContent = global.UI.avatarGlyph(avatar, g.name);
+    }
+  }
+
   function genId() {
     let s = '';
     const hex = '0123456789abcdef';
@@ -101,7 +117,12 @@
   function renderNav(current) {
     const guest = getGuest();
     const isAccount = typeof guest.id === 'string' && guest.id.includes('.');
-    const userBadge = isAccount ? '🔐' : '👤';
+    // 头像（2026-09-20）：徽标改成显示头像；**登录态改由 title 表达**——
+    // 原先那个 🔐/👤 图标只在"点开个人页才知道登没登"这个场景有用，
+    // 而现在每个玩家都有头像，徽标位置给头像信息量更大。
+    const userBadge = (global.UI && global.UI.avatarGlyph)
+      ? global.UI.avatarGlyph(guest.avatar, guest.name)
+      : (isAccount ? '🔐' : '👤');
     // 名字首次到达前（hello 未回）显示占位，避免导航与对局/列表不同步
     const displayName = guest.name || '载入中…';
     const nav = document.querySelector('.nav');
@@ -118,7 +139,7 @@
           <button class="theme-toggle" title="切换主题" onclick="NAV.toggleTheme()">🌙</button>
           <button class="theme-toggle" title="设置" onclick="Settings.openPanel()">⚙️</button>
           ${adminEntryHtml()}
-          <a class="nav-user" href="profile.html" title="个人页面/账号">
+          <a class="nav-user" href="profile.html" title="${isAccount ? '个人 · 已登录账号' : '个人 · 游客'}">
             <span>${displayName}</span>
             <span class="nav-avatar">${userBadge}</span>
           </a>
@@ -152,5 +173,5 @@
     applyTheme();
   }
 
-  global.NAV = { renderNav, getGuest, saveGuest, updateUserName, randomName, genId, GUEST_KEY, THEME_KEY, ADMIN_KEY, isAdminSession, toggleTheme, getTheme, applyTheme };
+  global.NAV = { renderNav, getGuest, saveGuest, updateUserName, updateAvatar, randomName, genId, GUEST_KEY, THEME_KEY, ADMIN_KEY, isAdminSession, toggleTheme, getTheme, applyTheme };
 })(window);

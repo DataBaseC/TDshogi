@@ -21,6 +21,15 @@ if (fs.existsSync(TMP)) fs.rmSync(TMP, { recursive: true, force: true });
 
 const T = require('../src/tournaments');
 const storage = require('../src/storage');
+const ratings = require('../src/ratings');
+
+// ---- 等级特权（2026-09-20）：举办赛事需要 Lv.5 ----
+// 测试里的 owner 都是临时造的 id、等级为 0，会被门槛直接拒掉。
+// 这里统一把用到的 owner 抬到门槛所需等级（**`owner-low` 故意不抬**，留给门槛用例）。
+const LV5_EXP = ratings.nextLevelExp(ratings.LEVEL_PRIVILEGES.create_tournament - 1);
+for (const id of ['owner-x', 'owner-y', 'owner-1', 'owner-s', 'o', 'owner']) {
+  ratings.adminSetPlayer(id, { exp: LV5_EXP + 1000 });
+}
 
 test.after(() => {
   // Windows 上必须先关掉 SQLite 连接，否则目录删不掉（见 cleanup.test.js 的同款处理）
@@ -841,6 +850,38 @@ test('T6 管理员编辑已存档赛事：仅管理员、仅 archived、每次�
 
   assert.strictEqual(T.editArchived(id, 'size', 8, admin).ok, false, '人数档位不是可编辑字段');
   assert.strictEqual(T.editArchived(id, 'note', '赛后更正说明', admin).ok, false, '内容没变化应拒绝');
+});
+
+// ======================================================================
+// 等级特权（2026-09-20 用户要求：等级 5 才能举办赛事）
+// ======================================================================
+
+test('等级特权：建赛门槛在服务端拦住等级不足者', () => {
+  const low = 'owner-low'; // 故意没在文件顶部被抬等级
+  assert.strictEqual(ratings.levelOf(low), 0, '前置条件：Lv.0');
+
+  const r = T.createTournament('等级不足', 4, { id: low, name: '新人' }, {
+    reason: '这是一条足够长的举办理由，用于验证等级门槛',
+  });
+  assert.strictEqual(r.ok, false, 'Lv.0 不该能建赛');
+  assert.strictEqual(r.code, 'LEVEL_REQUIRED', '要给出机器可判的错误码，前端才能针对性提示');
+  assert.match(r.error, /Lv\.5/, '文案要写清需要几级');
+  assert.match(r.error, /Lv\.0/, '文案要写清当前几级');
+
+  // 补足经验 → 放行
+  ratings.adminSetPlayer(low, { exp: LV5_EXP });
+  assert.ok(ratings.levelOf(low) >= 5, '前置条件：已到 5 级');
+  const ok = T.createTournament('等级达标', 4, { id: low, name: '老手' }, {
+    reason: '这是一条足够长的举办理由，用于验证等级门槛',
+  });
+  assert.strictEqual(ok.ok, true, ok.error || '');
+});
+
+test('等级特权：门槛表是唯一判定来源，未定义的门槛不限制', () => {
+  assert.strictEqual(ratings.LEVEL_PRIVILEGES.create_tournament, 5, '门槛值只在表里');
+  // 未定义 = 不限制：新加特权时默认放开，避免"悄悄拦住老功能"
+  assert.strictEqual(ratings.hasPrivilege('whoever', 'some_future_privilege'), true);
+  assert.strictEqual(ratings.hasPrivilege('owner-low-but-fresh', 'create_tournament'), false);
 });
 
 // ======================================================================
