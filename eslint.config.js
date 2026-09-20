@@ -59,6 +59,10 @@ const BROWSER_GLOBALS = {
   HTMLElement: 'readonly',
   MutationObserver: 'readonly',
   NodeFilter: 'readonly', // document.createTreeWalker 的过滤常量（i18n.js 用）
+  // 本项目自己的全局：`i18n.js` 在每个页面都**先于**页面脚本加载（`<script>` 顺序保证），
+  // 所以 `I18N` 与 `window`/`document` 同性质。日期格式必须按当前语言来
+  // （`I18N.fmt` / `I18N.fmtDate`），各页直接调用，不加 `window.` 前缀。
+  I18N: 'readonly',
   IntersectionObserver: 'readonly',
   ResizeObserver: 'readonly',
   URLSearchParams: 'readonly',

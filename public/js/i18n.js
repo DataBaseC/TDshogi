@@ -420,7 +420,9 @@
       管理员审核: 'admin review',
       '，通过后才开放报名。': ', and registration opens only after approval.',
       主办人不会自动参赛: 'The host does not enter automatically',
-      '——想下棋请另外报名。': ' — sign up separately if you want to play.',
+      // ⚠️ 译文**首尾不要带空白**（排版用的空白属于标记层，不该进词典）。
+      //    带空白曾是 2026-09-20 "切语言卡死浏览器"的燃料，见 `nodeContent()` 的说明。
+      '——想下棋请另外报名。': '— sign up separately if you want to play.',
       '时间未填写的项视为「不限」。': 'Any time field left empty means “no limit”.',
       提交申请: 'Submit application',
       '如：暑期棋王赛': 'e.g. Summer Shogi Cup',
@@ -538,7 +540,7 @@
       '查看详情 →': 'View details →',
       举报: 'Report',
       '查看个人页 →': 'View profile →',
-      '正在查看个人页：': 'Viewing profile: ',
+      '正在查看个人页：': 'Viewing profile:',
       返回我的个人页: 'Back to my profile',
       '玩家 · ID: {id}': 'Player · ID: {id}',
       参赛: 'Entered',
@@ -989,7 +991,7 @@
       管理员审核: '管理者の承認',
       '，通过后才开放报名。': 'へ回り、承認後に参加受付が始まります。',
       主办人不会自动参赛: '主催者は自動では参加しません',
-      '——想下棋请另外报名。': '　— 指したい場合は別途お申し込みください。',
+      '——想下棋请另外报名。': '— 指したい場合は別途お申し込みください。',
       '时间未填写的项视为「不限」。': '未入力の項目は「制限なし」とみなします。',
       '说明办赛目的、面向人群、赛程安排等': '開催の目的・対象・日程などを記入してください',
       已通过审核: '承認しました',
@@ -1133,20 +1135,67 @@
     return subst(hit === undefined ? s : hit, vars);
   }
 
-  /** 保留首尾空白（缩进/换行是排版的一部分，替换文本时不能吃掉） */
-  function swap(node, translated) {
-    const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(node.textContent);
-    if (!m) return translated;
-    return m[1] + translated + m[3];
+  /**
+   * 算出某节点应显示的内容：用**原文**的首尾空白包住译文（缩进/换行是排版的一部分，不能吃掉）。
+   *
+   * ⚠️⚠️ 入参只有「**固定不变的原文**」与译文，**故意不接收"节点当前的内容"**。
+   *
+   * 2026-09-20 事故（用户报"反复切语言直接卡死浏览器"）：原实现是
+   * `next = 当前内容的首部空白 + 译文 + 当前内容的尾部空白`，
+   * 于是**译文自身首尾带空白**时（本仓库真出现过 3 条：`' — sign up…'`、`'Viewing profile: '`、
+   * `'　— 指したい…'`），每写一次就多出一层空白：
+   *   写入 → MutationObserver(characterData) → translateNode → 再写入 → …… **无限微任务循环**，
+   * 主线程被彻底占满（浏览器卡死），文本还会无限膨胀。
+   *
+   * 只依赖原文 ⇒ 结果是个**常数** ⇒ 写完一次后 `node.textContent === next` 恒成立 ⇒
+   * 循环在**结构上不可能**发生（不靠"词典里别写脏数据"来保证）。
+   */
+  function nodeContent(raw, translated) {
+    const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(raw);
+    return m ? m[1] + translated + m[3] : translated;
   }
 
   function translateNode(node) {
-    const raw = srcOf.has(node) ? srcOf.get(node) : node.textContent;
+    const hasSrc = srcOf.has(node);
+    const raw = hasSrc ? srcOf.get(node) : node.textContent;
     if (!raw || !raw.trim()) return;
-    if (!srcOf.has(node)) srcOf.set(node, raw);
-    const out = t(raw.trim());
-    const next = swap(node, out);
-    if (node.textContent !== next) node.textContent = next; // 相同则不写，避免触发观察器空转
+    if (!hasSrc) srcOf.set(node, raw);
+    const next = nodeContent(raw, t(raw.trim()));
+    if (node.textContent !== next) { // 相同则不写，避免触发观察器空转
+      node.textContent = next;
+      noteWrite();
+    }
+  }
+
+  // ==================================================================
+  // 写入风暴熔断（安全网）
+  //
+  // 上面"结论只依赖原文"已经从**结构上**堵住了自激，这里再兜一层：
+  // 万一将来又冒出某种自激（新代码、新页面、新的动态渲染方式），
+  // 宁可**停用自动翻译**（界面退回中文），也绝不允许把浏览器卡死。
+  //
+  // ⚠️ 只统计**观察器回调里**产生的写入：`setLocale()` 主动全量重扫时
+  // 大页面本来就会写上万次，那是正常的，不能算风暴。
+  // ==================================================================
+  const WRITES_PER_SECOND_LIMIT = 5000;
+  let writeWindowStart = 0;
+  let writesInWindow = 0;
+  let inObserver = false;
+  let observerTripped = false;
+  let totalWrites = 0;
+
+  function noteWrite() {
+    totalWrites++;
+    if (!inObserver || observerTripped) return; // 主动重扫不算，已熔断不再统计
+    const now = Date.now();
+    if (now - writeWindowStart > 1000) { writeWindowStart = now; writesInWindow = 0; }
+    writesInWindow++;
+    if (writesInWindow > WRITES_PER_SECOND_LIMIT) {
+      observerTripped = true;
+      if (observer) { try { observer.disconnect(); } catch (_) { /* 忽略 */ } observer = null; }
+      console.warn('[i18n] 检测到 DOM 写入风暴，已停用自动翻译以免卡死页面'
+        + '（界面会退回中文；重新加载页面即可恢复。如需手动重扫：I18N.apply(document.body)）');
+    }
   }
 
   const ATTRS = ['placeholder', 'title', 'aria-label'];
@@ -1225,16 +1274,45 @@
    * ⚠️ 只在非中文时启用——中文用户的默认路径上不该多一个全局观察器。
    */
   function startObserver() {
-    if (locale === 'zh-CN' || observer || typeof MutationObserver !== 'function') return;
+    // ⚠️ `observerTripped` 之后**不再自动重挂**：能触发一次风暴的东西会一直触发，
+    // 自动重挂等于"熔断器自己复位"，会把浏览器再卡死一次。
+    if (observerTripped || observer || locale === 'zh-CN' || typeof MutationObserver !== 'function') return;
     observer = new MutationObserver((records) => {
-      for (const r of records) {
-        if (r.type === 'characterData') { translateNode(r.target); continue; }
-        r.addedNodes.forEach((n) => {
-          if (n.nodeType === 1 || n.nodeType === 3) apply(n);
-        });
-      }
+      if (observerTripped) return;
+      inObserver = true;
+      try {
+        for (const r of records) {
+          if (r.type === 'characterData') { translateNode(r.target); continue; }
+          r.addedNodes.forEach((n) => {
+            if (n.nodeType === 1 || n.nodeType === 3) apply(n);
+          });
+        }
+      } finally { inObserver = false; }
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  /**
+   * 按**当前语言**格式化日期 / 时间。
+   *
+   * ⚠️ 各页面原先到处写死 `toLocaleString('zh-CN')`（2026-09-20 修）：语言切到英/日文后
+   * **日期还是中文格式**，界面一眼就能看出"翻了一半"。语言是全局开关，日期格式得跟着走。
+   *
+   * - `fmtDate(ts, opts)` 只出年月日（`toLocaleDateString`）
+   * - `fmt(ts, opts)` 出年月日 + 时分秒（`toLocaleString`）
+   * - 第二参数原样透传（如 `{ month: '2-digit', ... }`）；空值/非法日期返回 `''`
+   *   （调用方可以 `I18N.fmt(ts) || '—'` 自己决定占位符）
+   */
+  function fmt(ts, opts) {
+    const d = new Date(ts);
+    if (!ts || isNaN(d.getTime())) return '';
+    try { return d.toLocaleString(locale, opts); } catch (_) { return d.toLocaleString('zh-CN', opts); }
+  }
+
+  function fmtDate(ts, opts) {
+    const d = new Date(ts);
+    if (!ts || isNaN(d.getTime())) return '';
+    try { return d.toLocaleDateString(locale, opts); } catch (_) { return d.toLocaleDateString('zh-CN', opts); }
   }
 
   function init() {
@@ -1250,10 +1328,16 @@
     setLocale,
     cycle,
     current,
+    fmt,
+    fmtDate,
     init,
     /** 仅供测试与工具：词典本体 + 查词函数（`scripts/i18n-report.js` 用它算覆盖率） */
     _dict: DICT,
     _lookup: lookup,
+    /** 仅供测试：合成规则。「翻译必须收敛」这条回归全靠它（见 `tests/i18n.test.js`） */
+    _nodeContent: nodeContent,
+    /** 仅供测试：写入计数 + 熔断状态 */
+    _stats: () => ({ writes: totalWrites, tripped: observerTripped }),
   };
   window.t = t; // JS 里直接 `t('...')`（与其它全局工具一致，本项目无模块系统）
 

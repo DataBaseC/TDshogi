@@ -147,6 +147,31 @@ async function main() {
   const avUpd = await G.waitNew('avatar_updated');
   ok(avUpd.avatar === gHello.avatars[0], '合法头像设置成功并回执');
 
+  // ⚠️ 越权回归（2026-09-20 用户报「我可以更新其他玩家的头像」）：
+  // 服务端只认**连接身份**——客户端硬塞 `targetId` 也必须改到自己头上。
+  // 当时的实际症状是**界面误导**（前端把新字形画在了对方名字旁边的身份卡上），
+  // 但"服务端不读 targetId"这条更该钉死：哪天有人改成读 `data.targetId`，就真越权了。
+  const Z = mkClient('Z');
+  await Z.connect();
+  const zHello = await Z.wait('hello');
+  Z.send('set_avatar', { avatar: zHello.avatars[1] });
+  await Z.waitNew('avatar_updated');
+  G.send('set_avatar', {
+    avatar: zHello.avatars[2], targetId: zHello.playerId, playerId: zHello.playerId, id: zHello.playerId,
+  });
+  const mineAv = await G.waitNew('avatar_updated');
+  ok(mineAv.avatar === zHello.avatars[2], '硬塞 targetId 时改的仍是**自己**（回执发给我）');
+  const zProf = await (await fetch(`${BASE}/api/profile?player=${encodeURIComponent(zHello.playerId)}`)).json();
+  ok(zProf.avatar === zHello.avatars[1], `被点名的人头像纹丝不动（${zProf.avatar}）`);
+
+  // 个人页接口必须下发**被查看者**的头像：身份卡就是靠它画的，
+  // 不下发时前端只能画自己的 → 看起来就像"我改了别人的头像"（同一条 bug 的另一半）
+  // ⚠️ 比对的是 G **当前**的头像（上面那步"硬塞 targetId"已经把 G 自己改成了 avatars[2]），
+  //    不是最初设的 avatars[0]——顺序写错就会得出"接口没下发"的假结论。
+  const gProf = await (await fetch(`${BASE}/api/profile?player=${encodeURIComponent(gHello.playerId)}`)).json();
+  ok(gProf.avatar === mineAv.avatar,
+    `/api/profile 下发被查看者的头像（接口 ${gProf.avatar} / 实际 ${mineAv.avatar}）`);
+
   // ==================================================================
   await section('举报：提交 / 去重 / 管理端处理');
   // ==================================================================

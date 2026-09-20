@@ -624,8 +624,13 @@ class Protocol {
     // 赛事荣誉（个人页"赛事荣誉栏"）：赛事结果本身就是公开信息，不涉及隐私，
     // 所以放在同一出口一起下发（stripPrivate 的键名黑名单与它无交集）。
     const honors = tournaments.honorsOf(playerId);
+    // 被查看者的头像（2026-09-20 补）：个人页身份卡上那个大头像必须画**这个人**的。
+    // 原先不下发 → 前端只好画自己的/占位字形，看别人的资料页时就成了"我把他头像改了"
+    // （用户报的 bug）。头像本就是公开信息（对局 state、聊天、观众列表都在发）。
     // 非管理员出口：过隐私白名单（PLAN §K2）
-    return privacy.stripPrivate({ profile: prof, records, name: session.name, honors });
+    return privacy.stripPrivate({
+      profile: prof, records, name: session.name, avatar: session.avatar || null, honors,
+    });
   }
 
   // ==================================================================

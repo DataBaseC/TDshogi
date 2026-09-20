@@ -210,7 +210,7 @@
         <div class="record-item">
           <div style="font-size:13px;">${esc(names[0])} vs ${esc(names[1])} <span style="color:var(--text-dim);font-size:11px;">（${r.moveCount || 0}手）</span></div>
           <div class="r-result result-win">${esc(res)}</div>
-          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${new Date(r.createdAt).toLocaleString('zh-CN')}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${I18N.fmt(r.createdAt)}</div>
           <div style="display:flex;gap:6px;margin-top:6px;">
             <button class="btn btn-ghost btn-sm" onclick="adminPlayback('${r.id}')">回放</button>
             <button class="btn btn-ghost btn-sm" onclick="adminExport('${r.id}','kif')">KIF</button>
@@ -268,7 +268,7 @@
         </div>
         <div class="r-result result-win">Lv.${u.level || 0} · ELO ${u.rating}</div>
         <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${u.games} 局 · 胜 ${u.wins} / 负 ${u.losses} / 平 ${u.draws} · 胜率 ${u.winRate}% · 经验 ${u.exp || 0}</div>
-        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">🌐 最近 IP：${u.lastIp ? `<span title="点击展开完整 IP" style="cursor:pointer;border-bottom:1px dashed var(--text-dim);" onclick="this.textContent='${esc(u.lastIp)}';this.title='';">${esc(maskIp(u.lastIp))}</span>` : '—'}${u.lastSeen ? ` · <span title="最后活跃时间">${new Date(u.lastSeen).toLocaleString('zh-CN')}</span>` : ''}</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">🌐 最近 IP：${u.lastIp ? `<span title="点击展开完整 IP" style="cursor:pointer;border-bottom:1px dashed var(--text-dim);" onclick="this.textContent='${esc(u.lastIp)}';this.title='';">${esc(maskIp(u.lastIp))}</span>` : '—'}${u.lastSeen ? ` · <span title="最后活跃时间">${I18N.fmt(u.lastSeen)}</span>` : ''}</div>
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="btn btn-ghost btn-sm" onclick="viewUser('${u.id}')">查看详情</button>
           ${u.banned
@@ -305,7 +305,7 @@
     return data;
   }
 
-  const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString('zh-CN') : '—');
+  const fmtTime = (ts) => (ts ? I18N.fmt(ts) : '—');
 
   window.viewUser = async (id) => {
     try {
@@ -529,7 +529,7 @@
   /** 时间戳 → 本地短格式；空值显示「不限」（申请表允许不填时间） */
   function fmtTs(ts) {
     if (!ts) return '不限';
-    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return I18N.fmt(ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
 
   /** 已确认参赛人数：开赛后看 players，报名阶段看 entrants 里 approved 的数量 */
@@ -586,7 +586,7 @@
         (t.format === 'swiss' && t.totalRounds)
           ? `第 ${t.currentRound || 0}/${t.totalRounds} 轮` : '',
         t.ownerName ? `主办 ${esc(t.ownerName)}` : '',
-        new Date(t.createdAt).toLocaleString('zh-CN'),
+        I18N.fmt(t.createdAt),
       ].filter(Boolean).join(' · ');
 
       // ---- 申请表信息（T2）：审核时最需要看的就是"为什么办、什么时候办" ----
@@ -761,7 +761,7 @@
           </div>
           <div style="font-size:12px;margin-top:4px;">类别：${esc(catLabel(r.category))}${
   r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
-          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${new Date(r.at).toLocaleString('zh-CN')}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${I18N.fmt(r.at)}</div>
           ${ctx}
           ${r.note ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">处理备注：${esc(r.note)}</div>` : ''}
           ${ops ? `<div style="display:flex;gap:6px;margin-top:8px;">${ops}</div>` : ''}

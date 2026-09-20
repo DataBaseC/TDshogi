@@ -99,6 +99,33 @@ test('词典自检 en：译文与原文相同 = 漏翻（日语不适用：将�
   assert.deepStrictEqual(same, [], '以下英文词条与原文完全相同（复制粘贴漏改？）：\n' + same.join('\n'));
 });
 
+test('日期按**当前语言**格式化（此前各页面写死 toLocaleString(\'zh-CN\')）', () => {
+  // ⚠️ 曾经的疏漏：语言切了、日期还是中文格式，界面一眼就看出"翻了一半"。
+  const ts = Date.UTC(2026, 8, 20, 6, 30, 0);
+  const fmtOpts = { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+  const got = {};
+  for (const loc of ['zh-CN', 'en', 'ja']) {
+    I18N.setLocale(loc);
+    got[loc] = I18N.fmt(ts);
+    // 精确断言：就是"当前语言"的 toLocaleString —— 不猜各语言长什么样
+    assert.strictEqual(got[loc], new Date(ts).toLocaleString(loc), `${loc}：fmt 应使用本语言`);
+    assert.strictEqual(I18N.fmtDate(ts), new Date(ts).toLocaleDateString(loc), `${loc}：fmtDate 应使用本语言`);
+    assert.strictEqual(I18N.fmt(ts, fmtOpts), new Date(ts).toLocaleString(loc, fmtOpts),
+      `${loc}：选项应原样透传`);
+  }
+  I18N.setLocale('zh-CN');
+  // 兜底一条"英文确实与中文不同"，防止将来有人把 locale 参数写成常量
+  assert.notStrictEqual(got.en, got['zh-CN'], `英文日期格式应与中文不同（都得到 ${got.en}）`);
+  // ⚠️ **不要**断言 ja 与 zh-CN 不同：CLDR 里日语与中文的**纯数字**日期格式都是
+  //    「2026/9/20 14:30:00」，本来就一样。（写这条断言会挂，但代码是对的 —— 实测踩过。）
+  assert.ok(/2026/.test(got.ja), `日文时间串里应含年份：${got.ja}`);
+  // 空值 / 非法输入给空串，由调用方自己决定占位符（如 `I18N.fmt(ts) || '—'`）
+  assert.strictEqual(I18N.fmt(null), '');
+  assert.strictEqual(I18N.fmt(undefined), '');
+  assert.strictEqual(I18N.fmt('not-a-date'), '');
+  assert.strictEqual(I18N.fmtDate(0), '');
+});
+
 test('词典自检 en：值里不许残留中文（漏翻的高频形态）', () => {
   const bad = [];
   for (const [k, v] of Object.entries(DICT.en)) {
@@ -110,6 +137,72 @@ test('词典自检 en：值里不许残留中文（漏翻的高频形态）', ()
     if (ratio > 0.15) bad.push(`${k} → ${v}（中文占比 ${(ratio * 100).toFixed(0)}%）`);
   }
   assert.deepStrictEqual(bad, [], '以下词条的英文里残留中文过多：\n' + bad.join('\n'));
+});
+
+test('⚠️ 回归：翻译必须**收敛**（不收敛 = 写入→观察器→再写入，浏览器卡死）', () => {
+  // 2026-09-20 用户报「反复切语言直接卡死浏览器」的真实根因：
+  // 老实现是 `next = 当前内容的首部空白 + 译文 + 当前内容的尾部空白`。
+  // 译文**自身首尾带空白**时，每写一次就多一层空白 → 写入触发 MutationObserver(characterData)
+  // → 再写入 → **无限微任务循环**：主线程占满（浏览器卡死）、文本无限膨胀。
+  // 当时真中了 3 条：`' — sign up…'`、`'Viewing profile: '`、`'　— 指したい…'`，
+  // 而 `——想下棋请另外报名。` 就在**赛事页**（用户说的正是赛事页）。
+  //
+  // 现在 `nodeContent(原文, 译文)` 只依赖**原文**（原文固定不变）→ 结果是个常数 → 一步即达不动点。
+  const compose = I18N._nodeContent;
+  const converges = (raw, out, rounds = 6) => {
+    let content = raw;
+    for (let i = 0; i < rounds; i++) {
+      const next = compose(raw, out); // ⚠️ 原文来自 srcOf，是固定值（这正是关键）
+      if (next === content) return true;
+      content = next;
+    }
+    return false;
+  };
+
+  // 1) 逐语言、逐词条（含"原文带首尾空白"的常见排版形态）都必须收敛
+  for (const loc of Object.keys(DICT)) {
+    I18N.setLocale(loc);
+    for (const k of Object.keys(DICT[loc])) {
+      for (const raw of [k, `  ${k}  `, `\n    ${k}\n  `]) {
+        assert.ok(converges(raw, I18N.t(raw.trim())),
+          `${loc}「${k}」在原文为 ${JSON.stringify(raw)} 时不收敛`);
+      }
+    }
+  }
+  I18N.setLocale('zh-CN');
+
+  // 2) 最坏情况：译文首尾强行加空白，也必须收敛，且空白**只出现一层**（不累积）
+  const raw = '  想下棋请另外报名。\n';
+  const out = '　 — play separately.  ';
+  assert.ok(converges(raw, out), '译文首尾带空白也必须收敛');
+  assert.strictEqual(compose(raw, out), '  　 — play separately.  \n',
+    '原文的首尾空白与译文自己的空白各出现一次，不叠加');
+
+  // 3) 反向自检：确认这个测试**真能抓住老实现**（否则等于白写）
+  const oldCompose = (cur, o) => {
+    const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(cur);
+    return m ? m[1] + o + m[3] : o;
+  };
+  let c = raw;
+  let oldConverged = false;
+  for (let i = 0; i < 6; i++) {
+    const next = oldCompose(c, out);
+    if (next === c) { oldConverged = true; break; }
+    c = next;
+  }
+  assert.strictEqual(oldConverged, false,
+    '老实现（用"当前内容"推导首尾空白）居然收敛了？那这条回归就抓不住这个 bug');
+});
+
+test('词典自检：译文不许首尾带空白（排版空白属于标记层，不是词典）', () => {
+  const bad = [];
+  for (const [loc, d] of Object.entries(DICT)) {
+    for (const [k, v] of Object.entries(d)) {
+      if (v !== v.trim()) bad.push(`${loc}「${k}」→ ${JSON.stringify(v)}`);
+    }
+  }
+  assert.deepStrictEqual(bad, [],
+    '以下译文首尾带空白（正是"切语言卡死浏览器"的燃料，也曾让旧算法永不收敛）：\n' + bad.join('\n'));
 });
 
 test('词典自检 ja：不许出现明显的简体字（照抄中文忘了改日文写法）', () => {

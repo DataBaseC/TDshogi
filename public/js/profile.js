@@ -63,7 +63,7 @@
       if (!a) return;
       document.getElementById('editPhone').value = a.profile.phone || '';
       document.getElementById('editStyle').value = a.profile.style || '不设定';
-      document.getElementById('createdAtLabel').textContent = new Date(a.createdAt).toLocaleDateString('zh-CN');
+      document.getElementById('createdAtLabel').textContent = I18N.fmtDate(a.createdAt);
       // 身份卡补充棋风与注册日期
       const role = document.getElementById('pRoleLabel');
       if (role && !document.getElementById('profileMeta')) {
@@ -75,7 +75,7 @@
       const meta = document.getElementById('profileMeta');
       if (meta) {
         meta.innerHTML = `⚔️ 棋风：<span style="color:var(--gold-light);">${esc(a.profile.style || '不设定')}</span>` +
-          ` · 📅 注册于 ${new Date(a.createdAt).toLocaleDateString('zh-CN')}`;
+          ` · 📅 注册于 ${I18N.fmtDate(a.createdAt)}`;
       }
     } catch (_) { /* 令牌失效等情况静默 */ }
   }
@@ -173,12 +173,26 @@
   // ==================================================================
   let myAvatar = null;
 
-  function renderAvatars() {
-    const glyph = window.UI.avatarGlyph(myAvatar, guest.name);
+  /** 把字形写进两个头像位（账号卡 + 身份卡） */
+  function paintAvatar(glyph) {
     for (const id of ['avatar', 'accountAvatar']) {
       const el = document.getElementById(id);
       if (el) el.textContent = glyph;
     }
+  }
+
+  /**
+   * 把「**我**的头像」刷到界面上。
+   *
+   * ⚠️ 看别人的个人页时**必须直接返回**（2026-09-20 用户报的 bug）：
+   * 这两个头像位在只读视图里显示的是**被查看者**，用我的字形去写就等于"把对方头像改了"。
+   * 服务端其实改的是我自己（`set_avatar` 只认连接身份，没有越权），
+   * 但界面上一眼看去就是篡改了别人 —— 这比真漏洞更让人困惑。
+   * 被查看者的头像由 `loadProfile()` 用接口下发的 `avatar` 单独画。
+   */
+  function renderAvatars() {
+    if (!isSelf) return;
+    paintAvatar(window.UI.avatarGlyph(myAvatar, guest.name));
   }
 
   function renderAvatarOptions() {
@@ -199,8 +213,12 @@
   }
 
   document.getElementById('btnPickAvatar').addEventListener('click', togglePicker);
-  document.getElementById('avatar').addEventListener('click', togglePicker);
+  // ⚠️ 身份卡上的大头像**也**带着换头像入口，只读视图必须拦住：
+  // `setupViewMode()` 藏的是按钮与选择器本身，而点这个头像能把选择器**重新打开** ——
+  // 这正是用户看到"我能改别人头像"的那个入口（2026-09-20 修）。
+  document.getElementById('avatar').addEventListener('click', () => { if (isSelf) togglePicker(); });
   document.getElementById('avatarOptions').addEventListener('click', (e) => {
+    if (!isSelf) return; // 只读视图：双保险，连消息都不发（真正改的其实是我自己）
     const b = e.target.closest('.avatar-pick');
     if (!b) return;
     api.send({ type: 'set_avatar', data: { avatar: b.getAttribute('data-avatar') } });
@@ -264,6 +282,9 @@
       if (!isSelf) {
         // 看别人时，头部显示的必须是被查看者的名字（页面初始渲染的是"我"的名字）
         const name = data.name || '无名棋士';
+        // 头像同理：画**他**的字形（服务端下发 `avatar`；没有则按名字稳定派生一个）。
+        // ⚠️ 这一步必须在 `renderAvatars()` 之外——后者只负责"我"的头像，且只读视图里直接返回。
+        paintAvatar(window.UI.avatarGlyph(data.avatar, name));
         const nameEl = document.getElementById('pName');
         if (nameEl) nameEl.textContent = name;
         const barName = document.getElementById('viewedName');
@@ -343,7 +364,7 @@
         </span>
         <span style="font-size:11px;color:var(--text-dim);white-space:nowrap;">
           ${esc(it.formatLabel || '')} · ${it.playerCount}/${it.size} 人${
-  it.manual ? ' · 人工裁定' : ''}${it.endedAt ? ` · ${new Date(it.endedAt).toLocaleDateString('zh-CN')}` : ''}
+  it.manual ? ' · 人工裁定' : ''}${it.endedAt ? ` · ${I18N.fmtDate(it.endedAt)}` : ''}
         </span>
       </a>`).join('');
   }
@@ -370,7 +391,7 @@
         <div class="record-item" onclick="location.href='history.html'">
           <div style="font-size:13px;">${esc(names[0])} vs ${esc(names[1])} <span style="color:var(--text-dim);font-size:11px;">（我执${mineIsB ? '先' : '后'}手）</span></div>
           <div class="r-result ${cls}">${iWon ? '胜' : (r.result === '-' ? '和' : '负')} · ${esc(result)}</div>
-          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${(r.moves || []).length} 手 · ${new Date(r.createdAt).toLocaleString('zh-CN')}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${(r.moves || []).length} 手 · ${I18N.fmt(r.createdAt)}</div>
         </div>
       `;
     }).join('');
@@ -393,12 +414,21 @@
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     }
+    // 身份卡的大头像：只读视图里要去掉"可点换头像"的样子（手型光标 + title 提示），
+    // 否则用户仍会以为能改对方的头像（点了还会弹出选择器）。
+    const face = document.getElementById('avatar');
+    if (face) {
+      face.style.cursor = 'default';
+      face.removeAttribute('title');
+    }
     const main = document.querySelector('main.container');
     if (!main) return;
     const bar = document.createElement('div');
     bar.className = 'card';
     bar.style.cssText = 'padding:12px 16px;margin-bottom:24px;border:1px solid var(--gold);font-size:13px;';
-    bar.innerHTML = `👤 ${tr('正在查看个人页：')}<b id="viewedName">…</b>`
+    // ⚠️ 标签与名字之间那个空格**写在标记里**，不要塞进译文末尾：
+    //    "译文首尾带空白"曾经是切语言卡死浏览器的燃料（见 i18n.js 的 `nodeContent()`）
+    bar.innerHTML = `👤 ${tr('正在查看个人页：')} <b id="viewedName">…</b>`
       + ` · <a href="profile.html" style="color:var(--gold-light);">${tr('返回我的个人页')}</a>`;
     main.insertBefore(bar, main.firstChild);
   }
