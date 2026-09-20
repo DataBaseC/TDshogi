@@ -9,6 +9,8 @@
 
   // 公共工具（PLAN §M5）：实现统一在 util.js，此处只转发
   function toast(msg) { return window.UI.toast(msg); }
+  /** 翻译（PLAN §Z5）：`i18n.js` 万一没加载就原样显示中文 */
+  const tr = (s, v) => (window.I18N ? window.I18N.t(s, v) : s);
 
   // ==================================================================
   // 账号：会话令牌检测（令牌以 '.' 分隔，游客 id 为 24 hex）
@@ -16,6 +18,22 @@
   const SESSION_KEY = 'tdshogi_session_token';
   const isLoggedIn = (id) => typeof id === 'string' && id.includes('.');
   const sessionToken = () => isLoggedIn(guest.id) ? guest.id : localStorage.getItem(SESSION_KEY);
+
+  // ==================================================================
+  // 查看他人（2026-09-20 用户要求："其他人查看的个人页界面没有入口"）
+  //
+  // `profile.html?player=<id>` → **只读视图**：隐藏注册/登录/改名/头像/资料编辑
+  // （这些只对本人有意义），等级/战绩/荣誉/走势/最近对局照常显示。
+  // 入口由「玩家名字的去重卡片」（hovercard）提供 —— 全站凡是有 `data-player-id`
+  // 的地方都能点到，不必给每个页面各加一个入口。
+  //
+  // ⚠️ 这段必须放在 `isLoggedIn` 声明**之后**：`const` 有 TDZ，写在前面会直接抛
+  // "Cannot access before initialization"。
+  // ==================================================================
+  const viewPlayerId = new URLSearchParams(location.search).get('player');
+  const myId = isLoggedIn(guest.id) ? guest.id.split('.')[0] : guest.id;
+  const isSelf = !viewPlayerId || viewPlayerId === myId || viewPlayerId === guest.id;
+  const viewedId = isSelf ? myId : viewPlayerId;
 
   // 已登录状态渲染（gate 只看当前页身份 guest.id 是否为账号令牌——
   // 不读共享存储里的旧令牌，避免「本标签是游客却显示账号资料卡」）
@@ -225,8 +243,7 @@
   // 加载个人数据（账号令牌 → 解析账号 id 查询）
   async function loadProfile() {
     try {
-      const pid = isLoggedIn(guest.id) ? guest.id.split('.')[0] : guest.id;
-      const data = await window.ApiUtils.get(`/api/profile?player=${encodeURIComponent(pid)}`);
+      const data = await window.ApiUtils.get(`/api/profile?player=${encodeURIComponent(viewedId)}`);
       const p = data.profile;
       document.getElementById('pRating').textContent = p.rating;
       // 等级系统（PLAN §K7）：显示等级与当前经验，及距下一级的差额
@@ -244,6 +261,16 @@
       renderEloChart(p.history || []);
       renderRecords(data.records || []);
       renderHonors(data.honors);
+      if (!isSelf) {
+        // 看别人时，头部显示的必须是被查看者的名字（页面初始渲染的是"我"的名字）
+        const name = data.name || '无名棋士';
+        const nameEl = document.getElementById('pName');
+        if (nameEl) nameEl.textContent = name;
+        const barName = document.getElementById('viewedName');
+        if (barName) barName.textContent = name;
+        const roleEl = document.getElementById('pRoleLabel');
+        if (roleEl) roleEl.textContent = tr('玩家 · ID: {id}', { id: viewedId });
+      }
     } catch (e) {
       console.error(e);
     }
@@ -295,8 +322,9 @@
       </div>`).join('');
 
     if (!items.length) {
+      // 明细现在**包含所有打完的赛事**，所以"没有明细"只剩一种情况：报了名但还没打完
       listBox.innerHTML = `<div style="color:var(--text-dim);font-size:13px;margin-top:14px;">${
-        s.joined ? '参赛过，但还没拿到名次——打进四强就会出现在这里。'
+        s.joined ? '已报名赛事，等这届赛程结束后会出现在这里。'
           : '还没有参加过赛事。去「赛事」页报名，或自己办一场吧！'
       }</div>`;
       return;
@@ -308,7 +336,9 @@
          style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border);text-decoration:none;color:inherit;">
         <span style="display:flex;align-items:center;gap:8px;min-width:0;">
           <span style="font-size:15px;">${medal[it.place] || '·'}</span>
-          <span style="font-size:13px;font-weight:700;color:var(--gold-light);">${esc(it.placeLabel)}</span>
+          <span style="font-size:13px;font-weight:700;color:var(--gold-light);">${esc(it.placeLabel)}${
+  // 夺冠的条目后面加个冠军表情（2026-09-20 用户要求）——一眼能认出哪几届是冠军
+  it.place === 1 ? ' 🏆' : ''}</span>
           <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.name)}</span>
         </span>
         <span style="font-size:11px;color:var(--text-dim);white-space:nowrap;">
@@ -349,5 +379,30 @@
   // ⚠️ 这里曾**重复声明**了一个 `esc()`（文件上方已有）。函数声明在同一作用域里
   // 会**静默覆盖**（不报错、不警告），两份实现一旦漂移，就只有后者生效——
   // 排查时会看到"改了没反应"。已删除，只保留文件上方那一处。
+
+  /**
+   * 只读视图（看别人的个人页）。
+   *
+   * ⚠️ 只隐藏**只对本人有意义**的东西：账号卡（注册/登录/退出）、资料编辑卡（手机号等）、
+   * 改名与换头像入口。**等级/战绩/荣誉/走势/最近对局必须保留** —— 那正是"看别人"想看的。
+   * ⚠️ 必须在本页最后一处 `renderAccountUI()` 之后调用，否则会被它重新显示出来。
+   */
+  function setupViewMode() {
+    if (isSelf) return;
+    for (const id of ['accountCard', 'myProfileCard', 'btnPickAvatar', 'avatarPicker', 'btnRename', 'renameInput']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    const main = document.querySelector('main.container');
+    if (!main) return;
+    const bar = document.createElement('div');
+    bar.className = 'card';
+    bar.style.cssText = 'padding:12px 16px;margin-bottom:24px;border:1px solid var(--gold);font-size:13px;';
+    bar.innerHTML = `👤 ${tr('正在查看个人页：')}<b id="viewedName">…</b>`
+      + ` · <a href="profile.html" style="color:var(--gold-light);">${tr('返回我的个人页')}</a>`;
+    main.insertBefore(bar, main.firstChild);
+  }
+
+  setupViewMode();
   loadProfile();
 })();

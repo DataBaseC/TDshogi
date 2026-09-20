@@ -398,7 +398,8 @@
         </div>
         ${t.championId ? `<div style="margin-top:12px;color:var(--gold-light);font-weight:700;">🏆 冠军：${esc(getName(t, t.championId))}${t.championManual ? '（人工裁定）' : ''}</div>` : ''}
         <div style="margin-top:10px;">
-          <a class="btn btn-ghost btn-sm" href="tournament.html?id=${encodeURIComponent(t.id)}">查看详情 / 管理 →</a>
+          <!-- 用户 2026-09-20：按钮只写「查看详情」即可（管理入口在详情页里，不必在这里提示） -->
+          <a class="btn btn-ghost btn-sm" href="tournament.html?id=${encodeURIComponent(t.id)}">查看详情 →</a>
         </div>
       </div>
     `;

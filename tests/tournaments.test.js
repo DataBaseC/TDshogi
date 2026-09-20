@@ -972,6 +972,46 @@ test('赛事荣誉：进行中的赛事只计入"参赛"，不产生名次', () 
   assert.strictEqual(T.placeOf(T.getTournament(id), 'pg1'), null, '进行中不产生名次');
 });
 
+test('赛事荣誉：没进前四也要列出该赛事（用户 2026-09-20："只写已参加的赛事即可"）', () => {
+  // 早先 `if (!place) continue` 会把"打完但没进前四"的赛事整条丢掉，
+  // 于是打满 5 届只显示 1 条，看着像数据丢了。
+  let n = 0;
+  T.setMatchFactory(() => ({ roomId: 'hon8-' + (++n) }));
+  // ⚠️ 主办 id 必须用文件顶部**已抬到 Lv.5** 的那几个（见 `LV5_EXP` 白名单）：
+  // 自己另造一个 id 会被等级门槛直接拒掉（这条就是这么挂过一次的）。
+  const r = T.createTournament('八人赛', 8, { id: 'owner-1', name: '主办' }, {
+    reason: '用于验证"没进前四也要进荣誉明细"的测试赛事', requireApproval: false,
+  });
+  assert.strictEqual(r.ok, true, r.error || '');
+  const id = r.tournament.id;
+  T.approveTournament(id);
+  for (let i = 1; i <= 8; i++) T.joinTournament(id, { id: 'hon8p' + i, name: '棋手' + i });
+  assert.strictEqual(T.getTournament(id).status, 'playing', '满员应自动开赛');
+
+  // 记下第 1 轮的败者（每场的第二位）——他们进不了前四
+  const round1 = T.getTournament(id).bracket
+    .filter((x) => x.matchId)
+    .map((x) => ({ matchId: x.matchId, players: x.players.slice() }));
+  const firstRoundLoser = round1[0].players[1];
+
+  for (let round = 0; round < 3; round++) {
+    for (const node of T.getTournament(id).bracket.filter((x) => x.matchId)) {
+      T.onMatchFinished(id, node.matchId, node.players[0]);
+    }
+  }
+  const t = T.getTournament(id);
+  assert.strictEqual(t.status, 'finished');
+  assert.strictEqual(T.placeOf(t, firstRoundLoser), null, '第 1 轮出局 → 无名次');
+
+  const h = T.honorsOf(firstRoundLoser);
+  assert.strictEqual(h.stats.joined, 1);
+  assert.strictEqual(h.stats.finished, 1);
+  assert.strictEqual(h.items.length, 1, '参加过就该有一条明细（哪怕没名次）');
+  assert.strictEqual(h.items[0].place, null);
+  assert.strictEqual(h.items[0].placeLabel, '参赛', '没名次的条目标「参赛」');
+  assert.strictEqual(h.items[0].tournamentId, id);
+});
+
 test('赛事荣誉：取消的赛事不算参赛', () => {
   const id = mkApproved({ requireApproval: false });
   T.joinTournament(id, { id: 'cx1', name: '棋手' });

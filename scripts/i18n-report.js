@@ -36,6 +36,13 @@ const SKIP = new Set([
   '经验 0',   // 「经验」数值由 JS 填充
 ]);
 
+/**
+ * **刻意不翻的页面**（用户 2026-09-20 拍板："admin 全中文即可"）。
+ * 管理后台只有站长用，而站长就是中文用户——翻它纯属给自己加维护量。
+ * 单独列出来是为了让报告能明确说"玩家页面已全覆盖"，而不是把 admin 混在缺口里。
+ */
+const EXCLUDE_FILES = new Set(['admin.html']);
+
 /** 从 HTML 里抠出「会显示给人看」的中文片段（文本 + placeholder/title + <title>） */
 function extractHtml(src) {
   const out = new Set();
@@ -74,8 +81,10 @@ const full = process.argv.includes('--all');
 const LIMIT = full ? 100000 : 40;
 
 const groups = [];
+const excluded = [];
 const htmlFiles = fs.readdirSync(path.join(ROOT, 'public')).filter((f) => f.endsWith('.html'));
 for (const f of htmlFiles) {
+  if (EXCLUDE_FILES.has(f)) { excluded.push(f); continue; }
   const src = fs.readFileSync(path.join(ROOT, 'public', f), 'utf8');
   const miss = [...extractHtml(src)].filter((t) => !SKIP.has(t) && I18N._lookup('en', t) === undefined);
   if (miss.length) groups.push({ name: `public/${f}`, miss });
@@ -103,3 +112,6 @@ for (const g of groups) {
 }
 if (!total) console.log('✔ 已扫描的界面文案全部有英文词条');
 else console.log(`合计缺 ${total} 条（把要翻的补进 public/js/i18n.js 的 DICT.en 即可）`);
+if (excluded.length) {
+  console.log(`\n（已排除，刻意不翻：${excluded.join('、')} —— 只有站长用，且站长是中文用户）`);
+}

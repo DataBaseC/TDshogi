@@ -523,6 +523,21 @@
       '评论当前手…': 'Comment on this move…',
       '走法 USI，如 7g7f 或 P*5e': 'Move in USI, e.g. 7g7f or P*5e',
       '说点什么…': 'Say something…',
+
+      // ---- 2026-09-20 收尾补充（个人页入口 / 荣誉 / 举报按钮）----
+      // ⚠️ 尾部符号**不在**宽松匹配的范围内（只处理"前缀 emoji"与空白），
+      // 所以带尾巴的原文要各自登记一条。
+      '查看详情 →': 'View details →',
+      举报: 'Report',
+      '查看个人页 →': 'View profile →',
+      '正在查看个人页：': 'Viewing profile: ',
+      返回我的个人页: 'Back to my profile',
+      '玩家 · ID: {id}': 'Player · ID: {id}',
+      参赛: 'Entered',
+      人工裁定: 'Awarded by admin',
+      和: 'Draw',
+      '已报名赛事，等这届赛程结束后会出现在这里。':
+        'You are entered in a tournament; it will show up here once that tournament ends.',
     },
   };
 

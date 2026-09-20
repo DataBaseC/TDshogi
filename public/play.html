@@ -20,6 +20,10 @@
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="btnViewpoint" style="display:none;" title="切换观战视角（先手 / 后手）">🔄 视角·先手</button>
         <button class="btn btn-ghost btn-sm" id="btnSound" title="音效开关">🔊 音效</button>
+        <!-- 举报（2026-09-20）：移到顶部交互栏（原先埋在右侧「操作」卡里，要滚动才看得到）。
+             只在对局中、对面确实有人时出现；类别清单由服务端在 hello 里下发（src/reports.js）。 -->
+        <button class="btn btn-ghost btn-sm" id="btnReport" style="display:none;"
+          title="举报对手：作弊 / 辱骂 / 恶意挂机等">🚩 举报</button>
         <button class="btn btn-ghost btn-sm" id="btnLeave">退出对局</button>
       </div>
     </div>
@@ -92,10 +96,6 @@
             <button class="btn btn-ghost" id="btnDeclare" style="display:none;"
               title="入玉宣言：玉在敌阵 + 敌阵内 10 枚以上 + 点数先手 28 / 后手 27 以上，且自己手番、未被王手 → 宣言方胜（AJSA 规则）">🏯 入玉宣言</button>
             <button class="btn btn-primary" id="btnRematch" style="display:none;">再来一局</button>
-            <!-- 举报（2026-09-20）：只在对局中、对面确实有人时出现。
-                 类别清单由服务端在 hello 里下发（来源 src/reports.js 的 CATEGORIES），前端不抄 -->
-            <button class="btn btn-ghost" id="btnReport" style="display:none;"
-              title="举报对手：作弊 / 辱骂 / 恶意挂机等">🚩 举报对手</button>
           </div>
           <div id="reportPanel" style="display:none;margin-top:10px;">
             <select class="input" id="reportCategory" style="font-size:12px;padding:5px 8px;"></select>

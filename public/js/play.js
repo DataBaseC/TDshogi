@@ -442,7 +442,11 @@
   if ($('btnReport')) {
     $('btnReport').addEventListener('click', () => {
       const p = $('reportPanel');
-      p.style.display = p.style.display === 'none' ? '' : 'none';
+      const show = p.style.display === 'none';
+      p.style.display = show ? '' : 'none';
+      // 按钮在顶部交互栏、表单在右侧「操作」卡里（2026-09-20 移动）——
+      // 不滚过去的话，点完看着像"没反应"（尤其手机窄屏，表单在屏幕外）
+      if (show) { try { p.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {} }
     });
     $('btnReportCancel').addEventListener('click', () => { $('reportPanel').style.display = 'none'; });
     $('btnReportSubmit').addEventListener('click', () => {
