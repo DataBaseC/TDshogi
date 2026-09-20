@@ -58,6 +58,7 @@ const BROWSER_GLOBALS = {
   CustomEvent: 'readonly',
   HTMLElement: 'readonly',
   MutationObserver: 'readonly',
+  NodeFilter: 'readonly', // document.createTreeWalker 的过滤常量（i18n.js 用）
   IntersectionObserver: 'readonly',
   ResizeObserver: 'readonly',
   URLSearchParams: 'readonly',

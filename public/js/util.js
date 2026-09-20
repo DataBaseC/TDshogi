@@ -40,7 +40,10 @@
   function toast(msg) {
     const el = document.getElementById('toast');
     if (!el) return;
-    el.textContent = msg;
+    // 多语言（PLAN §Z5）：这里是**所有提示的必经之路**（含服务端下发的错误文案），
+    // 所以词典里补一条就能翻一条，不必去改服务端。
+    // ⚠️ 带变量的句子（如「已批准 3 人」）查不到整句，需要在调用点用 `t('已批准 {n} 人', {n})`。
+    el.textContent = window.I18N ? window.I18N.t(msg) : msg;
     el.classList.add('show');
     setTimeout(() => el.classList.remove('show'), 2500);
   }
