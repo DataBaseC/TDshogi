@@ -143,6 +143,11 @@
     const tcName = TIME_CONTROLS[state.timeControl] ? TIME_CONTROLS[state.timeControl].name : '';
     $('roomCodeLabel').textContent = state.code ? `房间 ${state.code}` : '对局';
     if (tcName) $('roomCodeLabel').textContent += ` · ${tcName}`;
+    // 駒落ち（让子）：**必须显眼**——让子局的先手是"上手"（少棋子的那一方，即房主），
+    // 与平手局相反；不提示的话，玩家会以为"对手凭什么先走"或盘面少了棋子是程序出错。
+    if (state.handicapLabel) {
+      $('roomCodeLabel').textContent += ` · ${state.handicapLabel}（上手先手 · 不计 ELO）`;
+    }
 
     // 观战标识
     const spectator = !isPlayer;

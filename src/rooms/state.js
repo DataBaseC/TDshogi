@@ -71,6 +71,11 @@ module.exports = function applyState(X) {
       st.curByoyomi = room.curByoyomi ? { ...room.curByoyomi } : null;
       st.inByoyomi = room.inByoyomi ? { ...room.inByoyomi } : null;
       st.roomType = room.type;
+      // 駒落ち（让子）：平手为 null。前端据此显示「香落ち（上手先手）」这类提示——
+      // 让子局里"谁先手"与平手相反（上手先走），不提示的话玩家会以为是程序出错。
+      st.handicap = room.handicap || null;
+      st.handicapLabel = room.handicapLabel || null;
+      st.rated = room.rated !== false;
       st.seat = null;
       // 观战者名单（对局页右列观众列表，PLAN §G v7）
       st.spectators = this._spectatorList(room);   // §R：带 id/等级的对象数组（按人去重）
@@ -177,6 +182,7 @@ module.exports = function applyState(X) {
         isPrivate: !!r.isPrivate,
         rated: !!r.rated,
         tournamentId: r.tournamentId || null,
+        handicap: r.handicap || null,
         createdAt: r.createdAt || null,
         moveCount: (r.game && Array.isArray(r.game.moves)) ? r.game.moves.length : 0,
         players: ['b', 'w'].map((seat) => {
@@ -211,6 +217,9 @@ module.exports = function applyState(X) {
           spectatorCount: this.spectatorCount(r),
           type: r.status === 'FINISHED' ? 'reviewing' : r.type,
           createdAt: r.createdAt,
+          // 让子局要在大厅列表里显出来：否则观战者进来才发现棋盘少了几枚棋子
+          handicap: r.handicap || null,
+          handicapLabel: r.handicapLabel || null,
         }));
     },
 

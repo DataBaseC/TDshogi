@@ -32,6 +32,7 @@ const tournaments = require('./tournaments');
 const { listPlayerRecords, getRecord, exportRecord, recentSummaries, searchRecords } = require('./records');
 const { countRecords, listSummaries } = require('./storage');
 const { listAnnouncements } = require('./announcements');
+const handicap = require('./handicap'); // 手合割（駒落ち让子）表：`hello` 下发给前端渲染建房下拉
 const reports = require('./reports');
 
 class Protocol {
@@ -117,6 +118,8 @@ class Protocol {
         avatars: auth.AVATARS,
         // 举报类别（2026-09-20）：同样只在服务端维护一份，前端拿来直接渲染下拉
         reportCategories: reports.CATEGORIES,
+        // 手合割（駒落ち让子）：服务端是唯一来源，前端建房下拉直接用它渲染
+        handicaps: handicap.list().map((d) => ({ id: d.id, label: d.label, hint: d.hint })),
         reconnect: pending ? { ok: true, ...pending } : null,
         stats: this._stats(), // 统一统计出口（§T1）：在线人数按「唯一身份数」计
       },
@@ -195,6 +198,8 @@ class Protocol {
         const res = r.createRoom(player, tc, {
           isPrivate: !!(data && data.isPrivate),
           password: (data && data.password) || '',
+          // 駒落ち（让子）手合割 id；空 = 平手。未知 id 由 createRoom 拒绝
+          handicap: data && data.handicap,
         });
         if (!res.ok) { this._error(clientId, res.error); break; }
         this._send(clientId, { type: 'room_created', data: res });

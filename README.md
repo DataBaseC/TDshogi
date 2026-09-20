@@ -147,7 +147,8 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 
 连接：`ws://<host>/ws?guest=<guestId|accountToken>`
 
-客户端消息：`create_room` `join_room {code}` `quick_match` `cancel_match` `move {usi}` `resign`
+客户端消息：`create_room {timeControl?,isPrivate?,password?,handicap?}` `join_room {code}` `quick_match`
+`cancel_match` `move {usi}` `resign`
 `rematch` `leave` `chat {text}` `rename {name}` `set_avatar {avatar}` `report {targetId,category,detail?}`
 `spectate {roomId}` `random_spectate`
 `join_tournament_match` `create_tournament` `join_tournament` `admin_login {password}`
@@ -196,12 +197,13 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
 ## 开发与测试
 
 - **单元测试**：`npm test`（`tests/*.test.js`，Node 内置 `node --test`，纯函数不需起服）。
-  当前 **211 项**：棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换与视角切换、坐标换算、初始盘面、
-  `game.js` 规则引擎、赛事状态机与权限、瑞士制配对与积分、等级特权、举报、棋钟、限流、隐私脱敏等
+  当前 **225 项**：棋种映射（含"吃馬得角"回归）、FreeBoard 模型变换与视角切换、坐标换算、初始盘面、
+  （含駒落ち让子各手合割的 SFEN 生成）、`game.js` 规则引擎、赛事状态机与权限、瑞士制配对与积分、
+  等级特权、举报、棋钟、限流、隐私脱敏等
 - **静态检查**：`npm run lint`（eslint；`no-undef` 正是"路由层漏 require 导致接口 500"那类事故的克星）
 - **CI**：`.github/workflows/ci.yml`（语法检查 + lint + 单测 + e2e 冒烟）
 - **e2e 回归**：`npm run e2e` —— **自动起隔离实例**（临时 `DATA_DIR` + `ADMIN_PASSWORD=admin123`）
-  后跑完整套，**14 个脚本 / 198 项断言**，末尾汇总并停服。
+  后跑完整套，**15 个脚本 / 224 项断言**，末尾汇总并停服。
   ⚠️ 其中 2 个脚本**自带服务器**（`e2e-snapshot.js` 重启进程验快照、`e2e-freeboard.js` 起 demo 服），
   会与本实例抢端口，需单独跑。
   ⚠️ 别手搓"先起服再 `node scripts/e2e-xxx.js`"：**漏掉 `ADMIN_PASSWORD` 就会卡在
