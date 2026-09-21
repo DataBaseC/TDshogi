@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TDShogi 代码审查报告 · v1.4.4</title>
+<style>
+  :root{
+    --paper:#f7f7f5;
+    --panel:#ffffff;
+    --ink:#16181d;
+    --ink-2:#3d434c;
+    --muted:#68707c;
+    --line:rgba(22,24,29,.16);
+    --line-soft:rgba(22,24,29,.09);
+    --accent:#b23a2a;
+    --code-bg:#15181d;
+    --code-ink:#e7eaef;
+    --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong",Georgia,serif;
+    --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+    --mono:"SF Mono","JetBrains Mono","Cascadia Mono",Consolas,"Liberation Mono",monospace;
+    --nav-width:240px;
+    --measure:68ch;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15px;line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+  .layout{
+    display:grid;grid-template-columns:var(--nav-width) minmax(0,1fr);
+    max-width:1240px;margin:0 auto;
+  }
+  /* ---------- sidebar ---------- */
+  .sidebar{
+    position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    padding:44px 28px 44px 32px;border-right:1px solid var(--line-soft);
+  }
+  .sidebar .mark{
+    font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--muted);
+    border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:22px;
+  }
+  .sidebar .mark b{color:var(--ink);font-weight:600;}
+  .sidebar nav{display:flex;flex-direction:column;gap:2px;}
+  .sidebar nav a{
+    color:var(--ink-2);text-decoration:none;font-size:13px;padding:4px 0;
+    display:flex;gap:10px;align-items:baseline;
+  }
+  .sidebar nav a:hover{color:var(--accent);}
+  .sidebar nav a .no{font-family:var(--mono);font-size:11px;color:var(--muted);flex:none;width:22px;}
+  .sidebar .meta{
+    margin-top:28px;padding-top:14px;border-top:1px solid var(--line-soft);
+    font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.9;
+  }
+  .sidebar .meta span{display:block;}
+  /* ---------- main ---------- */
+  .main{padding:56px 64px 96px;min-width:0;}
+  .cover{padding-bottom:40px;border-bottom:1px solid var(--line);}
+  .kicker{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;color:var(--accent);
+    text-transform:uppercase;
+  }
+  h1{
+    font-family:var(--serif);font-size:40px;line-height:1.18;font-weight:600;
+    letter-spacing:-.01em;margin:14px 0 12px;
+  }
+  .lede{font-size:16.5px;color:var(--ink-2);max-width:var(--measure);margin:0;}
+  .cover-meta{
+    display:flex;flex-wrap:wrap;gap:8px 32px;margin-top:26px;
+    font-family:var(--mono);font-size:12px;color:var(--muted);
+  }
+  .cover-meta b{color:var(--ink-2);font-weight:500;}
+  section{margin-top:64px;}
+  h2{
+    font-family:var(--serif);font-size:25px;font-weight:600;line-height:1.3;
+    display:flex;gap:14px;align-items:baseline;margin:0 0 6px;
+  }
+  h2 .no{font-family:var(--mono);font-size:13px;color:var(--accent);letter-spacing:.06em;}
+  .h2-rule{height:1px;background:var(--line);margin:14px 0 26px;max-width:860px;}
+  h3{
+    font-family:var(--serif);font-size:19px;font-weight:600;line-height:1.4;
+    margin:40px 0 4px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;
+  }
+  h4{
+    font-family:var(--sans);font-size:14px;font-weight:600;margin:22px 0 6px;
+  }
+  p{margin:10px 0;max-width:var(--measure);}
+  li{max-width:var(--measure);}
+  strong{font-weight:600;}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(178,58,42,.35);}
+  a:hover{border-bottom-color:var(--accent);}
+  code{
+    font-family:var(--mono);font-size:.86em;background:rgba(22,24,29,.06);
+    padding:1px 5px;border-radius:2px;
+  }
+  pre{
+    background:var(--code-bg);color:var(--code-ink);border-radius:3px;
+    padding:14px 18px;overflow-x:auto;font-family:var(--mono);
+    font-size:12.6px;line-height:1.62;margin:12px 0;max-width:860px;
+  }
+  pre code{background:none;padding:0;font-size:inherit;color:inherit;}
+  /* severity chips */
+  .chip{
+    display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+    border:1px solid var(--muted);color:var(--muted);padding:0 8px;border-radius:2px;
+    vertical-align:2px;white-space:nowrap;
+  }
+  .chip.p0{border-color:var(--accent);color:var(--accent);}
+  .meta-grid{
+    display:grid;grid-template-columns:96px 1fr;gap:2px 16px;
+    font-size:13px;margin:14px 0 6px;max-width:860px;
+  }
+  .meta-grid dt{
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    letter-spacing:.05em;padding-top:2px;
+  }
+  .meta-grid dd{margin:0;color:var(--ink-2);}
+  /* tables */
+  table{
+    width:100%;border-collapse:collapse;margin:18px 0;font-size:13.4px;
+  }
+  th{
+    text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+    color:var(--muted);font-weight:500;padding:7px 12px 7px 0;
+    border-bottom:1px solid var(--line);
+  }
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line-soft);vertical-align:top;}
+  td.mono,th.mono{font-family:var(--mono);font-size:12px;}
+  .t-p0{color:var(--accent);font-weight:600;}
+  /* chain diagram */
+  .chain{
+    display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:18px 0 8px;
+  }
+  .chain .node{
+    border:1px solid var(--line);padding:6px 12px;border-radius:2px;
+    font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--panel);
+  }
+  .chain .node.hot{border-color:var(--accent);color:var(--accent);}
+  .chain .arrow{font-family:var(--mono);color:var(--muted);font-size:13px;}
+  .chain-cap{font-size:12.5px;color:var(--muted);}
+  /* callout */
+  .callout{
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    padding:14px 0;margin:22px 0;max-width:860px;
+  }
+  .callout p{margin:6px 0;}
+  /* repro block list */
+  .kv{font-family:var(--mono);font-size:12.3px;color:var(--ink-2);line-height:2;}
+  .kv b{color:var(--ink);font-weight:600;}
+  footer.colophon{
+    margin-top:88px;padding-top:18px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.9;
+  }
+  @media (max-width:980px){
+    .layout{grid-template-columns:1fr;}
+    .sidebar{display:none;}
+    .main{padding:36px 22px 72px;}
+    h1{font-size:30px;}
+    pre{max-width:100%;}
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside class="sidebar">
+  <div class="mark"><b>TDShogi</b> · 审查报告</div>
+  <nav>
+    <a href="#s0"><span class="no">00</span>结论摘要</a>
+    <a href="#s1"><span class="no">01</span>项目速览</a>
+    <a href="#s2"><span class="no">02</span>审查与验证方法</a>
+    <a href="#s3"><span class="no">03</span>P0 · 严重问题</a>
+    <a href="#s4"><span class="no">04</span>P1 · 重要问题</a>
+    <a href="#s5"><span class="no">05</span>P2 · 改进项</a>
+    <a href="#s6"><span class="no">06</span>工程质量亮点</a>
+    <a href="#s7"><span class="no">07</span>修复与后续计划</a>
+    <a href="#s8"><span class="no">08</span>附录 · 复现证据</a>
+  </nav>
+  <div class="meta">
+    <span>对象 · CrossPolate/TDshogi-upload</span>
+    <span>版本 · v1.4.4（29ca712）</span>
+    <span>方式 · 静态通读 + 隔离实例动态复现</span>
+    <span>日期 · 2026-09-21</span>
+  </div>
+</aside>
+
+<main class="main">
+
+<header class="cover">
+  <div class="kicker">Security &amp; Engineering Review</div>
+  <h1>TDShogi 在线将棋平台 · 代码审查报告</h1>
+  <p class="lede">
+    对 v1.4.4（commit 29ca712）完成全量代码通读，并在隔离实例上对关键链路做了动态复现验证：
+    注册/登录/对局/结算/导出/观战/重启恢复均实测跑通；同时确认了 4 类严重问题（可导致服务崩溃、
+    账号接管、数据窃取与越权读写）。总体评价：<strong>工程结构与注释质量高于同类项目平均线，
+    但“身份 = id”的凭证模型在多处实现漏口，安全加固需要一个集中修复版本。</strong>
+  </p>
+  <div class="cover-meta">
+    <span><b>审查范围</b> 23,000+ 行（server + src 26 模块 + public 前端）</span>
+    <span><b>复现环境</b> Node v22.23.1 · Linux · 隔离 DATA_DIR</span>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<section id="s0">
+  <h2><span class="no">00</span>结论摘要</h2>
+  <div class="h2-rule"></div>
+  <p>
+    项目主体（服务端权威规则、对局状态机、棋谱存取、赛事、限流、审计、备份）实现扎实，
+    大量设计取舍写在注释里且有据可查。但本轮审查确认了 <strong>4 个 P0（严重）</strong>与
+    <strong>5 个 P1（重要）</strong>问题——其中两个 P0 恰好都指向同一个系统性弱点：
+    <em>“玩家 id（含正式账号 id）在多处公开可见，却被当作可信任凭证使用”</em>；
+    另有一个未捕获异常可在<strong>单条 WebSocket 消息内打崩整个进程</strong>。
+  </p>
+  <p>
+    所有 P0 问题都已在本地隔离实例上实际复现（含完整攻击链），修复成本均不高，
+    建议合并为一个 <strong>v1.4.5 安全修复版本</strong>优先发布。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th style="width:64px">编号</th><th>问题</th><th style="width:70px">等级</th><th style="width:240px" class="mono">位置</th><th>一句话影响</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="mono t-p0">P0-1</td><td>未捕获异常导致进程崩溃（2 个向量）</td><td class="mono t-p0">P0</td><td class="mono">src/accounts.js:127 / server.js:116</td><td>单条 WS 消息或畸形 Host 头 → 全站掉线</td></tr>
+      <tr><td class="mono t-p0">P0-2</td><td>会话令牌可伪造（默认签名密钥内置于源码）</td><td class="mono t-p0">P0</td><td class="mono">src/accounts.js:25</td><td>任何账号可被完全接管（读私密资料 / 顶替身份）</td></tr>
+      <tr><td class="mono t-p0">P0-3</td><td>游客数据迁移不验证来源（guestId 劫持）</td><td class="mono t-p0">P0</td><td class="mono">src/accounts.js:87</td><td>注册时传入他人 id → 窃取其全部战绩/棋谱/会话</td></tr>
+      <tr><td class="mono t-p0">P0-4</td><td>棋谱接口越权（原始 id 当凭证，IDOR）</td><td class="mono t-p0">P0</td><td class="mono">src/http/routes/records.js</td><td>读/写他人棋谱、伪造评论与书签</td></tr>
+      <tr><td class="mono">P1-1</td><td>重复操作静默判负（双击即输棋）</td><td class="mono">P1</td><td class="mono">src/rooms/lifecycle.js:197</td><td>双击「加入/匹配」→ 当前对局直接判负</td></tr>
+      <tr><td class="mono">P1-2</td><td>默认管理口令 &amp; 可离线派生 ADMIN_SECRET</td><td class="mono">P1</td><td class="mono">src/admin.js:25</td><td>开箱部署 = 后台可被接管</td></tr>
+      <tr><td class="mono">P1-3</td><td>管理页存储型 XSS（esc 不转义单引号）</td><td class="mono">P1</td><td class="mono">public/js/admin.js:275</td><td>游客改名注入 → 管理员点击时执行</td></tr>
+      <tr><td class="mono">P1-4</td><td>后台隐蔽入口可被百分号编码绕过</td><td class="mono">P1</td><td class="mono">src/http/middleware.js:108</td><td>ADMIN_ENTRY_KEY 形同虚设</td></tr>
+      <tr><td class="mono">P1-5</td><td>游客清理逻辑空转（读废弃的 sessions 表）</td><td class="mono">P1</td><td class="mono">src/cleanup.js:52</td><td>隐私清理承诺未生效，kv 数据只增不减</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="s1">
+  <h2><span class="no">01</span>项目速览</h2>
+  <div class="h2-rule"></div>
+  <p>
+    TDShogi 是一个单进程（Node + Express + ws + better-sqlite3）的在线将棋对战平台：
+    游客免注册开局、服务端权威规则判定、实时观战、感想战、棋谱 KIF/CSA 导出、
+    ELO + 等级系统、单败淘汰/瑞士制赛事、管理后台、多语言（中/英/日）。
+  </p>
+  <p>
+    结构上服务端拆为 26 个模块（<code>src/rooms/</code> 下按 mixin 拆分状态机），前端为无构建的
+    24 个脚本；数据全部落在单个 SQLite 库。审查发现该上传仓库是「部署同步产物」，
+    不含 <code>tests/</code>、<code>scripts/</code>、<code>docs/</code>（README 引用的 e2e、i18n 报告、
+    pack 脚本均不在此仓库内）——本轮审查以仓库内实际可见代码为准。
+  </p>
+  <div class="callout">
+    <p><strong>技术栈</strong>：Node ≥ 22 · express 4.22 · ws 8.21 · shogi.js 5.5 · better-sqlite3 13.0</p>
+    <p><strong>运行时验证</strong>：<code>npm install</code> 成功（151 包）；服务启动正常；完整对局→认输→
+    ELO 结算（1516 / 1484）→ KIF/CSA 导出→重启快照恢复，均实测通过。</p>
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<section id="s2">
+  <h2><span class="no">02</span>审查与验证方法</h2>
+  <div class="h2-rule"></div>
+  <p>静态通读覆盖：服务端 26 模块全文 + 前端关键渲染路径；动态验证在隔离实例（独立 DATA_DIR + 端口）上进行，包含：</p>
+  <ul>
+    <li>WS 对局全流程冒烟（建房/加入/座位探测/手番校验/非法走法拒/走子推进/观战/认输结算/导出/鉴权/限流）：终版脚本 <strong>18/18 通过</strong>；初版脚本曾报 3 项失败，经复测确认均为脚本自身消息残留误报，非服务端缺陷（过程记录见附录脚本注释）；</li>
+    <li>棋谱导出（KIF/CSA 格式与内容）、复盘数据权限探针、路径穿越探针；</li>
+    <li>注册/登录/弱密码/重名/限流（auth 20 次/5 分钟、WS 40 条/秒、admin 登录 8 次/10 分钟）；</li>
+    <li>重启恢复：杀进程 → 重启 → 「已恢复 1 场未完成对局」，重连后走法完整；</li>
+    <li>安全头（CSP / nosniff / X-Frame-Options / X-Request-Id）与缓存策略实测；</li>
+    <li><strong>攻击面复现</strong>：对 P0/P1 每一项构造最小复现（详见附录与 <code>repro/</code> 脚本）。</li>
+  </ul>
+  <p>局限：未做移动端真机、多浏览器矩阵、长期压测与内存泄漏观测；未审计 shogi.js / better-sqlite3 三方库内部实现。</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="s3">
+  <h2><span class="no">03</span>P0 · 严重问题</h2>
+  <div class="h2-rule"></div>
+
+  <h3><span class="chip p0">P0-1</span>单个 WebSocket 消息即可打崩整个服务进程</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/accounts.js:127</code>（verifyToken）· <code>src/admin.js:67</code>（同款）· <code>server.js:116</code>（Host 解析）</dd>
+    <dt>等级</dt><dd>P0 · 远程拒绝服务（无需任何账号）</dd>
+    <dt>状态</dt><dd>已复现：进程以未捕获异常退出</dd>
+  </dl>
+  <p>
+    <code>verifyToken</code> 在做常量时间比较前用 <em>UTF-16 字符长度</em>（<code>sig.length</code>）
+    做前置校验，但 <code>Buffer.from(sig)</code> 得到的是 <em>UTF-8 字节串</em>。
+    当签名段使用多字节字符（如 32 个 emoji = 64 个字符、128 字节）时，长度检查通过、
+    <code>crypto.timingSafeEqual</code> 因字节长度不等抛 <code>RangeError</code>；
+    该异常发生在 <code>handleConnection</code>（WS 握手回调）中且无任何 try/catch →
+    <strong>整个 Node 进程崩溃，全部在线对局断开</strong>。
+  </p>
+  <pre><code>// 攻击者视角（单行，任何人均可执行）
+node -e 'const WS=require("ws");
+new WS("ws://target/ws?guest=" + encodeURIComponent("aa.123." + "😀".repeat(32)));'
+
+// 服务端观察到的崩溃：
+// RangeError: Input buffers must have the same byte length
+//   code: 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH'
+//     at Object.verifyToken (src/accounts.js:127:49)
+//     at Protocol.handleConnection (src/protocol.js:68:32)
+//     at WebSocketServer.&lt;anonymous&gt; (server.js:119:12)
+// → 进程退出，HTTP/WS 全断</code></pre>
+  <p>
+    第二个同族向量：<code>server.js:116</code> 的
+    <code>new URL(req.url, 'http://' + req.headers.host)</code>。
+    攻击者发送畸形 <code>Host</code> 头（如 <code>a b</code>）时 <code>new URL</code> 抛
+    <code>ERR_INVALID_URL</code>，同样未捕获 → 进程崩溃（已复现）。
+  </p>
+  <h4>修复建议</h4>
+  <pre><code>// ① 字节级校验 + 字符白名单 + 兜底（accounts.js / admin.js 同改）
+function verifyToken(token) {
+  ...
+  const expected = crypto.createHmac('sha256', SESSION_SECRET)
+    .update(`${accountId}.${ts}`).digest('hex');
+  // 必须是 64 位小写 hex，才允许进入比较；Hex 字符集下 length === byteLength
+  if (typeof sig !== 'string' || !/^[0-9a-f]{64}$/.test(sig) || sig.length !== expected.length) {
+    return null;
+  }
+  return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))
+    ? accountId : null;
+}
+
+// ② 连接边界加一次性保险（server.js）：任何握手异常都只拒绝该连接
+wss.on('connection', (ws, req) => {
+  try {
+    const url = new URL(req.url, 'http://localhost');   // 不信任 Host，消灭向量二
+    ...
+    protocol.handleConnection(ws, guestId, netInfo.clientInfo(req));
+  } catch (err) {
+    log.error('ws', '握手异常，拒绝该连接', { err });
+    try { ws.close(); } catch (_) {}
+  }
+});</code></pre>
+  <p>修复验收：加入「畸形 token / 畸形 Host 不允许崩进程」回归用例（附录脚本 <code>07/08</code> 可直接转正为测试）。</p>
+
+  <h3><span class="chip p0">P0-2</span>默认签名密钥内置源码 → 任意账号可被伪造接管</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/accounts.js:25</code> — <code>process.env.SESSION_SECRET || 'tdshogi_session_secret_change_me'</code></dd>
+    <dt>等级</dt><dd>P0 · 账号接管（跨账号越权）</dd>
+    <dt>状态</dt><dd>已复现：伪造令牌被服务端接受，可读私密资料、连 WS 顶替身份</dd>
+  </dl>
+  <p>
+    未配置 <code>SESSION_SECRET</code> 时使用源码内置常量签名。该源码是公开仓库，
+    且<strong>账号 id 本身是公开数据</strong>——大厅对局列表（<code>playerIds</code>）、个人页棋谱列表、
+    悬停卡、管理接口等处均可见。攻击者拿到任一账号 id 后，只需用内置密钥离线伪造
+    <code>&lt;accountId&gt;.&lt;ts&gt;.&lt;hmac&gt;</code> 三段令牌，即可：
+  </p>
+  <div class="chain">
+    <span class="node">公开接口拿到 accountId</span><span class="arrow">→</span>
+    <span class="node">用内置密钥计算 HMAC</span><span class="arrow">→</span>
+    <span class="node hot">伪造令牌通过验证</span><span class="arrow">→</span>
+    <span class="node">读私密资料 / 顶替对局 / 检索棋谱</span>
+  </div>
+  <p class="chain-cap">实测：伪造令牌连 WS → <code>hello.playerId</code> = 受害者 id；<code>/api/account/profile</code> 返回其私密字段。</p>
+  <h4>修复建议</h4>
+  <pre><code>// 首启生成随机密钥并持久化（零运维负担），同时在检测到配置缺失时警告
+function resolveSessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  const f = path.join(DATA_DIR, 'secret.json');
+  let s = readJson(f, null);
+  if (!s || !s.key) {
+    s = { key: crypto.randomBytes(32).toString('hex'), createdAt: Date.now() };
+    writeJson(f, s);                         // 目录权限 600
+    log.warn('security', '已自动生成随机会话密钥（建议显式配置 SESSION_SECRET）');
+  }
+  return s.key;
+}
+// 启动自检：使用默认/弱密钥 → 高亮警告；提供 REQUIRE_STRONG_SECRETS=1 强制失败</code></pre>
+  <p>注意迁移期：密钥更换会使旧令牌全部失效（用户需重新登录），发版说明中应注明。</p>
+
+  <h3><span class="chip p0">P0-3</span>注册时 guestId 不验证来源 → 可窃取任意注册用户的全部数据</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/accounts.js:60-88</code>（register → <code>migrateGuestData</code>，无所有权校验）</dd>
+    <dt>等级</dt><dd>P0 · 数据窃取（战绩 / 棋谱 / ELO / 会话）</dd>
+    <dt>状态</dt><dd>已复现：受害者 1516 分 1 局记录全部被迁移到攻击者新账号</dd>
+  </dl>
+  <p>
+    <code>POST /api/register</code> 接受任意 <code>guestId</code> 并把「该 id 名下的评级、棋谱、
+    会话文件」迁移到新账号——但没有任何机制证明注册者真的持有该身份。
+    由于<strong>账号 id 与游客 id 在公开页面可见</strong>，攻击者用受害者 id 注册就能干净地拿走：
+    该账号的全部棋谱、ELO 战绩、会话（名字/头像）——而受害者账号随即变回 1500 分空号。
+    实测复现输出：
+  </p>
+  <pre><code>V 战绩（被盗前）:  rating=1516  games=1  records=1
+攻击者注册 guestId=&lt;V 的 accountId&gt; → 注册成功
+攻击者账号战绩:      rating=1516  games=1  records=1   ← 全部到手
+V 账号战绩（盗后）:  rating=1500  games=0  records=0</code></pre>
+  <h4>修复建议</h4>
+  <p>最小修复（立刻可上）：<strong>拒绝将已注册账号的 id 作为迁移来源</strong>；同时对迁移写审计日志：</p>
+  <pre><code>function register(username, password, guestId = null) {
+  ...
+  if (guestId) {
+    if (accounts[guestId]) {                    // 目标 id 已是注册账号 → 绝不迁移
+      log.warn('accounts', '拒绝迁移：目标 id 已是注册账号', { guestId });
+    } else {
+      migrateGuestData(guestId, id);
+    }
+  }
+}</code></pre>
+  <p>
+    完整修复（推荐）：迁移权 = 游客凭据。游客会话文件（<code>sessions/&lt;id&gt;.json</code>）里生成
+    一个不下发的 <code>migrationKey</code>；客户端从自己浏览器携带该 key 才能迁移。
+    这样即使 id 泄漏，也无法被第三方抢注。
+  </p>
+
+  <h3><span class="chip p0">P0-4</span>棋谱接口把「原始 id」当凭证（IDOR）→ 读/写他人棋谱、伪造评论</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/http/routes/records.js</code>（export / playback / review / comment / bookmark / variation）· <code>src/http/context.js</code> resolvePlayer</dd>
+    <dt>等级</dt><dd>P0 · 越权读写（隐私 + 内容完整性）</dd>
+    <dt>状态</dt><dd>已复现：伪造评论已落盘，作者字段为受害者</dd>
+  </dl>
+  <p>
+    <code>resolvePlayer()</code> 对“不带点”的输入原样返回；六个棋谱接口随后把它当作
+    <code>playerId</code> 做 <code>isOwner</code> 判定。于是任何人只要知道受害者的
+    <strong>公开 id</strong>（正式账号 id / 游客 id 均公开），不带任何令牌即可：
+    导出/回放/完整复盘其私有棋谱；以受害者名义<strong>写入评论、书签、变着</strong>。
+    README 声称的「只能复盘自己的棋谱」在这些接口上并不成立（此前 §Q7 修复的只是
+    <code>/api/history</code> 与 <code>/api/records/search</code> 两条路径，同类问题在兄弟接口仍在）。
+  </p>
+  <pre><code># 无任何 token，仅凭公开 id：
+GET  /api/records/&lt;id&gt;/export?guest=&lt;victimId&gt;      → 200  （KIF 全文到手）
+GET  /api/records/&lt;id&gt;/review?guest=&lt;victimId&gt;      → 200  （含评论/书签全量）
+POST /api/records/&lt;id&gt;/comment  {guest:&lt;victimId&gt;,...}
+     → 200 {"ok":true, comments 落盘 authorName=受害者}
+POST /api/records/&lt;id&gt;/bookmark {guest:&lt;victimId&gt;,...} → 200 （书签被改）</code></pre>
+  <h4>修复建议</h4>
+  <p>把「账号身份必须凭签名令牌」收进唯一入口，原始 id 只对游客生效（游客 id 即凭证的
+    现状可暂保留，但建议下一版引入游客会话撤销机制）：</p>
+  <pre><code>// context.js：统一身份解析——遇到“考据为已注册账号的裸 id”时必须凭令牌
+function resolvePlayer(raw) {
+  if (!raw) return null;
+  if (String(raw).includes('.')) return accounts.verifyToken(raw) || null;
+  // 裸 24-hex：若是注册账号的 id，则裸值不可信（账号必须用令牌）
+  if (/^[0-9a-f]{24}$/.test(raw) && accounts.getAccount(raw)) return null;
+  return raw; // 游客 id（现状）：id 即凭证
+}
+// 写操作（comment/bookmark/variation）同改，并补 e2e：伪 guest 参数必须 403</code></pre>
+</section>
+
+<!-- ================================================================ -->
+<section id="s4">
+  <h2><span class="no">04</span>P1 · 重要问题</h2>
+  <div class="h2-rule"></div>
+
+  <h3><span class="chip">P1-1</span>重复操作静默判负：双击「加入/匹配」直接输棋</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/rooms/lifecycle.js:141 / 197 / 214</code>（joinRoom / quickMatch 先 <code>_autoResignAndLeave</code> 后校验）</dd>
+    <dt>状态</dt><dd>已复现三个变体：重复 join_room、双击 quick_match、输错房间码 → 当前对局均被判负（「投了」）</dd>
+  </dl>
+  <p>
+    玩家对局中若重复发送加入/匹配类消息（双击按钮、页面重放、输错码重试），
+    控制流会先执行「自动认输退出对局」，再去校验新目标——结果：<strong>一次手滑 = 直接输棋</strong>，
+    且对局聊天区没有留下任何能解释原因的痕迹。实测：双击 quick_match 后对手立即收到
+    <code>game_over detail=投了</code>。
+  </p>
+  <h4>修复建议</h4>
+  <ul>
+    <li>服务端调整顺序：<strong>先校验目标合法性（房间码存在、非自身、非同一房间），再做切换处理</strong>；
+    「已在该房间/重复请求」应返回 no-op 错误而不是触发认输路径。</li>
+    <li>对同类操作做幂等窗口（例如 2 秒内的重复 join/quick_match 直接忽略）。</li>
+    <li>前端：提交后禁用按钮直至收到响应（双保险）。</li>
+    <li>若产品上确实要保留「换玩法自动认输」（PLAN §H 的设计），至少要求显式确认参数
+    （<code>confirmLeave: true</code>），并要求前端先弹确认框。</li>
+  </ul>
+
+  <h3><span class="chip">P1-2</span>默认管理口令 &amp; 可离线派生的 ADMIN_SECRET</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/admin.js:25</code>（默认 <code>Cplusplus123</code>）· <code>src/admin.js:34</code>（secret 由口令派生）</dd>
+    <dt>状态</dt><dd>已复现：默认口令直接登录后台；且不登录、仅用源码常量即可离线伪造 admin token 访问 <code>/api/admin/overview</code>（200）</dd>
+  </dl>
+  <p>
+    文档虽已提醒「务必修改」，但现实后果是：任何忘记改口令的部署= 后台完全沦陷
+    （封人 / 删除账号 / 改数据 / 看手机号与 IP）。建议改为
+    <strong>首启生成随机管理口令并打印一次</strong>（或强制环境变量，缺失即拒绝启动），
+    并把 <code>ADMIN_SECRET</code> 独立生成，不再从口令派生。同时给启动日志加安全自检段
+    （默认口令/默认密钥/未配 TRUST_PROXY 时高亮提醒）。
+  </p>
+
+  <h3><span class="chip">P1-3</span>管理页存储型 XSS：esc 不转义单引号 + 内联 onclick</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>public/js/util.js:30</code>（esc 只转 <code>&amp; &lt; &gt; "</code>）· <code>public/js/admin.js:275-276、359-365</code>（用户名嵌入单引号 onclick）</dd>
+    <dt>状态</dt><dd>已复现：游客改名 <code>');alert()//</code>（12 字符，恰好通过长度校验），管理页渲染为用户列表按钮时单引号逃逸</dd>
+  </dl>
+  <p>
+    渲染结果：<code>onclick="adminBan('&lt;id&gt;','');alert()//')"</code>——管理员点击该用户的
+    封禁/解封/改名等任一按钮时，注入的 JS 以管理员会话执行。攻击者可用 12 字符极限
+    构造更短的有害载荷（如调删除接口、窃取 localStorage 中的 admin token 发到外部）。
+  </p>
+  <h4>修复建议</h4>
+  <ul>
+    <li>立刻：<code>esc()</code> 增补 <code>'</code> → <code>&amp;#39;</code>（对全站安全，属无损修复）；</li>
+    <li>根治：管理页废弃内联 <code>onclick</code> 字符串拼接，改 <code>dataset</code> + <code>addEventListener</code> 或统一事件委托（同时天然规避此类转义死角）；</li>
+    <li>给「游客改名」补一条正则/字符集限制（当前只限长度），拒绝引号等控制字符。</li>
+  </ul>
+
+  <h3><span class="chip">P1-4</span>后台隐蔽入口的编码绕过</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/http/middleware.js:108</code>（<code>req.path === '/admin.html'</code> 精确匹配）</dd>
+    <dt>状态</dt><dd>已复现：设置 <code>ADMIN_ENTRY_KEY</code> 后，<code>GET /%61dmin.html</code> 直接返回 200（绕过门禁）；裸访问仍 404</dd>
+  </dl>
+  <p>
+    Express 的 <code>req.path</code> 不做百分号解码，而静态中间件会解码后再匹配文件——
+    于是拼写变体（<code>%61</code>、混合大小写之外的编码变形等）全部绕过。修复：
+    对 path 先 <code>decodeURIComponent</code> 再比较（并 try/catch 非法编码），
+    同时把「找到页面的 key」与「登录」的边界在文档里再说清一次——绕过门禁本身不等于拿到权限，
+    但会暴露后台入口与攻击面。
+  </p>
+
+  <h3><span class="chip">P1-5</span>游客清理逻辑空转（§U5 隐私承诺未生效）</h3>
+  <dl class="meta-grid">
+    <dt>位置</dt><dd><code>src/cleanup.js:52</code> 与 <code>:113</code>（走 <code>storage.listSessions()</code> / <code>storage.deleteSession()</code>——读写的是<strong>已废弃的 sessions 表</strong>）</dd>
+    <dt>状态</dt><dd>已复现：cleanup.plan() 报告 <code>totalSessions: 0</code>，而真实会话（kv）为 9 个；保留期设为 0 天也清不掉任何东西</dd>
+  </dl>
+  <p>
+    自 §M4 起会话唯一来源是 kv（<code>sessions/&lt;id&gt;.json</code>），但清理模块仍在使用旧表：
+    读取恒为空 → 永远没有待清理清单；即便将来有，删除也会打向旧表。
+    后果：过期游客会话与其孤儿棋谱<strong>永不清理</strong>（隐私保留期承诺落空），
+    kv 存量单调增长。修复：读取改 <code>auth.listSessions()</code>，删除改
+    <code>auth.getSessionRaw/saveSession/adminDeleteSession</code> 同口径的 kv 路径；
+    补一条「真实存在过期游客时 plan 能列出」的单测。
+  </p>
+</section>
+
+<!-- ================================================================ -->
+<section id="s5">
+  <h2><span class="no">05</span>P2 · 改进项</h2>
+  <div class="h2-rule"></div>
+  <table>
+    <thead><tr><th style="width:70px">编号</th><th>项</th><th>说明与建议</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">P2-1</td><td>依赖告警</td><td><code>npm audit</code>：3 个 moderate（qs 经 express 传递，含 DoS 与数组上限绕过）。升级 express/qs 即可，`npm audit fix` 可自动处理。</td></tr>
+      <tr><td class="mono">P2-2</td><td>WS 无 maxPayload 限制</td><td>WebSocketServer 未设置 <code>maxPayload</code>（默认 100 MiB）。建议降到 64KB 级——本项目单条消息不可能接近该量级。</td></tr>
+      <tr><td class="mono">P2-3</td><td><code>_lastChatTs</code> 无清理</td><td><code>src/rooms/gameplay.js:108</code>：按 clientId 累积且从不删除，长时间运行缓慢增长。随断连清理即可。</td></tr>
+      <tr><td class="mono">P2-4</td><td>文档幽灵消息</td><td><code>elo_updated</code> / <code>tournament_update</code> 在 protocol 头注释与 README 中声明，但全项目从未发送。要么实现、要么从文档移除，防止客户端白等。</td></tr>
+      <tr><td class="mono">P2-5</td><td>部署镜像缺少工程配套</td><td>本仓库无 <code>tests/</code>、eslint 配置、<code>scripts/</code>：在镜像里跑 <code>npm test</code> 是「0 测试通过」的假绿，<code>npm run lint</code> 直接失败。建议镜像内保留最小冒烟套件，或在 README 中注明这些命令需在开发仓库运行。</td></tr>
+      <tr><td class="mono">P2-6</td><td>无 socket 级连接上限</td><td>WS 仅有限流（消息频率）与 IP 封禁；单 IP 海量连接未加 caps。可加「单 IP 并发 WS 连接数」上限，成本低。</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ================================================================ -->
+<section id="s6">
+  <h2><span class="no">06</span>工程质量亮点</h2>
+  <div class="h2-rule"></div>
+  <p>这些部分经代码通读与实测验证，值得保留与继续发扬：</p>
+  <ul>
+    <li><strong>服务端权威规则</strong>：王手过滤（含打子分支修复）、强制升变、千日手（含连续王手判负）、困毙、入玉宣言（AJSA 27 点法）都实现且有针对性注释，规则引擎的「候选走法必被 applyMove 接受」不变量思路正确。</li>
+    <li><strong>结构性安全机制</strong>：隐私字段出口白名单（stripPrivate）、唯一 checkAdmin 入口、adminWrite 统一审计包装、双生效点的 IP 封禁（HTTP + WS 握手）、限流分档——方向都对，问题只在个别实现漏口（见 P0/P1）。</li>
+    <li><strong>数据可靠性</strong>：备份用 <code>VACUUM INTO</code>（WAL 一致性快照）而非拷贝文件；对局快照 + 重启恢复实测有效（「已恢复 1 场未完成对局」，走法完整）；棋谱摘要列 + 索引避免全表解析。</li>
+    <li><strong>棋谱格式严谨</strong>：KIF/CSA 导出实测与 81Dojo 风格一致（含每手耗时、手合割标注、让子局上手/下手行序处理）。</li>
+    <li><strong>前端 XSS 防护总体到位</strong>：聊天用 textContent、评论/名称广泛走 esc；本次发现的单引号逃逸是一个系统性角度（写入路径与内联 onclick 的交叉），修复面很小。</li>
+    <li><strong>无 Cookie 架构</strong>：凭证全走 header/参数，CSRF 面天然关闭（注释里也写明「若改 Cookie 必须补 CSRF」——很清醒）。</li>
+    <li><strong>注释与设计文档化程度罕见</strong>：每个非常规决策都记录了为什么（含踩坑史），对维护者是巨大资产。</li>
+  </ul>
+</section>
+
+<!-- ================================================================ -->
+<section id="s7">
+  <h2><span class="no">07</span>修复与后续计划</h2>
+  <div class="h2-rule"></div>
+  <p>建议按三个时间窗推进；每一项都附「怎么验」的验收标准，防止修了不报。</p>
+
+  <h3>阶段 0 · 48 小时内（安全热修，建议 v1.4.5）</h3>
+  <table>
+    <thead><tr><th style="width:64px">编号</th><th>动作</th><th>验收</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">P0-1</td><td>verifyToken / admin.verify 改字节级校验 + hex 白名单 + try/catch；handleConnection 与 URL 解析加边界；<code>server.on('clientError')</code> 兜底</td><td>回归脚本 06 / 07：畸形输入后进程必须存活</td></tr>
+      <tr><td class="mono">P0-2</td><td>SESSION_SECRET 缺省时首启生成随机密钥持久化；启动日志高亮安全自检（默认口令/密钥/TRUST_PROXY）</td><td>无环境变量启动 → 生成密钥；伪造令牌被拒</td></tr>
+      <tr><td class="mono">P0-3</td><td>register 拒绝「已是注册账号的 id」作 guestId；完整方案补迁移凭据（下一版）</td><td>脚本 04：注册后受害者数据不被迁移</td></tr>
+      <tr><td class="mono">P0-4</td><td>records 六接口统一走「账号凭令牌、裸账号 id 一律拒绝」</td><td>脚本 05：伪 guest 参数全部 403；评论不可伪造</td></tr>
+      <tr><td class="mono">P1-4</td><td>adminEntryGate 前先 decodeURIComponent</td><td><code>/%61dmin.html</code> 无 key 必须 404</td></tr>
+      <tr><td class="mono">P1-3</td><td>esc 增补单引号转义；改名过滤引号类字符</td><td>改名 <code>');alert()//</code> 被拒或渲染无害</td></tr>
+    </tbody>
+  </table>
+
+  <h3>阶段 1 · 两周内（加固与回归，建议 v1.4.6）</h3>
+  <ul>
+    <li>房间操作幂等化：join/quick_match 先校验后切换；重复请求 no-op；前端按钮防抖（P1-1）。</li>
+    <li>游客清理接回 kv 会话源，恢复 §U5 语义并补单测（P1-5）。</li>
+    <li>管理页内联 onclick 全面迁移到事件委托（消除同类转义死角，P1-3 根治）。</li>
+    <li>WS <code>maxPayload</code> + 单 IP 连接数上限；<code>_lastChatTs</code> 清理由断连触发（P2-2/3/6）。</li>
+    <li>把附录中的复现脚本转正为 CI 用例（防回归是这轮修完最容易漏的一步）。</li>
+    <li>依赖升级（express/qs），npm audit 纳入发布前检查清单。</li>
+  </ul>
+
+  <h3>阶段 2 · 一个月内（工程化与运维）</h3>
+  <ul>
+    <li>启动安全自检升级为 fail-fast 开关（<code>REQUIRE_STRONG_SECRETS=1</code>）、SECURITY.md（漏洞上报渠道 + 部署安全清单）。</li>
+    <li>文档与实现对齐：清理幽灵消息（P2-4）；README 在部署镜像里的命令差异标注（P2-5）。</li>
+    <li>长跑观察：内存（sessions/缓存/计时器）、WAL 体积；补压测脚本（对局并发 + UI 轮询路径）。</li>
+    <li>给上传仓库加最小 CI（语法 + 冒烟 + 本报告 P0/P1 回归集）。</li>
+  </ul>
+
+  <h3>阶段 3 · 产品路线（对齐 README roadmap）</h3>
+  <p>
+    USI 引擎人机对战 → 循环赛/联赛 → 棋谱广场内容运营（栏目化）→ 赛事自动化 → PWA。
+    建议在安全修复版本稳定运行两周后再开功能线，以免新功能带上「身份模型」旧债。
+  </p>
+</section>
+
+<!-- ================================================================ -->
+<section id="s8">
+  <h2><span class="no">08</span>附录 · 复现证据</h2>
+  <div class="h2-rule"></div>
+  <p>
+    以下脚本存放于本目录 <code>repro/</code>（运行前先把目标实例启动在对应端口；
+    脚本内 <code>PORT</code> 可在文件顶部调整，或按脚本注释操作）。编号与正文问题一一对应：
+  </p>
+  <div class="kv">
+    <b>00-smoke.js</b> —— 全流程冒烟（对局/观战/鉴权/限流/导出）<br>
+    <b>01-game-export.js</b> —— 真实对局 → 结算 → KIF/CSA 导出内容核验<br>
+    <b>02-snapshot-restore.js</b> —— 杀进程重启 → 快照恢复验证（正面用例）<br>
+    <b>03-dup-click-resign.js</b> —— P1-1 复现：双击匹配/重复加入 → 静默判负<br>
+    <b>04-register-hijack.js</b> —— P0-3 复现：guestId 劫持迁移<br>
+    <b>05-record-idor.js</b> —— P0-4 复现：凭公开 id 读/写他人棋谱<br>
+    <b>06-host-header-crash.js</b> —— P0-1 向量二：畸形 Host 崩进程<br>
+    <b>07-emoji-token-crash.js</b> —— P0-1 向量一：多字节签名崩进程<br>
+    <b>08-forge-session-token.js</b> —— P0-2 复现：默认密钥伪造会话令牌
+  </div>
+  <p>
+    <strong>使用提醒</strong>：这些脚本包含可利用的攻击细节，仅限本项目自测与修复验证场景使用，
+    请勿在未修复的公网实例上执行，也不要把含完整利用代码的内容公开发布。
+  </p>
+  <p>
+    静态证据线索（供修复时定位）：<code>src/accounts.js:25/127</code>、<code>src/admin.js:25/34/67</code>、
+    <code>server.js:116/119</code>、<code>src/http/context.js</code>(resolvePlayer)、
+    <code>src/http/routes/records.js</code>(6 个接口)、<code>src/http/middleware.js:108</code>、
+    <code>src/rooms/lifecycle.js:41/141/197/214</code>、<code>src/cleanup.js:52/113</code>、
+    <code>public/js/util.js:30</code>、<code>public/js/admin.js:275-276/359-365</code>。
+  </p>
+</section>
+
+<footer class="colophon">
+  TDShogi 代码审查报告 · 对象 commit 29ca712（v1.4.4）· 2026-09-21 · 审查在隔离实例上完成，未对线上环境做任何操作<br>
+  本报告为一次性审查交付物；修复验收建议以「附录脚本转正的回归用例」为准。
+</footer>
+
+</main>
+</div>
+</body>
+</html>

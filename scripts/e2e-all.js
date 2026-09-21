@@ -39,6 +39,9 @@ const SUITES = [
   'e2e-tournament-admin.js',
   'e2e-player-features.js',
   'e2e-handicap.js',
+  // 安全边界（2026-09-21 审查 P0/P1 的转正用例）：崩溃向量必须"拒请求但不死进程"、
+  // 棋谱越权必须 403、迁移劫持必须被拦 —— 这些都是只能端到端验的。
+  'e2e-security.js',
   'test-records.js',
   'test-reconnect.js',
   'test-spectate-rejoin.js',
@@ -82,6 +85,9 @@ async function main() {
       PORT: String(PORT),
       DATA_DIR,
       ADMIN_PASSWORD,
+      // 后台入口门禁（P1-4）：设了 key 才能验"编码变形要不要得逞"。
+      // 只影响 `/admin.html` 这个页面本身，各 e2e 脚本走的是 WS 与 REST（不拉页面），不受影响。
+      ADMIN_ENTRY_KEY: 'e2e-entry-key',
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });

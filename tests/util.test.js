@@ -40,6 +40,22 @@ function loadUtil(opts = {}) {
   return { win, logs, store, debugLog: win.debugLog };
 }
 
+test('esc 必须转义单引号（单引号 onclick 逃逸 = 存储型 XSS，2026-09-21 P1-3）', () => {
+  const { win } = loadUtil();
+  const esc = win.UI.esc;
+  assert.strictEqual(esc("a'b"), 'a&#39;b', '单引号必须转义');
+  assert.strictEqual(esc('"'), '&quot;');
+  assert.strictEqual(esc('&'), '&amp;');
+  assert.strictEqual(esc('<b>'), '&lt;b&gt;');
+  assert.strictEqual(esc(null), '');
+  // 审查里的实际载荷：游客改名 `');alert()//`（12 字符，恰好通过长度校验），
+  // 被拼进 `onclick="adminBan('<id>','<name>')"` 时逃出属性 → 管理员点击即执行。
+  const payload = "');alert()//";
+  const escaped = esc(payload);
+  assert.ok(!escaped.includes("'"), '转义后不得再含单引号（否则仍能逃出属性）');
+  assert.ok(escaped.includes('&#39;'), '单引号应被替换为 &#39;');
+});
+
 test('默认关闭：debugLog 零输出、零留痕', () => {
   const { logs, debugLog } = loadUtil();
   assert.strictEqual(debugLog.isOn(), false);
