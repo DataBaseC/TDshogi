@@ -265,12 +265,13 @@ node -e "const db=require('better-sqlite3')(':memory:');db.exec('create table t(
   当前 **en 与 ja 面向玩家的页面都已 100% 覆盖**（`admin.html` 刻意不翻），见 `docs/PLAN.md` §Z5 / §Z7
 - **CI**：`.github/workflows/ci.yml`（语法检查 + lint + 单测 + e2e 冒烟）
 - **e2e 回归**：`npm run e2e` —— **自动起隔离实例**（临时 `DATA_DIR` + `ADMIN_PASSWORD=admin123`）
-  后跑完整套，**15 个脚本 / 227 项断言**，末尾汇总并停服。
+  后跑完整套，**17 个脚本 / 265 项断言**，末尾汇总并停服。
   ⚠️ 其中 2 个脚本**自带服务器**（`e2e-snapshot.js` 重启进程验快照、`e2e-freeboard.js` 起 demo 服），
   会与本实例抢端口，需单独跑。
   ⚠️ 别手搓"先起服再 `node scripts/e2e-xxx.js`"：**漏掉 `ADMIN_PASSWORD` 就会卡在
   "Admin 等待 admin_logged_in 超时"**，看起来像代码坏了——这正是把前提固化成一键入口的原因。
-- **文档**：`docs/PLAN.md`（路线图）/ `docs/ARCHITECTURE.md`（架构）/ `docs/UI-PAGES.md`（页面地图）
+- **文档**：`docs/PLAN.md`（路线图）/ `docs/ARCHITECTURE.md`（架构）/ `docs/UI-PAGES.md`（页面地图）/
+  `docs/HANDOFF.md`（**尚未完成、需外部协助的困难任务清单**，含验收标准、已知坑与分工建议）
 
 ## 限制与扩展方向
 
