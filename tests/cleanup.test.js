@@ -20,6 +20,7 @@ process.env.DATA_DIR = TMP;
 if (fs.existsSync(TMP)) fs.rmSync(TMP, { recursive: true, force: true });
 
 const storage = require('../src/storage');
+const auth = require('../src/auth');
 const cleanup = require('../src/cleanup');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -31,8 +32,16 @@ const OLD_GUEST2 = id(2);     // 超期游客（40 天未登录）
 const RECENT_GUEST = id(3);   // 活跃游客（3 天前还登录过）
 const REGISTERED = id(4);     // 超期，但**已注册**（账号里留着 guestId 指向它）
 
+/**
+ * ⚠️ 造会话必须写 **kv**（`sessions/<id>.json`，§M4 起唯一来源），
+ * 不能用 `storage.putSession()` 写旧 `sessions` **表**。
+ * 2026-09-21 审查 P1-5 的教训正在这里：清理逻辑当时读旧表、这个测试也写旧表，
+ * 两边"自洽"地全绿，而**线上真实会话（在 kv）一个都没被清理过** ——
+ * 测试跟着实现一起走错了源，于是没能拦住 bug。
+ * 「测试的数据源必须与生产同一处」比"测试通过"重要得多。
+ */
 function mkSession(sid, daysAgo) {
-  storage.putSession({
+  auth.saveSession({
     id: sid,
     name: '游客' + sid.slice(-4),
     createdAt: Date.now() - 400 * DAY,
@@ -91,7 +100,7 @@ test('§U5 plan：棋谱只在「双方都是待清理游客」时才进清单',
 });
 
 test('§U5 run(dryRun)：只出清单，一条数据都不动', () => {
-  const beforeS = storage.listSessions().length;
+  const beforeS = auth.listSessions().length;
   const beforeR = storage.listSummaries({ limit: 999 }).length;
 
   const s = cleanup.run({ days: 30, dryRun: true });
@@ -99,7 +108,7 @@ test('§U5 run(dryRun)：只出清单，一条数据都不动', () => {
   assert.strictEqual(s.dryRun, true);
   assert.strictEqual(s.sessions, 2);
   assert.strictEqual(s.records, 1);
-  assert.strictEqual(storage.listSessions().length, beforeS, '干跑不得删除会话');
+  assert.strictEqual(auth.listSessions().length, beforeS, '干跑不得删除会话');
   assert.strictEqual(storage.listSummaries({ limit: 999 }).length, beforeR, '干跑不得删除棋谱');
   assert.strictEqual(s.deletedSessions, undefined, '干跑不应给出 deleted 计数');
 });
@@ -110,7 +119,7 @@ test('§U5 run：真删时只删清单内的', () => {
   assert.strictEqual(s.deletedSessions, 2);
   assert.strictEqual(s.deletedRecords, 1);
 
-  const leftSessions = storage.listSessions().map((x) => x.id);
+  const leftSessions = auth.listSessions().map((x) => x.id);
   assert.ok(leftSessions.includes(RECENT_GUEST), '活跃游客必须还在');
   assert.ok(leftSessions.includes(REGISTERED), '已注册游客必须还在');
   assert.ok(!leftSessions.includes(OLD_GUEST), '超期游客应已删除');
