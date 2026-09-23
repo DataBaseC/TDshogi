@@ -234,14 +234,16 @@ async function main() {
   A.send('demo_claim');
   const pErr = await A.wait('error');
   ok(/尚未结束/.test(pErr.message || ''), `PLAYING 态 demo_* 被拒（${pErr.message}）`);
-  // ---- 11.5 对局中匹配 → 自动认输退出（用户确认行为，PLAN §H）----
-  await section('对局中匹配/建房自动认输退出');
+  // ---- 11.5 对局中点匹配 = no-op（P1-1，2026-09-23：重复/失败请求不再把对局判负）----
+  await section('对局中点匹配被拒（no-op）、建房仍自动认输');
   A.send('quick_match', {});
-  const goAuto = await A.wait('game_over', 5000).catch(() => null);
-  ok(!!goAuto && goAuto.resultDetail === '投了', );
+  const mErr = await A.wait('error');
+  ok(/对局中/.test(mErr.message || ''), `对局中点匹配被拒（${mErr.message}）`);
+  ok(A.latest && !A.latest.result, '原对局仍在进行中（未被判负）');
+  // 建房路径维持 PLAN §H：对局中建房 = 先自动认输退出旧局，再建新房
   A.send('create_room', {});
   const rNew = await A.wait('room_created', 5000).catch(() => null);
-  ok(!!rNew, '自动退出后可立即建房');
+  ok(!!rNew, '对局中建房 = 自动认输退出旧局并创建新房间');
   A.close(); B2.close();
   killServer(server);
   await T(1200);

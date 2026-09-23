@@ -1,5 +1,13 @@
 # BUG 报告：P1-1 修复后 `e2e-test.js`「同身份占用防护」失败
 
+> ✅ **已解决（2026-09-23）**，根因与本报告第六节的猜测 1 一致：
+> `protocol.js` 的 clientId 后缀是**毫秒级时间戳**，同一 guestId 的两条连接（G1/G1b）
+> 在同一毫秒内握手会生成**完全相同的 clientId**，后到的连接覆盖先到的
+> `clients`/`playerRegistry` 注册 → 先到的连接（G1）此后收不到任何回执
+> （回执全发到后者的 socket 上），表现为"请求被静默丢弃"。实测碰撞率约 1/3（21/60），
+> 这也是该段**历史抖动**的根源。修复：clientId 追加进程内自增序号（`_connSeq`）。
+> 生命周期侧按第二节的三段式落地；`e2e-lobby-ops.js` 已接回 `e2e-all.js`（17 脚本 / 265 断言全绿）。
+
 > 交接文档。仓库：`D:\Ai\CodeBuddy\shogiwebapp`（源码仓库 `DataBaseC/TDShogi`）。
 > 当前版本 **v1.4.5**，工作区干净，`npm test` / `npm run lint` / `npm run e2e` **全绿**
 > （单测 244、lint 0 error、e2e 16 脚本 252 断言）—— **本 bug 只在应用下面那份修复后才会出现**。
