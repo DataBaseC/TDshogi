@@ -404,6 +404,13 @@
   });
 
   // 认输 / 再来一局 / 退出
+  // 结算横幅的「关闭」：原先写在 play.html 的 inline onclick 里，
+  // 改为 data-act + 整页委托（2026-09-23，审查项 13f）。
+  window.UI.onAction('banner-close', () => {
+    const b = document.getElementById('banner');
+    if (b) b.classList.remove('show');
+  });
+
   $('btnResign').addEventListener('click', () => {
     if (confirm('确定认输吗？')) api.send({ type: 'resign' });
   });

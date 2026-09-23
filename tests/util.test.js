@@ -34,6 +34,21 @@ function loadUtil(opts = {}) {
   };
   if (opts.preFlag !== undefined) win.TDSHOGI_DEBUG = opts.preFlag;
 
+  // ⚠️ **必须同时给 `document`**（2026-09-23）：`util.js` 在**加载时**就会装一个整页
+  // click 监听（`data-act` 委托，见该文件里的说明），只给 `window` 会直接抛
+  // `document is not defined`，于是这个文件里所有用例一起变红。
+  // 这里只实现"加载期真的会用到"的方法；需要更完整 DOM 的用例自己再补。
+  globalThis.document = {
+    addEventListener: () => {},
+    getElementById: () => null,
+    createElement: () => ({
+      style: {}, classList: { add() {}, remove() {}, contains: () => false },
+      setAttribute() {}, appendChild() {},
+    }),
+    head: { appendChild() {} },
+    body: { appendChild() {}, classList: { toggle() {} } },
+  };
+
   globalThis.window = win;
   delete require.cache[require.resolve(UTIL)];
   require(UTIL);

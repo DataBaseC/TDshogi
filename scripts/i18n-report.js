@@ -34,6 +34,13 @@ const CJK = /[\u3400-\u4dbf\u4e00-\u9fff]/;
 const SKIP = new Set([
   '棋',       // 头像占位（实际显示的是玩家名首字/头像字形）
   '经验 0',   // 「经验」数值由 JS 填充
+  // 随机昵称词库（`nav.js` 的 `randomName()`）：这些是**生成出来的玩家名**，不是界面文案。
+  // 跟着界面语言变，会让同一个人的名字忽中忽日；而且它们与棋种/棋子字形同名（銀将/桂馬…），
+  // 翻成英文（"Silver"）当人名更怪。
+  '一歩名人', '飛車使い', '銀将', '桂馬', '香車', '角行', '竜王', '棋聖', '玉将',
+  // 棋子**编码/字形映射表**（`board.js` 的 `PIECE_CODE`、`freeboard.js` 的 `PROMOTE`）：
+  // 键是内部标识，不显示给玩家（棋盘上画的是图片）。翻它只会让映射对不上。
+  '成香', '成桂', '成銀',
 ]);
 
 /**
@@ -42,6 +49,15 @@ const SKIP = new Set([
  * 单独列出来是为了让报告能明确说"玩家页面已全覆盖"，而不是把 admin 混在缺口里。
  */
 const EXCLUDE_FILES = new Set(['admin.html']);
+
+/**
+ * **刻意不翻的 JS**，理由同 `admin.html`（2026-09-23 加）。
+ *
+ * ⚠️ 不排除它，"玩家页面已 100%"就永远不成立：报告里会一直挂着二十来条
+ * **只有管理员看得到**的文案（`已强制下线`、`该座位没有可下线的玩家`、
+ * `举办理由至少 10 个字`…）。假缺口会把真缺口淹掉 —— 这正是这份报告最怕的事。
+ */
+const EXCLUDE_JS = new Set(['admin.js']);
 
 /** 从 HTML 里抠出「会显示给人看」的中文片段（文本 + placeholder/title + <title>） */
 function extractHtml(src) {
@@ -64,13 +80,51 @@ function extractHtml(src) {
 }
 
 /** 从 JS 里抠出中文字符串字面量（提示语、动态文案） */
+/**
+ * 去掉注释：**引号感知**的逐行扫描。
+ *
+ * ⚠️ 为什么必须这么做（2026-09-23）：原实现对整份源码做字符串匹配，
+ * 于是**注释里的中文**也被当成"缺词条的界面文案" —— 实测 306 条缺口里有一百多条是注释
+ * （`一次批一批`、`不会爆炸`、`抄多份、改一处漏九处`…）。报告的价值全在"能信"：
+ * 假缺口一多，真缺口就被淹了，看的人会直接放弃这份清单。
+ */
+function stripComments(src) {
+  const out = [];
+  let inBlock = false;
+  for (const line of src.split('\n')) {
+    if (inBlock) {
+      const e = line.indexOf('*/');
+      if (e < 0) continue;
+      inBlock = false;
+      out.push(line.slice(e + 2));
+      continue;
+    }
+    let quote = null;
+    let cut = -1;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (quote) {
+        if (c === '\\') { i++; continue; }
+        if (c === quote) quote = null;
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { quote = c; continue; }
+      if (c === '/' && line[i + 1] === '*') { inBlock = true; cut = i; break; }
+      if (c === '/' && line[i + 1] === '/') { cut = i; break; }
+    }
+    out.push(cut >= 0 ? line.slice(0, cut) : line);
+  }
+  return out.join('\n');
+}
+
 function extractJs(src) {
   const out = new Set();
-  for (const m of src.matchAll(/'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\]*)`/g)) {
+  for (const m of stripComments(src).matchAll(/'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\]*)`/g)) {
     const t = (m[1] || m[2] || m[3] || '').replace(/\s+/g, ' ').trim();
     if (!t || !CJK.test(t)) continue;
     if (t.length < 2 || t.length > 80) continue; // 太短/太长多半不是界面文案
     if (/[{}<>]/.test(t)) continue;             // 含插值/标签的留给人工判断
+    if (/^\[.+\]/.test(t)) continue;            // 内部日志前缀（[PieceKinds] / [settings] …），不给玩家看
     out.add(t);
   }
   return out;
@@ -93,7 +147,8 @@ for (const f of htmlFiles) {
   if (miss.length) groups.push({ name: `public/${f}`, miss });
 }
 if (withJs) {
-  const jsFiles = fs.readdirSync(path.join(ROOT, 'public/js')).filter((f) => f.endsWith('.js') && f !== 'i18n.js');
+  const jsFiles = fs.readdirSync(path.join(ROOT, 'public/js'))
+    .filter((f) => f.endsWith('.js') && f !== 'i18n.js' && !EXCLUDE_JS.has(f));
   const all = new Set();
   for (const f of jsFiles) {
     const src = fs.readFileSync(path.join(ROOT, 'public/js', f), 'utf8');
