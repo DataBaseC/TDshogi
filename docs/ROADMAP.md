@@ -217,7 +217,7 @@ v1.4.5 只做了最小修复（拒绝"已是注册账号的 id"作迁移来源�
 
 | 编号 | 动作 |
 |---|---|
-| P2-2 | WS 加 `maxPayload`（默认 100 MiB → 64KB 级） |
+| P2-2 | ✅ **已完成（2026-09-23）**：WS 加 `maxPayload: 64KB`（默认是 100 MiB）。⚠️ 未随 v1.4.6 一起上云（那次只含 P1-1/clientId），**随下一次同步上线** |
 | P2-3 | `_lastChatTs`（`rooms/gameplay.js`）按 clientId 累积且从不清理 → 断连时清 |
 | P2-4 | 文档幽灵消息：`elo_updated` / `tournament_update` 声明了却从不发送 → 实现或删 |
 | P2-6 | 单 IP 并发 WS 连接数上限 |
