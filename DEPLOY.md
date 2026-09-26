@@ -25,7 +25,7 @@ tdshogi/
 ├── package-lock.json     # 锁定依赖版本（保证可复现）
 ├── .npmrc                # better-sqlite3 预编译包镜像（服务器免编译工具链）
 ├── server.js             # 服务端入口
-├── src/                  # 服务端逻辑（18 个模块，全部需要）
+├── src/                  # 服务端逻辑（全部需要）
 │   ├── protocol.js  rooms.js  game.js  coords.js   # 对局核心
 │   ├── auth.js  accounts.js  ratings.js  records.js
 │   ├── kif.js  storage.js  tournaments.js
@@ -34,10 +34,12 @@ tdshogi/
 │   ├── ratelimit.js                                # 接口与 WS 速率限制
 │   └── backup.js                                   # SQLite 自动备份（VACUUM INTO）
 ├── public/               # 前端（静态资源，全部需要）
-│   ├── *.html            # 9 个页面
+│   ├── *.html            # 页面
 │   ├── css/              # style.css board.css review.css
-│   ├── js/               # 18 个脚本（统一棋盘 freeboard.js/board.js、设置面板 settings.js、棋子映射 piece-kinds.js）
-│   └── pieces/           # 棋子图片 kinki.png ryoko.png
+│   ├── js/               # 统一棋盘 freeboard.js/board.js、设置面板 settings.js、棋子映射 piece-kinds.js
+│   ├── pieces/           # 棋子图片 kinki.png ryoko.png
+│   ├── sound/            # 音效素材（sound/<类别>/<类别>_<材质>.mp3）
+│   └── music/            # BGM 素材
 ├── DEPLOY.md             # 本文件（可选）
 └── README.md             # （可选）
 ```

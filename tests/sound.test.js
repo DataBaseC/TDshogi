@@ -4,7 +4,7 @@
  * `file:<名字>` 方案是「设置值 → 文件 URL → <audio>」这条链：
  * 中间任何一环写错（少个 `.mp3`、目录写成 music/、忘了 loop）都不报错，
  * 只是**没声音**，上线前极难发现。这里用 Audio 桩把链路钉死：
- *  - `file:棋子敲击` → `sound/棋子敲击.mp3`（吃子降速高 = 更沉）；
+ *  - `file:pieces/pieces_wood` → `sound/pieces/pieces_wood.mp3`（吃子降速高 = 更沉）；
  *  - BGM `file:loop` → `music/loop.mp3`、`loop=true`、对局结束暂停；
  *  - `default` 变体不建 Audio（走合成音，无 AudioContext 时静默跳过）；
  *  - 总开关关掉后不再发声，重开后 BGM 恢复。
@@ -52,19 +52,19 @@ function freshSound(vals) {
   return global.Sound;
 }
 
-test('落子/吃子的 file: 方案：`file:棋子敲击` → `sound/棋子敲击.mp3`，吃子降速高', () => {
-  const Sound = freshSound({ sound: true, soundMove: 'file:棋子敲击' });
+test('落子/吃子的 file: 方案：`file:pieces/pieces_wood` → `sound/pieces/pieces_wood.mp3`，吃子降速高', () => {
+  const Sound = freshSound({ sound: true, soundMove: 'file:pieces/pieces_wood' });
 
   Sound.playMove();
   assert.strictEqual(made.length, 1, 'playMove 应建一个 Audio');
-  assert.strictEqual(made[0].url, encodeURI('sound/棋子敲击.mp3'));
+  assert.strictEqual(made[0].url, encodeURI('sound/pieces/pieces_wood.mp3'));
   assert.strictEqual(made[0].volume, 0.9);
   assert.strictEqual(made[0].playbackRate, 1);
   assert.strictEqual(made[0].played, 1);
 
   Sound.playCapture();
   assert.strictEqual(made.length, 2);
-  assert.strictEqual(made[1].url, encodeURI('sound/棋子敲击.mp3'));
+  assert.strictEqual(made[1].url, encodeURI('sound/pieces/pieces_wood.mp3'));
   assert.strictEqual(made[1].playbackRate, 0.82, '吃子降速高 = 音色更沉');
 });
 
@@ -110,7 +110,7 @@ test('BGM 切曲：旧曲暂停，新曲换 URL（`file:制勝` → `music/制�
 });
 
 test('总开关：关掉后不发声且 BGM 停；重开后对局进行中则恢复 BGM', () => {
-  const vals = { sound: true, soundMove: 'file:棋子敲击', bgm: 'file:loop' };
+  const vals = { sound: true, soundMove: 'file:pieces/pieces_wood', bgm: 'file:loop' };
   const Sound = freshSound(vals);
 
   Sound.bgmStart();

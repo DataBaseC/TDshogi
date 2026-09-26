@@ -55,7 +55,7 @@
     { group: '音效', key: 'soundByoyomi', type: 'select', label: '读秒音',
       options: [['default', '默认（合成音）']], hint: '读秒每 10 秒报时；最后 10 秒逐秒' },
     { group: '音效', key: 'soundMove', type: 'select', label: '落子音',
-      options: [['default', '默认（合成音）'], ['file:棋子敲击', '棋子敲击']],
+      options: [['default', '默认（合成音）'], ['file:pieces/pieces_wood', '棋子敲击']],
       hint: '含吃子（音色更沉）' },
     { group: '音效', key: 'bgm', type: 'select', label: '对局 BGM',
       options: [['off', '关闭'], ['file:loop', '循环'], ['file:制勝', '制勝'],
