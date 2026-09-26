@@ -25,7 +25,9 @@ require(path.join(__dirname, '../public/js/i18n.js'));
 const I18N = global.I18N;
 
 const ROOT = path.join(__dirname, '..');
-const CJK = /[\u3400-\u4dbf\u4e00-\u9fff]/;
+// 提取逻辑抽到 lib（2026-09-26）：共用 + 可单测。⚠️ 原实现有 bug——单行 `/* … */`
+// 注释被当成未闭合块注释，settings.js 整个 SCHEMA 都被吃了，报告却显示"0 缺口"（假绿）。
+const { CJK, extractJs } = require('./lib/js-extract');
 
 /**
  * **刻意不翻**的条目（报告里跳过，免得一直挂着假缺口）。
@@ -41,7 +43,18 @@ const SKIP = new Set([
   // 棋子**编码/字形映射表**（`board.js` 的 `PIECE_CODE`、`freeboard.js` 的 `PROMOTE`）：
   // 键是内部标识，不显示给玩家（棋盘上画的是图片）。翻它只会让映射对不上。
   '成香', '成桂', '成銀',
+  // **拼接片段**（2026-09-26）：`'✅ 已报名（' + n + '人）'` 这类运行时拼出来的句子，
+  // DOM 里是整句、词典只可能有片段，**永远匹配不上**——挂假缺口只会淹掉真缺口。
+  // 要翻得先把拼接改成 t() 带变量，那是独立的技术债，不在报告里冒充"待翻"。
+  '✅ 已报名（', '人）', '，报名需主办人审核', '对局结束：', '（人工裁定）',
 ]);
+
+/**
+ * **刻意不翻**的模式（同 SKIP，按前缀判）：
+ * `file:xxx` 是音效/BGM 的**选项值**（内部标识，对应 public/sound|music/ 下的文件名），
+ * 玩家看到的是旁边的显示名。文件名以后还会加，按模式跳过免得每加一首曲子挂一条假缺口。
+ */
+const SKIP_RE = /^file:/;
 
 /**
  * **刻意不翻的页面**（用户 2026-09-20 拍板："admin 全中文即可"）。
@@ -79,57 +92,6 @@ function extractHtml(src) {
   return out;
 }
 
-/** 从 JS 里抠出中文字符串字面量（提示语、动态文案） */
-/**
- * 去掉注释：**引号感知**的逐行扫描。
- *
- * ⚠️ 为什么必须这么做（2026-09-23）：原实现对整份源码做字符串匹配，
- * 于是**注释里的中文**也被当成"缺词条的界面文案" —— 实测 306 条缺口里有一百多条是注释
- * （`一次批一批`、`不会爆炸`、`抄多份、改一处漏九处`…）。报告的价值全在"能信"：
- * 假缺口一多，真缺口就被淹了，看的人会直接放弃这份清单。
- */
-function stripComments(src) {
-  const out = [];
-  let inBlock = false;
-  for (const line of src.split('\n')) {
-    if (inBlock) {
-      const e = line.indexOf('*/');
-      if (e < 0) continue;
-      inBlock = false;
-      out.push(line.slice(e + 2));
-      continue;
-    }
-    let quote = null;
-    let cut = -1;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (quote) {
-        if (c === '\\') { i++; continue; }
-        if (c === quote) quote = null;
-        continue;
-      }
-      if (c === "'" || c === '"' || c === '`') { quote = c; continue; }
-      if (c === '/' && line[i + 1] === '*') { inBlock = true; cut = i; break; }
-      if (c === '/' && line[i + 1] === '/') { cut = i; break; }
-    }
-    out.push(cut >= 0 ? line.slice(0, cut) : line);
-  }
-  return out.join('\n');
-}
-
-function extractJs(src) {
-  const out = new Set();
-  for (const m of stripComments(src).matchAll(/'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\]*)`/g)) {
-    const t = (m[1] || m[2] || m[3] || '').replace(/\s+/g, ' ').trim();
-    if (!t || !CJK.test(t)) continue;
-    if (t.length < 2 || t.length > 80) continue; // 太短/太长多半不是界面文案
-    if (/[{}<>]/.test(t)) continue;             // 含插值/标签的留给人工判断
-    if (/^\[.+\]/.test(t)) continue;            // 内部日志前缀（[PieceKinds] / [settings] …），不给玩家看
-    out.add(t);
-  }
-  return out;
-}
-
 const withJs = process.argv.includes('--js') || process.argv.includes('--all');
 const full = process.argv.includes('--all');
 const LIMIT = full ? 100000 : 40;
@@ -154,7 +116,7 @@ if (withJs) {
     const src = fs.readFileSync(path.join(ROOT, 'public/js', f), 'utf8');
     for (const t of extractJs(src)) all.add(t);
   }
-  const miss = [...all].filter((t) => !SKIP.has(t) && I18N._lookup(LOCALE, t) === undefined).sort();
+  const miss = [...all].filter((t) => !SKIP.has(t) && !SKIP_RE.test(t) && I18N._lookup(LOCALE, t) === undefined).sort();
   if (miss.length) groups.push({ name: 'public/js/*.js（含提示语/动态文案）', miss });
 }
 
