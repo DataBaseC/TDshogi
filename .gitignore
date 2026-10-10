@@ -1,0 +1,6 @@
+node_modules/
+*.log
+data/
+*.sqlite
+*.sqlite-*
+github-upload/

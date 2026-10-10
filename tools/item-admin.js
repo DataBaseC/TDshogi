@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+/**
+ * tools/item-admin.js — 道具系统发放 CLI（管理员 / 活动用）
+ *
+ * ⚠️ 2026-10-03 新功能：道具系统骨架 —— 一期没有后台发放界面，"发道具/发币/发兑换码"
+ * 先由这个 CLI 承担（二期可挪进管理后台）。
+ *
+ * 用法：
+ *   node tools/item-admin.js items                        # 列出目录（id / 类型 / 价格 / 稀有度）
+ *   node tools/item-admin.js list  <accountId>            # 看某账号的钱包 / 拥有 / 装备
+ *   node tools/item-admin.js grant <accountId> <itemId>   # 直接发一件道具
+ *   node tools/item-admin.js coin  <accountId> <±n>       # 加减货币
+ *   node tools/item-admin.js code  <CODE> <itemId|--> [--coin N] [--max N]
+ *                                                         # 定义兑换码（itemId 传 - 表示只发币）
+ *
+ * 说明：accountId 即账号 id（= 该账号登录后的 playerId，见 accounts.verifyToken）。
+ *       本 CLI 需要已安装依赖（走 src/items → src/storage）。
+ */
+'use strict';
+
+const items = require('../src/items');
+
+function usage() {
+  console.log([
+    '用法：',
+    '  node tools/item-admin.js items',
+    '  node tools/item-admin.js list  <accountId>',
+    '  node tools/item-admin.js grant <accountId> <itemId>',
+    '  node tools/item-admin.js coin  <accountId> <±n>',
+    '  node tools/item-admin.js code  <CODE> <itemId|--> [--coin N] [--max N]',
+  ].join('\n'));
+  process.exit(1);
+}
+
+const [cmd, ...rest] = process.argv.slice(2);
+const flag = (name, def) => {
+  const i = rest.indexOf(name);
+  return i >= 0 && i + 1 < rest.length ? rest[i + 1] : def;
+};
+
+switch (cmd) {
+  case 'items': {
+    const rows = items.catalog().map((it) => ({
+      id: it.id,
+      type: it.type,
+      price: it.price === null ? '免费' : it.price,
+      rarity: it.rarity || '-',
+      name: it.name || '',
+    }));
+    console.table(rows);
+    break;
+  }
+
+  case 'list': {
+    const accountId = rest[0];
+    if (!accountId) usage();
+    const snap = items.snapshot(accountId);
+    console.log(`账号 ${accountId}`);
+    console.log('  货币：', snap.wallet.coin);
+    console.log('  拥有：', snap.owned.length ? snap.owned.join(', ') : '(无)');
+    const eq = Object.entries(snap.equipped).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
+    console.log('  装备：', eq.length ? eq.join(', ') : '(无)');
+    break;
+  }
+
+  case 'grant': {
+    const [accountId, itemId] = rest;
+    if (!accountId || !itemId) usage();
+    const r = items.grant(accountId, itemId, 'admin');
+    console.log(r.ok ? `已发放 ${itemId} → ${accountId}（现拥有 ${r.owned.length} 件）` : `失败：${r.error}`);
+    process.exit(r.ok ? 0 : 1);
+    break;
+  }
+
+  case 'coin': {
+    const [accountId, nRaw] = rest;
+    const n = Number(nRaw);
+    if (!accountId || !Number.isFinite(n)) usage();
+    const r = items.addCoin(accountId, n);
+    console.log(r.ok ? `${accountId} 货币现为 ${r.wallet.coin}` : `失败：${r.error}`);
+    process.exit(r.ok ? 0 : 1);
+    break;
+  }
+
+  case 'code': {
+    const [code, itemId] = rest;
+    if (!code || !itemId) usage();
+    const coin = Number(flag('--coin', 0)) || 0;
+    const maxUses = Number(flag('--max', 1)) || 1;
+    const def = items.defineCode(code, {
+      itemId: itemId === '-' ? null : itemId,
+      coin,
+      maxUses,
+    });
+    console.log(`兑换码 ${code} 已定义：道具=${def.itemId || '（无）'} 币=${def.coin} 上限=${def.maxUses}`);
+    break;
+  }
+
+  default:
+    usage();
+}

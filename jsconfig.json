@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.js",
+    "server.js",
+    "scripts/**/*.js",
+    "tests/**/*.js",
+    "public/js/**/*.js"
+  ],
+  "exclude": ["node_modules", "public/music", "github-upload"]
+}
