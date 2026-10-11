@@ -19,9 +19,57 @@ const TMP = path.join(require('node:os').tmpdir(), '.tmpdata-tournaments');
 process.env.DATA_DIR = TMP;
 if (fs.existsSync(TMP)) fs.rmSync(TMP, { recursive: true, force: true });
 
-const T = require('../src/tournaments');
+const RawT = require('../src/tournaments');
 const storage = require('../src/storage');
 const ratings = require('../src/ratings');
+const swissPairKey = require('../src/swiss').pairKey;
+
+/**
+ * 约战制测试适配（2026-10-11）。
+ *
+ * 需求改为「赛事开赛后不自动建房，双方选手自行约战」后，`startTournament` /
+ * `onMatchFinished` / 满员自动开赛等路径**不再产生 roomId**；而既有测试大量依赖
+ * "开赛即有 matchId"才能继续走 `onMatchFinished`。
+ *
+ * 这里用一个 Proxy 在「会开赛 / 会推进」的写操作之后，自动把该赛事所有已配对待打的
+ * 场次建房（等价于"双方各自点了「开始赛事」"），使其余断言无需逐条改写。
+ * ⚠️ 新行为本身由文件末尾「约战制」专项测试用 RawT 直接覆盖（不经本适配）。
+ */
+function autoStartAll(id) {
+  const t = RawT.getTournament(id);
+  if (!t || t.status !== 'playing') return;
+  if ((t.format || 'single-elimination') === 'swiss') {
+    (t.rounds || []).forEach((rec) => {
+      (rec.pairs || []).forEach((p, i) => {
+        if ((rec.matchIds || [])[i]) return;
+        if (rec.results && rec.results[swissPairKey(p[0], p[1])]) return;
+        RawT.startMatch(p[0], { tournamentId: id, round: rec.round, pairIndex: i });
+      });
+    });
+  } else {
+    (t.bracket || []).forEach((n) => {
+      if (!n.ready || n.matchId || n.winnerId) return;
+      RawT.startMatch(n.players[0], { tournamentId: id, nodeIndex: n.index });
+    });
+  }
+}
+
+const T = new Proxy(RawT, {
+  get(obj, prop) {
+    const v = obj[prop];
+    if (typeof v !== 'function') return v;
+    if (prop === 'startTournament') {
+      return function (...args) { const r = v.apply(obj, args); if (r && r.ok) autoStartAll(args[0]); return r; };
+    }
+    if (prop === 'onMatchFinished') {
+      return function (...args) { const r = v.apply(obj, args); autoStartAll(args[0]); return r; };
+    }
+    if (prop === 'joinTournament' || prop === 'decideEntrant') {
+      return function (...args) { const r = v.apply(obj, args); if (r && r.ok && r.started) autoStartAll(args[0]); return r; };
+    }
+    return v.bind(obj);
+  },
+});
 
 // ---- 等级特权（2026-09-20）：举办赛事需要 Lv.5 ----
 // 测试里的 owner 都是临时造的 id、等级为 0，会被门槛直接拒掉。
@@ -254,6 +302,36 @@ function mkApproved(over) {
   assert.strictEqual(r.ok, true, r.error || '');
   T.approveTournament(r.tournament.id);
   return r.tournament.id;
+}
+
+/**
+ * 约战制测试助手（2026-10-11）：把赛事中**所有已配对、未建房**的场次逐一建房，
+ * 语义等价于"双方选手各自点了「开始赛事」"。返回建出的场次列表。
+ *
+ * ⚠️ 赛事开赛/推进后**不再自动建房**（见 `src/tournaments/bracket.js` 的说明），
+ * 测试必须显式调用本函数拿到 roomId 才能继续走 `onMatchFinished`。
+ */
+const swissMod = require('../src/swiss');
+function startAllMatches(id) {
+  const t = T.getTournament(id);
+  const out = [];
+  if ((t.format || 'single-elimination') === 'swiss') {
+    (t.rounds || []).forEach((rec) => {
+      (rec.pairs || []).forEach((p, i) => {
+        if ((rec.matchIds || [])[i]) return;
+        if (rec.results && rec.results[swissMod.pairKey(p[0], p[1])]) return;
+        const r = T.startMatch(p[0], { tournamentId: id, round: rec.round, pairIndex: i });
+        if (r.ok) out.push({ kind: 'swiss', round: rec.round, pairIndex: i, roomId: r.roomId, players: p.slice() });
+      });
+    });
+  } else {
+    (t.bracket || []).forEach((n) => {
+      if (!n.ready || n.matchId || n.winnerId) return;
+      const r = T.startMatch(n.players[0], { tournamentId: id, nodeIndex: n.index });
+      if (r.ok) out.push({ kind: 'ko', nodeIndex: n.index, roomId: r.roomId, players: (n.players || []).slice() });
+    });
+  }
+  return out;
 }
 
 test('T3 免审核报名：报名即参赛，满员才自动开赛', () => {
@@ -796,8 +874,12 @@ test('T6 重赛裁决：批准后作废该场结果并重建这一局', () => {
   const t = T.getTournament(id);
   const node = t.bracket.find((x) => x.index === rm.nodeIndex);
   assert.strictEqual(node.winnerId, null, '批准后该场结果应被作废');
-  assert.ok(node.matchId, '应重新建房');
-  assert.notStrictEqual(node.matchId, matchId, '应是新房间，而不是把旧房间挂回去');
+  // 约战制（2026-10-11）：重赛批准后该场回到「待约战」，由选手再次点「开始赛事」建房
+  assert.strictEqual(node.matchId, null, '不再自动建房');
+  assert.strictEqual(node.ready, true, '应回到可约战状态');
+  const again = T.startMatch(node.players[0], { tournamentId: id, nodeIndex: node.index });
+  assert.strictEqual(again.ok, true, again.error || '');
+  assert.notStrictEqual(again.roomId, matchId, '应是新房间，而不是把旧房间挂回去');
   assert.strictEqual(t.rematches.find((x) => x.id === rm.id).status, 'approved');
   // 旧申请不能二次处置
   assert.strictEqual(T.decideRematch(id, rm.id, 'reject', { id: 'owner-1' }).ok, false);
@@ -1116,4 +1198,55 @@ test('赛事荣誉：荣誉明细条数受 limit 限制（个人页是概览，�
   const h = T.honorsOf('lim1', 2);
   assert.strictEqual(h.stats.joined, 3, '统计要覆盖全部');
   assert.strictEqual(h.items.length, 2, '明细只给前 2 条');
+});
+
+// ======================================================================
+// 约战制（2026-10-11）：开赛不自动建房；选手按指定对手发起「开始赛事」
+// ⚠️ 本组用 RawT（不经上方 Proxy 适配），直接验证新行为本身。
+// ======================================================================
+test('约战制：开赛不自动建房，选手按指定对手发起才建房', () => {
+  let n = 0;
+  RawT.setMatchFactory(() => ({ roomId: 'ko-' + (++n) }));
+  const cr = RawT.createTournament('约战测试赛', 4, { id: 'owner-1', name: '主办' }, {
+    reason: '约战制验证用赛事（理由需足够长以通过校验）', requireApproval: false,
+  });
+  assert.strictEqual(cr.ok, true, cr.error || '');
+  const id = cr.tournament.id;
+  RawT.approveTournament(id);
+  for (let i = 1; i <= 4; i++) RawT.joinTournament(id, { id: 'k' + i, name: '棋手' + i });
+
+  let t = RawT.getTournament(id);
+  assert.strictEqual(t.status, 'playing', '满员自动开赛');
+
+  // 1) 开赛不建房：首轮节点已配对(ready)但无 matchId
+  const readyNodes = t.bracket.filter((x) => x.ready && !x.winnerId);
+  assert.ok(readyNodes.length >= 1, '应有待约战场次');
+  assert.ok(readyNodes.every((x) => !x.matchId), '开赛后不得自动建房');
+
+  // 2) pendingMatchFor：选手看得到自己那场与指定对手
+  const node = readyNodes[0];
+  const p0 = node.players[0], p1 = node.players[1];
+  const pm = RawT.pendingMatchFor(p0);
+  assert.ok(pm, '应查到我可进行的赛事对局');
+  assert.strictEqual(pm.tournamentId, id);
+  assert.strictEqual(pm.nodeIndex, node.index);
+  assert.strictEqual(pm.opponentId, p1, '对手应是本场另一名选手');
+  assert.strictEqual(RawT.pendingMatchFor('outsider'), null, '无关选手查不到');
+
+  // 3) 非本场选手不能发起
+  assert.strictEqual(RawT.startMatch('outsider', { tournamentId: id, nodeIndex: node.index }).ok, false, '外人不能开局');
+
+  // 4) 本场选手发起 → 建房
+  const r = RawT.startMatch(p0, { tournamentId: id, nodeIndex: node.index });
+  assert.strictEqual(r.ok, true, r.error || '');
+  assert.ok(r.roomId, '应建出房间');
+  assert.strictEqual(r.opponentId, p1, '回报对手 id');
+  t = RawT.getTournament(id);
+  assert.strictEqual(t.bracket.find((x) => x.index === node.index).matchId, r.roomId, '节点应回填 matchId');
+
+  // 5) 同一场不能重复发起
+  assert.strictEqual(RawT.startMatch(p1, { tournamentId: id, nodeIndex: node.index }).ok, false, '已开始的对局不能重复发起');
+  // 6) 建房后 pendingMatchFor 不再指向该场
+  const pm2 = RawT.pendingMatchFor(p0);
+  assert.ok(!pm2 || pm2.nodeIndex !== node.index, '已开打的场次不再出现在待约战列表');
 });

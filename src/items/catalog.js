@@ -149,6 +149,9 @@ function normalizeItem(raw) {
   if (it.unlock && typeof it.unlock === 'object' && typeof it.unlock.value === 'number') {
     out.unlock = { type: String(it.unlock.type || 'level'), value: it.unlock.value };
   }
+  // ⚠️ 2026-10-11（问题3）：**限定装扮** —— 不进商城、不可购买，只能通过兑换码/活动发放获得。
+  // 拥有后与普通装扮一样可装备、可在「我的装扮」里看到（前端按 `limited` 从商城网格里过滤掉）。
+  if (it.limited === true) out.limited = true;
   // ⚠️ 2026-10-08：BGM 角色（menu/game/endgame）——每首 BGM 有唯一使用场景
   const BGM_ROLES = ['menu', 'game', 'endgame'];
   if (type === 'bgm' && typeof it.role === 'string' && BGM_ROLES.includes(it.role)) {

@@ -63,6 +63,17 @@ class Client {
       this.listeners.push({ type, fn, once: true });
     });
   }
+  /** 等待**调用之后**新到达的消息（不看历史队列——同一连接多轮发起时历史里有旧消息） */
+  waitNew(type, timeoutMs = 4000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
+        reject(new Error(`${this.name} 等待新的 ${type} 超时`));
+      }, timeoutMs);
+      const fn = (data) => { clearTimeout(timer); resolve(data); };
+      this.listeners.push({ type, fn, once: true });
+    });
+  }
   close() { if (this.ws) { try { this.ws.close(); } catch (_) {} } }
 }
 
@@ -75,6 +86,26 @@ function ok(cond, label) {
 async function section(name) { console.log(`\n=== ${name} ===`); }
 
 async function main() {
+  /**
+   * 约战制 helper（2026-10-11）：把某赛事当前所有「已配对待约战」的场次建房——
+   * 由各场的选手客户端发 `start_tournament_match`（等价于点「开始赛事」）。返回 [{node, roomId}]。
+   */
+  async function startPendingMatches(tid, players) {
+    const t = (await (await fetch('http://localhost:3999/api/tournaments')).json())
+      .tournaments.find((x) => x.id === tid);
+    const pending = (t && t.bracket || []).filter((n) => n.ready && !n.matchId && !n.winnerId);
+    const out = [];
+    for (const n of pending) {
+      const cli = players.find((p) => (n.players || []).includes(p.guestId));
+      if (!cli) continue;
+      const p = cli.waitNew('tournament_match_started').catch(() => null);
+      cli.send('start_tournament_match', { tournamentId: tid, nodeIndex: n.index });
+      const ev = await p;
+      out.push({ node: n, roomId: (ev && ev.roomId) || null });
+    }
+    await T(300);
+    return out;
+  }
   // ============ 准备：创建者注册正式账号（B2 要求）+ 管理员登录 ============
   // 用户名上限 16 字符：前缀 + 时间36进制6位 + 2位随机 ≈ 10 字符
   const suffix = `${Date.now().toString(36).slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
@@ -161,7 +192,13 @@ async function main() {
   t = data.tournaments.find((x) => x.id === tid);
   ok(t && t.status === 'playing', '满员后赛事进入 playing 状态');
   ok((t.players || []).length === 4, `名单冻结为 4 人（实际 ${(t.players || []).length}）`);
-  const firstRound = (t.bracket || []).filter((n) => n.pair && n.matchId);
+  // 约战制（2026-10-11）：开赛后不自动建房，由各场选手点「开始赛事」
+  ok((t.bracket || []).filter((n) => n.ready && !n.matchId).length === 2, '首轮为「待约战」而非自动建房');
+  const started1 = await startPendingMatches(tid, players);
+  ok(started1.length === 2, `选手发起后首轮建房 2 场（实际 ${started1.length}）`);
+  const t1b = (await (await fetch('http://localhost:3999/api/tournaments')).json())
+    .tournaments.find((x) => x.id === tid);
+  const firstRound = (t1b.bracket || []).filter((n) => n.pair && n.matchId);
   ok(firstRound.length === 2, `首轮创建 2 场对局（实际 ${firstRound.length}）`);
 
   // ============ 首轮对局：P1 vs 胜者流 ============
@@ -203,9 +240,14 @@ async function main() {
   await section('胜者晋级 / 决赛');
   let t2 = (await (await fetch('http://localhost:3999/api/tournaments')).json())
     .tournaments.find((x) => x.id === tid);
-  const round2 = (t2.bracket || []).filter((n) => n.pair && n.matchId);
   const winnerCount = (t2.bracket || []).filter((n) => n.winnerId).length;
   ok(winnerCount === 2, `首轮产生 2 名胜者（实际 ${winnerCount}）`);
+  // 约战制：决赛节点生成后同样是「待约战」，由两位胜者发起才建房
+  const startedFinal = await startPendingMatches(tid, players);
+  ok(startedFinal.length === 1, `决赛待约战建房 1 场（实际 ${startedFinal.length}）`);
+  t2 = (await (await fetch('http://localhost:3999/api/tournaments')).json())
+    .tournaments.find((x) => x.id === tid);
+  const round2 = (t2.bracket || []).filter((n) => n.pair && n.matchId);
   ok(round2.length === 1, `决赛对局已创建（实际 ${round2.length}）`);
 
   // ============ 决赛 ============

@@ -33,11 +33,15 @@ const sounds = [];
 // §U1：三种音**分别计数**——只数总数的话，"该响的响、不该响的不响"这类断言会被掩盖
 // （比如整分钟音误响、逐秒音漏响，总数仍可能对上）。
 const marks = { byoyomi: 0, byoyomiMark: 0, minute: 0 };
+let phase = 'menu';
 global.window = global;               // play-clock.js 里用 window.Sound / window.PlayClock
 global.Sound = {
   playByoyomi: () => { sounds.push(1); marks.byoyomi++; },
   playByoyomiMark: () => { marks.byoyomiMark++; },
   playMinuteWarning: () => { marks.minute++; },
+  // §U4（2026-10-11，问题4）：终盘 BGM 切换——包干制靠"最后一分钟"触发
+  setPhase: (p) => { phase = p; },
+  getPhase: () => phase,
 };
 
 require(path.resolve(__dirname, '..', 'public', 'js', 'play-clock.js'));
@@ -295,4 +299,31 @@ test('§U2 isDanger：仅当当前手番方读秒 ≤10 秒时为真', () => {
 
   setup({ vp: 'b', turn: 'b', status: 'FINISHED', inByoyomi: { b: true, w: false }, byoyomi: 60, curByoyomi: { b: 5000, w: 0 } });
   assert.strictEqual(Clock.isDanger(), false, '终局不显示');
+});
+
+// ======================================================================
+// §U4（2026-10-11，问题4）：**包干制**（无读秒）终盘 BGM
+// 读秒局靠"进入读秒"触发；包干局没有读秒节点，改为"任一方本时剩最后 1 分钟"触发。
+// ======================================================================
+test('包干制终盘曲：任一方本时剩最后 1 分钟 ⇒ 切终盘', () => {
+  phase = 'game';
+  setup({ vp: 'b', byoyomi: 0, b: 90 * 1000, w: 90 * 1000 }); // 双方剩 1:30
+  assert.strictEqual(phase, 'game', '还剩 1 分半：不切终盘');
+  Clock.advance(31 * 1000); // 先手推到 0:59
+  assert.strictEqual(phase, 'endgame', '剩最后 1 分钟：切终盘曲');
+});
+
+test('包干制终盘曲：对手先进入最后一分钟也切（不限于自己）', () => {
+  phase = 'game';
+  setup({ vp: 'b', byoyomi: 0, b: 120 * 1000, w: 120 * 1000 });
+  // 场上手番是 b；把 w 调进最后一分钟（通过 state 刷新触发）
+  const st = { status: 'PLAYING', turn: 'b', clock: { b: 120000, w: 59000 }, inByoyomi: { b: false, w: false }, byoyomi: 0, curByoyomi: { b: 0, w: 0 } };
+  Clock.syncFromState(st);
+  assert.strictEqual(phase, 'endgame', '对手剩最后 1 分钟也应切终盘曲');
+});
+
+test('读秒局：本时剩 1 分钟内、但尚未进读秒 ⇒ 不触发（仍按进入读秒）', () => {
+  phase = 'game';
+  setup({ vp: 'b', byoyomi: 30, b: 59 * 1000, w: 59 * 1000, inByoyomi: { b: false, w: false } });
+  assert.strictEqual(phase, 'game', '读秒局未读秒：不因本时剩 1 分钟而切');
 });

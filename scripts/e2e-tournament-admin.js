@@ -61,6 +61,17 @@ class Client {
       this.listeners.push({ type, fn, once: true });
     });
   }
+  /** 等待**调用之后**新到达的消息（不看历史队列——同一连接多轮发起时历史里有旧消息） */
+  waitNew(type, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
+        reject(new Error(`${this.name} 等待新的 ${type} 超时`));
+      }, timeoutMs);
+      const fn = (data) => { clearTimeout(timer); resolve(data); };
+      this.listeners.push({ type, fn, once: true });
+    });
+  }
   close() { if (this.ws) { try { this.ws.close(); } catch (_) {} } }
 }
 
@@ -204,10 +215,25 @@ async function main() {
   let listC = await publicList();
   const tCpub = listC.find((t) => t.id === tC.id);
   ok(tCpub && tCpub.status === 'playing', '满员自动开赛 → playing');
-  const matchNode = (tCpub.bracket || []).find((n) => n.matchId);
-  ok(!!matchNode, '首轮对局已创建');
+
+  // 约战制（2026-10-11）：开赛后**不自动建房**，由各场选手发起「开始赛事」
+  const allClients = [creatorClient, ...guests];
+  const pendingNodes = (tCpub.bracket || []).filter((n) => n.ready && !n.matchId && !n.winnerId);
+  ok(pendingNodes.length >= 1, `开赛后为「待约战」而非自动建房（${pendingNodes.length} 场）`);
+  for (const n of pendingNodes) {
+    const cli = allClients.find((c) => (n.players || []).includes(c.identity));
+    if (!cli) continue;
+    const p = cli.waitNew('tournament_match_started').catch(() => null);
+    cli.send('start_tournament_match', { tournamentId: tC.id, nodeIndex: n.index });
+    await p;
+  }
+  await T(300);
+  listC = await publicList();
+  const tCafter = listC.find((t) => t.id === tC.id);
+  const matchNode = (tCafter.bracket || []).find((n) => n.matchId);
+  ok(!!matchNode, '首轮对局（选手发起后）已创建');
   // 创建者进入自己的对局房间（成为房间成员，才能收到 room_closed）
-  const myMatch = (tCpub.bracket || []).find((n) => n.matchId && (n.players || []).includes(creator.account.id));
+  const myMatch = (tCafter.bracket || []).find((n) => n.matchId && (n.players || []).includes(creator.account.id));
   if (myMatch) {
     creatorClient.send('join_tournament_match', { roomId: myMatch.matchId });
     await creatorClient.wait('state');

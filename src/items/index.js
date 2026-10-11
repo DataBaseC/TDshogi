@@ -224,6 +224,8 @@ function buy(accountId, itemId) {
   const id = accountId ? String(accountId) : '';
   const item = getItem(itemId);
   if (!item) return { ok: false, error: '道具不存在', code: 'NO_ITEM' };
+  // ⚠️ 2026-10-11（问题3）：限定装扮不可购买（只能发放/兑换获得）
+  if (item.limited) return { ok: false, error: '限定装扮无法购买', code: 'NOT_FOR_SALE' };
   // ⚠️ 2026-10-05 修复：先校验解锁门槛（等级/对局数），不满足直接拒绝
   const locked = checkUnlock(id, item);
   if (locked) return locked;
@@ -381,8 +383,11 @@ module.exports = {
   // 落盘失败（PERSIST_FAILED）原样冒泡；成功时定义字段仍在顶层，兼容 admin/CLI 读 def.itemId/coin/maxUses。
   defineCode: (code, def) => store.defineCode(code, def),
   // ⚠️ 2026-10-07 商品管理：目录 CRUD / 素材上传 / BGM 三轨
-  upsertItem: (raw) => catalogMod.upsertItem(raw),
-  deleteItem: (id) => catalogMod.deleteItem(id),
+  // ⚠️ 2026-10-11 修复：CRUD 后必须**重建 BY_ID 索引**（reindex）。catalogMod 只刷了自己的
+  // 目录缓存，若不重建本模块的 id 索引，新建的商品会「写进去了但查不到」（getItem 返回 null
+  // → 购买/装备报「道具不存在」）。删同理。
+  upsertItem: (raw) => { const r = catalogMod.upsertItem(raw); if (r && r.ok) reindex(); return r; },
+  deleteItem: (id) => { const r = catalogMod.deleteItem(id); if (r && r.ok) reindex(); return r; },
   assets,
   bgmRoles,
   getBgmRoles: () => bgmRoles.getRoles(),
