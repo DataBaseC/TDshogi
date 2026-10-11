@@ -70,6 +70,17 @@ class Client {
       this.listeners.push({ type, fn, once: true });
     });
   }
+  /** 等待**调用之后**新到达的某类型消息（不看历史队列——rematch 等场景历史里有旧 state） */
+  waitNew(type, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
+        reject(new Error(`${this.name} 等待新的 ${type} 超时`));
+      }, timeoutMs);
+      const fn = (data) => { clearTimeout(timer); resolve(data); };
+      this.listeners.push({ type, fn, once: true });
+    });
+  }
   close() {
     if (this.ws) { try { this.ws.close(); } catch (_) {} }
   }
@@ -116,6 +127,9 @@ async function main() {
     if (!stA || !stB) await T(100);
   }
   ok(stA && stB && stA.status === 'PLAYING' && stB.status === 'PLAYING', '双方状态 PLAYING');
+  // ⚠️ 2026-10-10：后续断言都要解引用 stA —— 等 state 超时（stA 为 null）时必须停在这里，
+  // 否则下一行 `stA.turn` 直接把脚本炸成「测试异常」，把真正的断言失败盖掉。
+  if (!stA || !stB) throw new Error('等待开局 state 超时（latestState 为 null）');
   ok(stA.turn === 'b' && stA.board && stA.board.length === 9, '初始手番 b，棋盘 9 行');
   ok(stA.players.b.name && stA.players.w.name, 'state 含双方玩家名');
   ok(!!stA.legalMoves && stA.legalMoves.length > 0, '走子方收到 legalMoves');
@@ -253,8 +267,9 @@ async function main() {
   ok(!!remReq.requesterName, '对手收到「请求再来一局」通知（rematch_requested）');
   B.send('rematch');
   await A.wait('game_start'); await B.wait('game_start');
-  await T(300);
-  const remA = A.latestState;
+  // ⚠️ 2026-10-10 修稳：同「快速匹配」处——显式等 state，不再赌 300ms
+  const remA = await A.waitNew('state').catch(() => null) || A.latestState;
+  if (!remA) throw new Error('rematch 后等待 state 超时');
   ok(remA.status === 'PLAYING' && remA.moves.length === 0, 'rematch 后新对局开局');
   ok(remA.turn === 'b', '新对局先手开始');
   // F2：rematch 已先后手互换 → A 的当前座位更新为换先后的座位
@@ -274,7 +289,7 @@ async function main() {
   const helloA2 = await A2.wait('hello');
   ok(helloA2.reconnect && helloA2.reconnect.ok, '重连检测到未结束对局');
   A2.send('request_state');  // 真实前端 play.js 连接后即发 request_state
-  await A2.wait('state');
+  await A2.waitNew('state').catch(() => A2.wait('state')).catch(() => null);
   const reState = A2.latestState;
   ok(reState.status === 'PLAYING' && reState.moves.length >= 1, '重连拿到当前对局状态');
   ok(reState.seat === seatACur, '重连恢复原座位（F2 换先后为当前座位）');
@@ -299,11 +314,12 @@ async function main() {
   D.send('quick_match'); E.send('quick_match');
   await D.wait('matched'); await E.wait('matched');
   await D.wait('game_start'); await E.wait('game_start');
-  await T(300);
-  const stD = D.latestState;
-  const stE = E.latestState;
-  ok(stD.status === 'PLAYING' && stE.status === 'PLAYING', '快速匹配对局开始');
-  ok((stD.seat === 'b' && stE.seat === 'w') || (stD.seat === 'w' && stE.seat === 'b'), '双方座位互斥');
+  // ⚠️ 2026-10-10 修稳：原来只 `await T(300)` 就读 latestState —— 机器一慢 state 还没到，
+  // `stD.status` 直接 null 解引用把整个脚本炸成「测试异常」。显式等 state + 带守卫断言。
+  const stD = await D.waitNew('state').catch(() => null) || D.latestState;
+  const stE = await E.waitNew('state').catch(() => null) || E.latestState;
+  ok(!!stD && !!stE && stD.status === 'PLAYING' && stE.status === 'PLAYING', '快速匹配对局开始');
+  ok(stD && stE && ((stD.seat === 'b' && stE.seat === 'w') || (stD.seat === 'w' && stE.seat === 'b')), '双方座位互斥');
 
   // ============ 场景 7b：对局结束后不退出再次匹配（自动解绑已结束房间） ============
   await section('对局结束后不退出再次匹配');

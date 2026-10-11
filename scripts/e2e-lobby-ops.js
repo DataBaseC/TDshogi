@@ -83,7 +83,14 @@ async function main() {
   B.send('join_room', { code: room.code });
   await A.wait('game_start');
   await B.wait('game_start');
-  await T(300);
+  // ⚠️ 2026-10-10 修稳：原来只 `await T(300)` 就断言 A.state.seat —— 300ms 是赌时序，
+  // 机器一慢（沙箱/CI 并行负载）state 还没推到就误报「座位 undefined」。
+  // 改为显式等 state 到达，不再与机器速度对赌。
+  await Promise.all([
+    A.wait('state').catch(() => null),
+    B.wait('state').catch(() => null),
+    T(300),
+  ]);
   ok(A.state && A.state.seat, `已进入对局（A 座位 ${A.state && A.state.seat}）`);
 
   // ==================================================================

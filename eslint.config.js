@@ -75,6 +75,39 @@ const BROWSER_GLOBALS = {
   getComputedStyle: 'readonly',
   matchMedia: 'readonly',
   structuredClone: 'readonly',
+  // 2026-10-10 补齐：这几个浏览器全局此前漏配，`npm run lint` 会对 router/review 等
+  // 正常代码报 no-undef（26 个假阳性），掩盖真问题。常见浏览器全局一次配全。
+  URL: 'readonly',
+  history: 'readonly',
+  FileReader: 'readonly',
+  XMLHttpRequest: 'readonly',
+  DOMParser: 'readonly',
+  crypto: 'readonly',
+  atob: 'readonly',
+  btoa: 'readonly',
+  screen: 'readonly',
+  innerWidth: 'readonly',
+  innerHeight: 'readonly',
+  devicePixelRatio: 'readonly',
+  getSelection: 'readonly',
+  scrollX: 'readonly',
+  scrollY: 'readonly',
+  pageXOffset: 'readonly',
+  pageYOffset: 'readonly',
+  Element: 'readonly',
+  EventTarget: 'readonly',
+  PointerEvent: 'readonly',
+  MouseEvent: 'readonly',
+  KeyboardEvent: 'readonly',
+  TouchEvent: 'readonly',
+  DragEvent: 'readonly',
+  File: 'readonly',
+  FileList: 'readonly',
+  AudioContext: 'readonly',
+  webkitAudioContext: 'readonly',
+  requestIdleCallback: 'readonly',
+  cancelIdleCallback: 'readonly',
+  queueMicrotask: 'readonly',
 };
 
 const BASE_RULES = {
@@ -95,7 +128,10 @@ const BASE_RULES = {
 module.exports = [
   {
     // `github-upload/**` 是 pack 产物（§6.1 起含拼接生成的 *.bundle.js），属生成物，不参与 lint。
-    ignores: ['node_modules/**', 'data/**', 'dist/**', 'generated-images/**', 'github-upload/**'],
+    // ⚠️ 2026-10-10 补：`public/js/app.bundle.js` 同为 pack 生成物（源文件的拼接），
+    // 不忽略就会把同一份代码 lint 两遍——源文件报一次、bundle 里再报一次，全是重复噪音。
+    ignores: ['node_modules/**', 'data/**', 'dist/**', 'generated-images/**', 'github-upload/**',
+      'public/js/*.bundle.js'],
   },
   {
     // 服务端 + 脚本 + 测试
