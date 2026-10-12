@@ -391,11 +391,13 @@ module.exports = function registerAdmin(app) {
   });
 
   // 发道具（不校验价格；只发给注册账号，游客拒绝）
+  // ⚠️ 2026-10-12：`actor` 带 adminId 随流水落盘 —— 流水要能回答"是谁发的"，否则对账/追责缺依据
   app.post('/api/admin/items/account/:id/grant', adminWrite((req, body) => {
     const t = resolveItemTargetDetail(req.params.id);
     if (!t.ok) return { ok: false, error: t.error, code: t.code, action: 'item-grant' };
     const itemId = (body && body.itemId) || '';
-    const r = itemsMod.grant(t.id, itemId, 'admin');
+    const adminId = require('../../admin').tokenIdentity(req.adminToken);
+    const r = itemsMod.grant(t.id, itemId, 'admin', { adminId });
     return {
       ...r, action: 'item-grant',
       toName: targetLabel(t.id),
@@ -409,7 +411,8 @@ module.exports = function registerAdmin(app) {
     const t = resolveItemTargetDetail(req.params.id);
     if (!t.ok) return { ok: false, error: t.error, code: t.code, action: 'item-coin' };
     const amount = Number(body && body.amount);
-    const r = itemsMod.addCoin(t.id, amount);
+    const adminId = require('../../admin').tokenIdentity(req.adminToken);
+    const r = itemsMod.addCoin(t.id, amount, { adminId });
     return {
       ...r, action: 'item-coin',
       toName: targetLabel(t.id),

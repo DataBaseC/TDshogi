@@ -30,7 +30,7 @@ const ITEM_TYPES = ['avatar', 'bgm', 'sprite', 'pieces', 'board', 'byoyomi'];
 const BGM_SLOTS = ['bgm-menu', 'bgm-game', 'bgm-endgame'];
 const RARITIES = ['N', 'R', 'SR'];
 /** synth = 程序合成音（无素材文件，如默认读秒「嗒」） */
-const KINDS = ['glyph', 'image', 'audio', 'synth'];
+const KINDS = ['glyph', 'image', 'audio', 'synth', 'audiopack']; // audiopack=读秒语音包 manifest（2026-10-12）
 /** BGM 使用场景（role）：每首 BGM 有唯一场景，装备时自动落到对应槽位（2026-10-08） */
 const BGM_ROLES = ['menu', 'game', 'endgame'];
 const CATALOG_FILE = 'items-catalog.json';
@@ -133,10 +133,13 @@ function normalizeItem(raw) {
   if (!kind) {
     kind = asset.value.startsWith('/') ? 'image' : 'glyph';
   }
+  // 语音包（2026-10-12）：`byoyomi` 槽 + manifest（.json）⇒ audiopack；显式写 kind 也算。
+  if (type === 'byoyomi' && /\.json(\?|$)/i.test(asset.value)) kind = 'audiopack';
   if (!KINDS.includes(kind)) return null;
-  if ((kind === 'audio' || kind === 'synth') && type !== 'bgm' && type !== 'byoyomi') return null;
+  const isVoice = kind === 'audio' || kind === 'synth' || kind === 'audiopack';
+  if (isVoice && type !== 'bgm' && type !== 'byoyomi') return null;
   if (kind !== 'audio' && kind !== 'synth' && type === 'bgm') return null;
-  if (type === 'byoyomi' && kind !== 'audio' && kind !== 'synth') return null;
+  if (type === 'byoyomi' && !isVoice) return null;
   const price = it.price === null || it.price === undefined ? null : Number(it.price);
   if (price !== null && (!Number.isFinite(price) || price < 0)) return null;
   const out = {

@@ -87,7 +87,8 @@ switch (cmd) {
     const [raw, itemId] = rest;
     if (!raw || !itemId) usage();
     const accountId = resolveAccount(raw);
-    const r = items.grant(accountId, itemId, 'admin');
+    // 操作者随流水落盘（`--by <name>` 指定，便于后台对账知道是谁发的）
+    const r = items.grant(accountId, itemId, 'admin', { adminId: flag('--by', 'cli') });
     console.log(r.ok
       ? `已发放 ${itemId} → ${accountId}（${targets.targetLabel(accountId)}，现拥有 ${r.owned.length} 件）`
       : `失败：${r.error}`);
@@ -100,7 +101,7 @@ switch (cmd) {
     const n = Number(nRaw);
     if (!raw || !Number.isFinite(n)) usage();
     const accountId = resolveAccount(raw);
-    const r = items.addCoin(accountId, n);
+    const r = items.addCoin(accountId, n, { adminId: flag('--by', 'cli') });
     console.log(r.ok ? `${accountId}（${targets.targetLabel(accountId)}）货币现为 ${r.wallet.coin}` : `失败：${r.error}`);
     process.exit(r.ok ? 0 : 1);
     break;

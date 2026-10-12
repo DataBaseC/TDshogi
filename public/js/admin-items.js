@@ -77,6 +77,7 @@
         fillItemSelect();
         loadAssets();
         loadBgmRoles();
+        loadItemsLogs();   // 2026-10-12：发放记录（流水）随 tab 一起拉
       } catch (e) {
         if (!alive()) return;
         if (box) box.innerHTML = empty('加载道具目录失败');
@@ -367,9 +368,46 @@
       } catch (e) { onErr(e); }
     }
 
+    // ---------------- 发放记录（流水）----------------
+
+    /**
+     * 拉取发放流水并渲染 —— 2026-10-12 补齐（此前只有 API 没有界面，等于看不到）。
+     * 每条含：时间 / 类型 / 内容 / 收件人 / **操作人**（操作人缺失时流水无法对账）。
+     */
+    async function loadItemsLogs() {
+      const box = $('itemsLogList');
+      if (!box) return;
+      box.innerHTML = loading('正在加载发放记录…');
+      try {
+        const d = await apiGet('/api/admin/items/logs?n=50');
+        if (!alive()) return;
+        const logs = d.logs || [];
+        if (!logs.length) { box.innerHTML = empty('暂无发放记录'); return; }
+        const KIND = { item: '发放道具', coin: '加减货币', buy: '玩家购买', redeem: '兑换码' };
+        box.innerHTML = logs.map((l) => {
+          const when = new Date(l.at).toLocaleString();
+          const what = l.kind === 'coin'
+            ? `💰 ${Number(l.coinDelta) > 0 ? '+' : ''}${l.coinDelta} 币`
+            : `🎁 ${esc(l.itemId || l.kind)}`;
+          return '<div class="record-item" style="font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+            + `<span style="color:var(--text-dim);min-width:132px;">${esc(when)}</span>`
+            + `<span style="min-width:64px;">${esc(KIND[l.kind] || l.kind)}</span>`
+            + `<span style="flex:1;min-width:120px;">${what}</span>`
+            + `<span style="color:var(--text-dim);min-width:150px;">→ ${esc(l.accountId || '—')}</span>`
+            + `<span style="color:var(--gold-light);min-width:96px;">操作人 ${esc(l.adminId || '—')}</span>`
+            + '</div>';
+        }).join('');
+      } catch (e) {
+        if (!alive()) return;
+        box.innerHTML = empty('发放记录加载失败');
+        onErr(e);
+      }
+    }
+
     // ---------------- 事件绑定（本模块自己绑，句柄记 teardown 由 unmount 全清）----------------
     const bind = (id, fn) => { on($(id), 'click', fn); };
     bind('btnItemsRefresh', () => loadItemsAdmin());
+    bind('btnItemsLogs', () => loadItemsLogs());
     bind('btnItemLookup', () => lookupAccount());
     bind('btnItemGrant', () => doGrant());
     bind('btnItemCoin', () => doCoin());

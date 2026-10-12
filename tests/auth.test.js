@@ -52,7 +52,9 @@ test('setAvatar：extraAllowed 放行道具字形', () => {
 
 test('identify 不会重置「已拥有的道具头像」（回归：道具头像要留得住）', () => {
   const id = auth.genId();
-  items.grant(id, 'avatar-unicorn'); // 目录里的 🦄 头像道具
+  // ⚠️ 2026-10-12：`items.grant` 现在内联校验收件人（只发注册账号），本用例是**游客**会话，
+  //    且要测的是「头像持久化」而非「发放校验」→ 直接铺库存数据，绕开业务层。
+  require('../src/items/store').addItem(id, 'avatar-unicorn'); // 目录里的 🦄 头像道具
   assert.strictEqual(auth.setAvatar(id, '🦄', null, items.avatarOptionsFor(id)).ok, true);
   const s = auth.identify(id); // 下一次连接（此前这里会把头像打回派生字形）
   assert.strictEqual(s.avatar, '🦄');

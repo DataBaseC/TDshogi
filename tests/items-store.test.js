@@ -145,16 +145,22 @@ test('失败路径：equip 落盘失败 ⇒ PERSIST_FAILED 且装备回滚', () 
 });
 
 test('失败路径：grant / addCoin 落盘失败同样冒泡 PERSIST_FAILED', () => {
-  const { store, items, stub } = load({ 'items.json': ITEMS({ wallets: { u1: { coin: 100 } } }) });
+  // ⚠️ 2026-10-12：grant/addCoin 增加**内联收件人校验**（只发注册账号，禁游客/禁孤儿键）
+  //    → 收件人必须是真实账号，故这里先铺一个账号再测落盘失败的回滚。
+  const ACCT = 'a1b2c3d4e5f60718293a4b5c';
+  const { store, items, stub } = load({
+    'items.json': ITEMS({ wallets: { [ACCT]: { coin: 100 } } }),
+    'accounts.json': { [ACCT]: { id: ACCT, username: 'tester', createdAt: 1 } },
+  });
   stub._failWrites = true;
-  const g = items.grant('u1', 'bgm-shen');
+  const g = items.grant(ACCT, 'bgm-shen');
   assert.strictEqual(g.ok, false);
   assert.strictEqual(g.code, 'PERSIST_FAILED');
-  assert.deepStrictEqual(store.owned('u1'), []);
-  const a = items.addCoin('u1', 100);
+  assert.deepStrictEqual(store.owned(ACCT), []);
+  const a = items.addCoin(ACCT, 100);
   assert.strictEqual(a.ok, false);
   assert.strictEqual(a.code, 'PERSIST_FAILED');
-  assert.strictEqual(store.wallet('u1').coin, 100);
+  assert.strictEqual(store.wallet(ACCT).coin, 100);
 });
 
 test('defineCode：成功字段仍在顶层（兼容 admin/CLI 读 def.itemId/coin/maxUses）；失败冒泡 PERSIST_FAILED', () => {

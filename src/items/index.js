@@ -323,20 +323,57 @@ function redeem(accountId, code) {
 
 // ---------------- 发放（管理员/活动用） ----------------
 
-/** 直接发放道具（不校验价格）；⚠️ 2026-10-04：落盘失败冒泡 PERSIST_FAILED */
-function grant(accountId, itemId, source) {
+/**
+ * ⚠️ 2026-10-12 内联护栏：发放类写操作的**收件人必须是注册账号**。
+ *
+ * 此前收件人校验只在 HTTP/CLI 入口（`items/targets.js`）做一层，`items.grant` 自身不设防 ——
+ * 于是任何新调用者（脚本、二期功能）都可能再造出「孤儿键 / 游客键」，即"发放不出去"的根因。
+ * 现在把护栏下沉到业务层，**结构上**杜绝：
+ *   - 孤儿键：id 对不上任何账号 → 拒绝（绝不写进无人认领的键）；
+ *   - 游客键：游客没有装扮背包入口，且升级为账号时不迁 items（`accounts.migrateGuestData`
+ *     只迁 评级/棋谱/会话）→ 发给游客等于发了就丢，故一律拒绝。
+ *
+ * @returns {null|{ok:false, error:string, code:string}} 合法返回 null
+ */
+function assertRecipient(accountId) {
   const id = accountId ? String(accountId) : '';
+  if (!id) return { ok: false, error: '收件人不能为空', code: 'NO_TARGET' };
+  let acct = null;
+  try { acct = require('../accounts').getAccount(id); } catch (_) { acct = null; }
+  if (acct) return null;
+  let isGuest = false;
+  try { isGuest = !!(require('../auth').getSessionRaw(id)); } catch (_) { isGuest = false; }
+  return isGuest
+    ? { ok: false, error: '对方是游客，道具只发给注册账号（游客升级为账号后才能持有装扮）', code: 'GUEST' }
+    : { ok: false, error: '账号不存在，拒绝发放（避免写进无人认领的键）', code: 'NOT_FOUND' };
+}
+
+/**
+ * 直接发放道具（不校验价格）
+ * ⚠️ 2026-10-04：落盘失败冒泡 PERSIST_FAILED
+ * ⚠️ 2026-10-12：内联校验收件人（见 assertRecipient）；`actor` 随流水落盘供对账
+ */
+function grant(accountId, itemId, source, actor) {
+  const id = accountId ? String(accountId) : '';
+  const bad = assertRecipient(id);
+  if (bad) return bad;
   if (!getItem(itemId)) return { ok: false, error: '道具不存在', code: 'NO_ITEM' };
-  const r = store.addItem(id, itemId, source || 'grant');
+  const r = store.addItem(id, itemId, source || 'grant', actor);
   if (!r.ok) return { ok: false, error: r.error, code: r.code };
   return { ok: true, owned: r.owned };
 }
 
-/** 直接加/减币（管理员/活动用），n 必须为整数；⚠️ 2026-10-04：落盘失败冒泡 PERSIST_FAILED */
-function addCoin(accountId, n) {
+/**
+ * 直接加/减币（管理员/活动用），n 必须为整数
+ * ⚠️ 2026-10-04：落盘失败冒泡 PERSIST_FAILED
+ * ⚠️ 2026-10-12：内联校验收件人；`actor` 随流水落盘供对账
+ */
+function addCoin(accountId, n, actor) {
   const id = accountId ? String(accountId) : '';
+  const bad = assertRecipient(id);
+  if (bad) return bad;
   if (!Number.isInteger(n) || n === 0) return { ok: false, error: '数量必须为非零整数', code: 'BAD_AMOUNT' };
-  const r = store.addCoin(id, n);
+  const r = store.addCoin(id, n, actor);
   if (!r.ok) return { ok: false, error: r.error, code: r.code };
   return { ok: true, wallet: { coin: r.coin } };
 }
