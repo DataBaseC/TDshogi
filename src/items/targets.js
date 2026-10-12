@@ -51,25 +51,57 @@ function resolveAdminUserId(raw) {
 }
 
 /**
- * 道具/发放类写操作的**收件人终检**：返回的 id 一定对应真实会话或账号。
+ * 道具/发放类写操作的**收件人终检**（详细版）：返回 `{ok, id}` 或 `{ok:false, code, error}`。
+ *
+ * ⚠️ 2026-10-12 产品决策：**禁止发给游客**。理由——
+ *  ① 道具/装扮的持有主体是「登录账号」（`/api/items` 走 `resolveAccount` → `verifyToken`），
+ *     游客根本没有装扮背包入口，发了也看不到；
+ *  ② 游客升级为账号时 `migrateGuestData` 只迁 评级 / 棋谱 / 会话，**不迁 items** ——
+ *     发给游客的道具在注册那一刻就等于永久丢失。
+ * 所以收件人必须是**注册账号**：`accounts.getAccount(id)` 命中才放行。
  *
  * 两条通道：
- *  ① id / 令牌 → 规范化后必须命中真实会话或账号（游客 id 即会话 id）；
- *  ② 否则按**用户名**精确匹配（`accounts.getAccountByName`）→ 账号 id。
- * 都落空才拒绝（返回 null）——**绝不静默写孤儿键**。
+ *  ① id / 令牌 → 规范化后必须命中**注册账号**（游客 id 一律拒绝，返回 `code:'GUEST'`）；
+ *  ② 否则按**登录用户名**精确匹配（`accounts.getAccountByName`）→ 账号 id。
+ * 都落空才拒绝——**绝不静默写孤儿键**，也绝不写进游客键。
  *
- * @param {string} raw 路径里的 :id（账号 id / 令牌 / 用户名）
- * @returns {string|null}
+ * @param {string} raw 路径里的 :id（账号 id / 令牌 / 登录用户名）
+ * @returns {{ok:true, id:string}|{ok:false, code:string, error:string}}
  */
-function resolveItemTarget(raw) {
+function resolveItemTargetDetail(raw) {
   const id = resolveAdminUserId(raw);
-  if (id && (auth.getSessionRaw(id) || accounts.getAccount(id))) return id;
+  if (id && accounts.getAccount(id)) return { ok: true, id };
+  // ② 登录用户名通道（同样必须是注册账号）
   const byName = accounts.getAccountByName && accounts.getAccountByName(raw);
   if (byName && byName.id) {
     const id2 = resolveAdminUserId(byName.id);
-    if (id2 && (auth.getSessionRaw(id2) || accounts.getAccount(id2))) return id2;
+    if (id2 && accounts.getAccount(id2)) return { ok: true, id: id2 };
   }
-  return null;
+  // 落空：区分「游客」与「根本不存在」，给可操作的提示（否则管理员只会以为系统坏了）
+  if (id && auth.getSessionRaw(id)) {
+    return {
+      ok: false,
+      code: 'GUEST',
+      error: '对方是游客，道具只发给注册账号（游客注册/升级为账号后才能持有装扮）',
+    };
+  }
+  return {
+    ok: false,
+    code: 'NOT_FOUND',
+    error: '账号不存在（支持账号 id / 令牌 / 登录用户名；注意昵称不作为查找依据）',
+  };
+}
+
+/**
+ * 道具/发放类写操作的**收件人终检**：只允许**注册账号**，返回账号 id 或 null。
+ * 详细错误请用 `resolveItemTargetDetail`（区分「游客」与「不存在」）。
+ *
+ * @param {string} raw 路径里的 :id（账号 id / 令牌 / 登录用户名）
+ * @returns {string|null}
+ */
+function resolveItemTarget(raw) {
+  const r = resolveItemTargetDetail(raw);
+  return r.ok ? r.id : null;
 }
 
 /** 收件人展示名（发放成功 toast 用；查不到则回落 id 前 8 位） */
@@ -82,5 +114,6 @@ module.exports = {
   resolvePlayerLoose,
   resolveAdminUserId,
   resolveItemTarget,
+  resolveItemTargetDetail,
   targetLabel,
 };

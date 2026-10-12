@@ -42,7 +42,8 @@ const { protocol, resolvePlayer } = require('../context');
  * @returns {string|null} 规范化的会话 id，无法解析返回 null
  */
 // ⚠️ 2026-10-12：收件人解析/终检抽到 `items/targets.js`（可测 + 单一实现；行为不变）
-const { resolveAdminUserId, resolveItemTarget, targetLabel } = require('../../items/targets');
+// ⚠️ 同日产品决策：道具**只发给注册账号**，游客一律拒绝（`resolveItemTargetDetail` 区分游客/不存在）
+const { resolveAdminUserId, resolveItemTargetDetail, targetLabel } = require('../../items/targets');
 
 module.exports = function registerAdmin(app) {
   // ---------- 全量数据（管理后台表格数据源） ----------
@@ -371,47 +372,49 @@ module.exports = function registerAdmin(app) {
     res.json({ catalog: itemsMod.catalog(), slots: itemsMod.SLOTS });
   });
 
-  // 某账号的钱包 / 拥有 / 装备（`:id` 走 resolveItemTarget；账号 id 即道具存储键）
-  // ⚠️ 2026-10-12：道具三端点统一换 `resolveItemTarget` —— **收件人必须存在**，
-  // 并支持按**用户名**定位（不必再手抄 24 hex id）；返回 `toName` 供界面显示解析结果。
+  // 某账号的钱包 / 拥有 / 装备（`:id` 走 resolveItemTargetDetail；账号 id 即道具存储键）
+  // ⚠️ 2026-10-12：道具三端点统一换 `resolveItemTargetDetail` —— **收件人必须是注册账号**，
+  // 并支持按**登录用户名**定位（不必再手抄 24 hex id）；返回 `toName` 供界面显示解析结果。
+  // ⚠️ 同日产品决策：**禁止发给游客** —— 游客没有装扮背包入口，且升级为账号时不迁 items
+  //（`accounts.migrateGuestData` 只迁 评级/棋谱/会话），发给游客等于发了就丢。
   app.get('/api/admin/items/account/:id', adminOnly, (req, res) => {
-    const uid = resolveItemTarget(req.params.id);
-    if (!uid) return res.status(404).json({ error: '账号不存在（支持账号 id / 令牌 / 用户名）' });
-    const snap = itemsMod.snapshot(uid);
+    const t = resolveItemTargetDetail(req.params.id);
+    if (!t.ok) return res.status(t.code === 'GUEST' ? 400 : 404).json({ error: t.error, code: t.code });
+    const snap = itemsMod.snapshot(t.id);
     res.json({
-      accountId: uid,
-      toName: targetLabel(uid),
+      accountId: t.id,
+      toName: targetLabel(t.id),
       wallet: snap.wallet,
       owned: snap.owned,
       equipped: snap.equipped,
     });
   });
 
-  // 发道具（不校验价格）
+  // 发道具（不校验价格；只发给注册账号，游客拒绝）
   app.post('/api/admin/items/account/:id/grant', adminWrite((req, body) => {
-    const uid = resolveItemTarget(req.params.id);
-    if (!uid) return { ok: false, error: '账号不存在（支持账号 id / 令牌 / 用户名）', action: 'item-grant' };
+    const t = resolveItemTargetDetail(req.params.id);
+    if (!t.ok) return { ok: false, error: t.error, code: t.code, action: 'item-grant' };
     const itemId = (body && body.itemId) || '';
-    const r = itemsMod.grant(uid, itemId, 'admin');
+    const r = itemsMod.grant(t.id, itemId, 'admin');
     return {
       ...r, action: 'item-grant',
-      toName: targetLabel(uid),
-      audit: { accountId: uid, itemId },
-      wallet: itemsMod.snapshot(uid).wallet,
+      toName: targetLabel(t.id),
+      audit: { accountId: t.id, itemId },
+      wallet: itemsMod.snapshot(t.id).wallet,
     };
   }));
 
-  // 加/减货币（amount 为整数，可为负）
+  // 加/减货币（amount 为整数，可为负；只发给注册账号，游客拒绝）
   app.post('/api/admin/items/account/:id/coin', adminWrite((req, body) => {
-    const uid = resolveItemTarget(req.params.id);
-    if (!uid) return { ok: false, error: '账号不存在（支持账号 id / 令牌 / 用户名）', action: 'item-coin' };
+    const t = resolveItemTargetDetail(req.params.id);
+    if (!t.ok) return { ok: false, error: t.error, code: t.code, action: 'item-coin' };
     const amount = Number(body && body.amount);
-    const r = itemsMod.addCoin(uid, amount);
+    const r = itemsMod.addCoin(t.id, amount);
     return {
       ...r, action: 'item-coin',
-      toName: targetLabel(uid),
-      audit: { accountId: uid, amount },
-      owned: itemsMod.snapshot(uid).owned,
+      toName: targetLabel(t.id),
+      audit: { accountId: t.id, amount },
+      owned: itemsMod.snapshot(t.id).owned,
     };
   }));
 

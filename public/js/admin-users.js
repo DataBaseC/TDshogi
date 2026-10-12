@@ -167,7 +167,7 @@
           : `<button class="btn btn-ghost btn-sm" data-act="user-ban" data-id="${esc(id)}" data-name="${esc(data.name)}">⛔ 封禁</button>`}
         ${data.isAccount ? `<button class="btn btn-ghost btn-sm" data-act="user-delete" data-id="${esc(id)}" data-name="${esc(data.name)}" style="color:var(--red-light);">🗑 删除账号</button>` : ''}
       </div>
-      <div style="font-size:14px;font-weight:700;margin:14px 0 6px;">🕘 🎁 发放道具 / 货币 <span style="font-size:11px;color:var(--text-dim);font-weight:400;">（直接发给该用户，不必再手抄 id）</span></div>
+      ${data.isAccount ? `<div style="font-size:14px;font-weight:700;margin:14px 0 6px;">🕘 🎁 发放道具 / 货币 <span style="font-size:11px;color:var(--text-dim);font-weight:400;">（直接发给该用户，不必再手抄 id）</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:12px;">
         <div><div style="font-size:11px;color:var(--text-dim);">道具</div>
           <select class="input" id="userGrantItem" style="width:200px;"><option value="">（选择道具）</option></select></div>
@@ -175,7 +175,7 @@
         <div><div style="font-size:11px;color:var(--text-dim);">货币（正数加 / 负数扣）</div>
           <input class="input" id="userGrantCoin" type="number" step="1" style="width:120px;" placeholder="如 100"></div>
         <button class="btn btn-primary btn-sm" data-act="user-grant-coin" data-id="${esc(id)}" data-name="${esc(data.name)}">💰 发放货币</button>
-      </div>
+      </div>` : `<div style="font-size:12px;color:var(--text-dim);margin:14px 0 12px;padding:8px 12px;border:1px dashed var(--border);border-radius:8px;">👤 该用户是游客，不能持有道具 / 装扮（注册为账号后才可发放）。</div>`}
       <div style="font-size:14px;font-weight:700;margin:14px 0 6px;">🕘 最近登录记录（${events.length}）</div>
       ${events.length ? `<div style="max-height:180px;overflow-y:auto;margin-bottom:10px;">${events.map((e) => `
         <div style="font-size:11px;padding:3px 0;border-bottom:1px solid rgba(128,128,128,0.12);color:var(--text-dim);">

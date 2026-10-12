@@ -77,11 +77,32 @@ test('护栏：真实账号 id / 用户名 / 补建会话后都能解析', () =>
   // 按用户名发放
   assert.strictEqual(targets.resolveItemTarget('zhangsan'), ACCT_ID, '应支持按用户名定位收件人');
   assert.strictEqual(targets.resolveItemTarget(' 张三 '), null, '按昵称/带空格不应误命中（用户名精确匹配）');
-  // 游客 id：有会话即放行
+  // ⚠️ 2026-10-12 产品决策：**禁止发给游客** —— 有会话也不放行（游客升级为账号时不迁 items，
+  // 发给游客等于发了就丢；且游客根本没有装扮背包入口）。
   const gid = 'b0b0b0b0b0b0b0b0b0b0b0b0';
   assert.strictEqual(targets.resolveItemTarget(gid), null, '无会话的游客 id 不放行');
-  auth.markAccountSession(gid, 'guest');   // 建立会话
-  assert.strictEqual(targets.resolveItemTarget(gid), gid);
+  auth.markAccountSession(gid, 'guest');   // 建立会话（成为真实游客）
+  assert.strictEqual(targets.resolveItemTarget(gid), null, '⛔ 游客即使有会话也不放行');
+  const gd = targets.resolveItemTargetDetail(gid);
+  assert.strictEqual(gd.ok, false, '游客必须被拒绝');
+  assert.strictEqual(gd.code, 'GUEST', '应给出「游客」这一明确原因，而不是笼统的「不存在」');
+  assert.ok(/游客/.test(gd.error), '错误文案要能解释原因，管理员才知道该怎么办');
+  // 「不存在」是另一种原因，别混成一句
+  const nd = targets.resolveItemTargetDetail('cccccccccccccccccccccccc');
+  assert.strictEqual(nd.code, 'NOT_FOUND');
+});
+
+test('⛔ 禁止发给游客：发放入口只认注册账号（回归护栏）', () => {
+  const { targets, items, store, auth } = load({ 'items.json': ITEMS(), 'accounts.json': ACCOUNTS });
+  const gid = 'd0d0d0d0d0d0d0d0d0d0d0d0';
+  auth.markAccountSession(gid, 'guest');
+  // 入口层拒绝 ⇒ 调用方根本拿不到 id，不会写进游客键
+  assert.strictEqual(targets.resolveItemTarget(gid), null, '游客 id 不得作为收件人');
+  // 对照组：账号走同一条入口是放行的
+  assert.strictEqual(targets.resolveItemTarget(ACCT_ID), ACCT_ID);
+  assert.strictEqual(items.grant(ACCT_ID, 'avatar-wolf', 'admin').ok, true);
+  assert.deepStrictEqual(store.owned(ACCT_ID), ['avatar-wolf'], '账号正常拿到道具');
+  assert.deepStrictEqual(store.owned(gid), [], '游客名下不得出现任何道具');
 });
 
 test('按用户名查账号：精确匹配，查不到返回 null', () => {
