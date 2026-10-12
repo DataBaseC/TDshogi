@@ -263,7 +263,7 @@
 
         <!-- ① 查账号 -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-          <input class="input" id="itemAccountId" placeholder="账号 id" style="min-width:260px;">
+          <input class="input" id="itemAccountId" placeholder="账号 id / 令牌 / 用户名" style="min-width:260px;">
           <button class="btn btn-ghost btn-sm" id="btnItemLookup">查询该账号</button>
         </div>
         <div id="itemAccountResult" style="margin-bottom:14px;"></div>

@@ -27,7 +27,7 @@ let cache = null;
 /** 归一化：补齐四个顶层分区的对象（老数据/坏数据兜底） */
 function normalize(data) {
   const d = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-  for (const k of ['wallets', 'inventory', 'equipped', 'codes']) {
+  for (const k of ['wallets', 'inventory', 'equipped', 'codes', 'logs']) {
     if (!d[k] || typeof d[k] !== 'object' || Array.isArray(d[k])) d[k] = {};
   }
   return d;
@@ -76,6 +76,7 @@ function addCoin(accountId, delta) {
   return withRollback((c) => {
     const cur = (c.wallets[id] && Number.isFinite(c.wallets[id].coin)) ? c.wallets[id].coin : 0;
     c.wallets[id] = { coin: cur + delta };
+    writeLog(c, { kind: 'coin', accountId: id, coinDelta: delta, source: 'admin' });
     return { coin: c.wallets[id].coin };
   });
 }
@@ -100,6 +101,7 @@ function addItem(accountId, itemId, source) {
   return withRollback((c) => {
     const inv = c.inventory[id] || (c.inventory[id] = {});
     if (!inv[itemId]) inv[itemId] = { at: Date.now(), source: source || 'grant' };
+    writeLog(c, { kind: 'item', accountId: id, itemId, source: source || 'grant' });
     return { owned: Object.keys(inv) };
   });
 }
@@ -200,6 +202,7 @@ function buyItem(accountId, itemId, price) {
     if (!inv[itemId]) inv[itemId] = { at: Date.now(), source: 'buy' };
     const cur = (c.wallets[id] && Number.isFinite(c.wallets[id].coin)) ? c.wallets[id].coin : 0;
     c.wallets[id] = { coin: cur - price };
+    writeLog(c, { kind: 'buy', accountId: id, itemId, coinDelta: -price, source: 'buy' });
     return { owned: Object.keys(inv), wallet: { coin: c.wallets[id].coin } };
   });
 }
@@ -226,11 +229,36 @@ function applyCode(accountId, itemId, coinDelta, code) {
       if (!Array.isArray(entry.redeemedBy)) entry.redeemedBy = [];
       if (!entry.redeemedBy.includes(id)) entry.redeemedBy.push(id);
     }
+    writeLog(c, {
+      kind: 'redeem', accountId: id, itemId: itemId || null,
+      coinDelta: coinDelta || 0, source: 'redeem', code,
+    });
     return {
       owned: c.inventory[id] ? Object.keys(c.inventory[id]) : [],
       wallet: { coin: (c.wallets[id] && c.wallets[id].coin) || 0 },
     };
   });
+}
+
+// ---------------- 发放 / 货币流水（append-only） ----------------
+// ⚠️ 2026-10-12（P2-⑥）：每笔发放 / 加币 / 购买 / 兑换**与变更同事务**写一条流水，
+// 供后台对账、排查滥发、错发纠正。此前只有 adminAction 审计，事后查不出"谁给谁发过
+// 什么、发了几件"。只增不改（append-only），随 items.json 落盘（后续关系化可平移到表）。
+let logSeq = 0;
+function writeLog(c, entry) {
+  if (!c.logs || typeof c.logs !== 'object' || Array.isArray(c.logs)) c.logs = {};
+  const at = Date.now();
+  const key = `${at}-${String(++logSeq).padStart(4, '0')}`;
+  c.logs[key] = Object.assign({ at }, entry);
+}
+
+/** 最近 n 条流水（按时间倒序），供后台「发放记录」 */
+function recentLogs(n) {
+  const logs = getCache().logs || {};
+  return Object.keys(logs)
+    .map((k) => Object.assign({ id: k }, logs[k]))
+    .sort((a, b) => (b.at - a.at) || String(b.id).localeCompare(String(a.id)))
+    .slice(0, Math.max(1, Number(n) || 50));
 }
 
 module.exports = {
@@ -240,4 +268,5 @@ module.exports = {
   equipped, setEquipped,
   getCode, defineCode, useCode,
   buyItem, applyCode,
+  writeLog, recentLogs,
 };

@@ -41,15 +41,8 @@ const { protocol, resolvePlayer } = require('../context');
  * @param {string} raw 路径里的 :id
  * @returns {string|null} 规范化的会话 id，无法解析返回 null
  */
-function resolveAdminUserId(raw) {
-  const id = resolvePlayer(raw);
-  if (!id) return null;
-  if (!auth.getSessionRaw(id)) {
-    const acct = accounts.getAccount(id);
-    if (acct) auth.markAccountSession(id, acct.username); // 账号必然应有会话；缺则补建
-  }
-  return id;
-}
+// ⚠️ 2026-10-12：收件人解析/终检抽到 `items/targets.js`（可测 + 单一实现；行为不变）
+const { resolveAdminUserId, resolveItemTarget, targetLabel } = require('../../items/targets');
 
 module.exports = function registerAdmin(app) {
   // ---------- 全量数据（管理后台表格数据源） ----------
@@ -378,22 +371,31 @@ module.exports = function registerAdmin(app) {
     res.json({ catalog: itemsMod.catalog(), slots: itemsMod.SLOTS });
   });
 
-  // 某账号的钱包 / 拥有 / 装备（`:id` 走 resolveAdminUserId；账号 id 即道具存储键）
+  // 某账号的钱包 / 拥有 / 装备（`:id` 走 resolveItemTarget；账号 id 即道具存储键）
+  // ⚠️ 2026-10-12：道具三端点统一换 `resolveItemTarget` —— **收件人必须存在**，
+  // 并支持按**用户名**定位（不必再手抄 24 hex id）；返回 `toName` 供界面显示解析结果。
   app.get('/api/admin/items/account/:id', adminOnly, (req, res) => {
-    const uid = resolveAdminUserId(req.params.id);
-    if (!uid) return res.status(404).json({ error: '账号不存在' });
+    const uid = resolveItemTarget(req.params.id);
+    if (!uid) return res.status(404).json({ error: '账号不存在（支持账号 id / 令牌 / 用户名）' });
     const snap = itemsMod.snapshot(uid);
-    res.json({ accountId: uid, wallet: snap.wallet, owned: snap.owned, equipped: snap.equipped });
+    res.json({
+      accountId: uid,
+      toName: targetLabel(uid),
+      wallet: snap.wallet,
+      owned: snap.owned,
+      equipped: snap.equipped,
+    });
   });
 
   // 发道具（不校验价格）
   app.post('/api/admin/items/account/:id/grant', adminWrite((req, body) => {
-    const uid = resolveAdminUserId(req.params.id);
-    if (!uid) return { ok: false, error: '账号不存在', action: 'item-grant' };
+    const uid = resolveItemTarget(req.params.id);
+    if (!uid) return { ok: false, error: '账号不存在（支持账号 id / 令牌 / 用户名）', action: 'item-grant' };
     const itemId = (body && body.itemId) || '';
     const r = itemsMod.grant(uid, itemId, 'admin');
     return {
       ...r, action: 'item-grant',
+      toName: targetLabel(uid),
       audit: { accountId: uid, itemId },
       wallet: itemsMod.snapshot(uid).wallet,
     };
@@ -401,16 +403,24 @@ module.exports = function registerAdmin(app) {
 
   // 加/减货币（amount 为整数，可为负）
   app.post('/api/admin/items/account/:id/coin', adminWrite((req, body) => {
-    const uid = resolveAdminUserId(req.params.id);
-    if (!uid) return { ok: false, error: '账号不存在', action: 'item-coin' };
+    const uid = resolveItemTarget(req.params.id);
+    if (!uid) return { ok: false, error: '账号不存在（支持账号 id / 令牌 / 用户名）', action: 'item-coin' };
     const amount = Number(body && body.amount);
     const r = itemsMod.addCoin(uid, amount);
     return {
       ...r, action: 'item-coin',
+      toName: targetLabel(uid),
       audit: { accountId: uid, amount },
       owned: itemsMod.snapshot(uid).owned,
     };
   }));
+
+  // ⚠️ 2026-10-12（P2-⑥）发放/货币流水（append-only，与发放同事务落盘，见 store.writeLog）
+  // 用途：后台对账 / 排查滥发 / 错发纠正。默认最近 50 条，?n= 最多 200。
+  app.get('/api/admin/items/logs', adminOnly, (req, res) => {
+    const n = Math.min(200, Math.max(1, Number(req.query.n) || 50));
+    res.json({ logs: itemsMod.recentLogs(n) });
+  });
 
   // 定义/覆盖兑换码（itemId 空 = 只发币）
   app.post('/api/admin/items/code', adminWrite((req, body) => {

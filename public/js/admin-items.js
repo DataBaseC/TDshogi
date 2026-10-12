@@ -141,6 +141,9 @@
       if (price !== null && !Number.isFinite(price)) return toast('价格必须是数字或留空（免费）');
       const kind = type === 'bgm' ? 'audio' : (assetVal.charAt(0) === '/' ? 'image' : 'glyph');
       const roleVal = type === 'bgm' && $('itemEditBgmRole') ? (($('itemEditBgmRole').value) || '').trim() : '';
+      // ⚠️ 2026-10-12（P1-④）：BGM 商品**必须选场景**——缺 role 的 BGM 用户买了/收到也装不上
+      //（装备请求槽位退化成 'bgm' → BAD_SLOT）。服务端另有归一兜底，这里给到明确提示。
+      if (type === 'bgm' && !roleVal) return toast('BGM 商品请选择使用场景（菜单 / 开局 / 终盘）');
       try {
         const body = {
           id, type: type === 'bgm' ? 'bgm' : type, name: name || id, desc, rarity, price,
@@ -286,7 +289,8 @@
     async function lookupAccount() {
       const raw = (($('itemAccountId') && $('itemAccountId').value) || '').trim();
       const box = $('itemAccountResult');
-      if (!raw) { if (box) box.innerHTML = empty('请填写账号 id'); return null; }
+      // ⚠️ 2026-10-12：支持「账号 id / 令牌 / 用户名」三种输入（服务端 resolveItemTarget 终检存在性）
+      if (!raw) { if (box) box.innerHTML = empty('请填写账号 id / 令牌 / 用户名'); return null; }
       if (box) box.innerHTML = loading('正在查询…');
       try {
         const data = await apiGet(`/api/admin/items/account/${encodeURIComponent(raw)}`);
@@ -314,7 +318,7 @@
         }).join('、') || '（无）';
       box.innerHTML = `
         <div style="font-size:13px;line-height:1.9;">
-          <div>账号：<b>${esc(data.accountId)}</b></div>
+          <div>账号：<b>${esc(data.toName || data.accountId)}</b><span style="color:var(--text-dim);font-size:11px;margin-left:8px;">${esc(data.accountId)}</span></div>
           <div>💰 货币：<b style="color:var(--gold-light);">${esc(String(data.wallet && data.wallet.coin || 0))}</b></div>
           <div>拥有（${(data.owned || []).length} 件）：${owned}</div>
           <div style="color:var(--text-dim);font-size:12px;">已装备：${eq}</div>
@@ -331,7 +335,7 @@
       try {
         const r = await apiPost(`/api/admin/items/account/${encodeURIComponent(raw)}/grant`, { itemId });
         if (!alive()) return;
-        toast(`已发放（该账号现拥有 ${r.owned.length} 件）`);
+        toast(`已发放给「${r.toName || raw}」（现拥有 ${r.owned.length} 件）`);
         lookupAccount();
       } catch (e) { onErr(e); }
     }
@@ -344,7 +348,7 @@
       try {
         const r = await apiPost(`/api/admin/items/account/${encodeURIComponent(raw)}/coin`, { amount });
         if (!alive()) return;
-        toast(`已处理，该账号货币现为 ${r.wallet.coin}`);
+        toast(`已${amount > 0 ? '加币' : '扣币'}给「${r.toName || raw}」，货币现为 ${r.wallet.coin}`);
         lookupAccount();
       } catch (e) { onErr(e); }
     }

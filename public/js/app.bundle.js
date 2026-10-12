@@ -9931,7 +9931,9 @@
           const free = it.price === null;
           // BGM 有唯一使用场景（role→bgm-menu/game/endgame）；其余按 type 匹配槽位
           const isBgm = it.type === 'bgm';
-          const equipSlot = isBgm && it.role ? 'bgm-' + it.role : it.type;
+          // ⚠️ 2026-10-12（P1-④）：槽位用服务端下发的 `it.equipSlot`（唯一真相源），不再自算——
+          // 自算遇到"缺 role 的 BGM"会退化成 'bgm'（非法槽 → 装备必报「槽位不合法」）。
+          const equipSlot = it.equipSlot || (isBgm && it.role ? 'bgm-' + it.role : it.type);
           const equippedSlot = snap.equipped && snap.equipped[equipSlot] === it.id ? equipSlot : null;
           const rarity = it.rarity || 'N';
           const unlocked = unlockHint(it);
@@ -13955,6 +13957,10 @@ function showResult(st) {
       act('user-save-profile', (el) => hub.adminSaveProfile && hub.adminSaveProfile(at(el, 'data-id')));
       act('user-save-elo', (el) => hub.adminSaveElo && hub.adminSaveElo(at(el, 'data-id')));
       act('user-rename', (el) => hub.adminRename && hub.adminRename(at(el, 'data-id'), at(el, 'data-name')));
+      // ⚠️ 2026-10-12（道具发放 P0-③）：用户侧发放入口——复制 id / 详情内直接发放道具与货币
+      act('user-copy-id', (el) => hub.adminCopyId && hub.adminCopyId(at(el, 'data-id')));
+      act('user-grant-item', (el) => hub.adminGrantItem && hub.adminGrantItem(at(el, 'data-id'), at(el, 'data-name')));
+      act('user-grant-coin', (el) => hub.adminGrantCoin && hub.adminGrantCoin(at(el, 'data-id'), at(el, 'data-name')));
       act('user-reset-rating', (el) => hub.adminResetRating && hub.adminResetRating(at(el, 'data-id'), at(el, 'data-name')));
       act('user-reset-pwd', (el) => hub.adminResetPassword && hub.adminResetPassword(at(el, 'data-id'), at(el, 'data-name')));
       act('user-delete', (el) => hub.adminDeleteAccount && hub.adminDeleteAccount(at(el, 'data-id'), at(el, 'data-name')));
@@ -14352,7 +14358,7 @@ function showResult(st) {
       el.innerHTML = users.map((u) => `
     <div class="record-item">
       <div style="font-size:13px;display:flex;justify-content:space-between;gap:10px;">
-        <span>${u.isAccount ? '<span title="正式账号">🔐</span>' : '<span title="游客">👤</span>'} ${esc(u.name)}${u.title ? `（${esc(u.title)}）` : ''} <span style="color:var(--text-dim);font-size:11px;">(${u.id})</span></span>
+        <span>${u.isAccount ? '<span title="正式账号">🔐</span>' : '<span title="游客">👤</span>'} ${esc(u.name)}${u.title ? `（${esc(u.title)}）` : ''} <span style="color:var(--text-dim);font-size:11px;">(${u.id})</span><button class=\"btn btn-ghost btn-sm\" style=\"padding:0 5px;font-size:10px;margin-left:3px;line-height:1.4;\" data-act=\"user-copy-id\" data-id=\"${esc(u.id)}\" title=\"复制 id（发放道具时用）\">📋 复制</button></span>
         <span style="font-size:11px;">${u.banned ? '<span style="color:var(--red-light);">⛔ 封禁中</span>' : ''}</span>
       </div>
       <div class="r-result result-win">Lv.${u.level || 0} · ELO ${u.rating}</div>
@@ -14455,6 +14461,15 @@ function showResult(st) {
           : `<button class="btn btn-ghost btn-sm" data-act="user-ban" data-id="${esc(id)}" data-name="${esc(data.name)}">⛔ 封禁</button>`}
         ${data.isAccount ? `<button class="btn btn-ghost btn-sm" data-act="user-delete" data-id="${esc(id)}" data-name="${esc(data.name)}" style="color:var(--red-light);">🗑 删除账号</button>` : ''}
       </div>
+      <div style="font-size:14px;font-weight:700;margin:14px 0 6px;">🕘 🎁 发放道具 / 货币 <span style="font-size:11px;color:var(--text-dim);font-weight:400;">（直接发给该用户，不必再手抄 id）</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:12px;">
+        <div><div style="font-size:11px;color:var(--text-dim);">道具</div>
+          <select class="input" id="userGrantItem" style="width:200px;"><option value="">（选择道具）</option></select></div>
+        <button class="btn btn-primary btn-sm" data-act="user-grant-item" data-id="${esc(id)}" data-name="${esc(data.name)}">🎁 发放道具</button>
+        <div><div style="font-size:11px;color:var(--text-dim);">货币（正数加 / 负数扣）</div>
+          <input class="input" id="userGrantCoin" type="number" step="1" style="width:120px;" placeholder="如 100"></div>
+        <button class="btn btn-primary btn-sm" data-act="user-grant-coin" data-id="${esc(id)}" data-name="${esc(data.name)}">💰 发放货币</button>
+      </div>
       <div style="font-size:14px;font-weight:700;margin:14px 0 6px;">🕘 最近登录记录（${events.length}）</div>
       ${events.length ? `<div style="max-height:180px;overflow-y:auto;margin-bottom:10px;">${events.map((e) => `
         <div style="font-size:11px;padding:3px 0;border-bottom:1px solid rgba(128,128,128,0.12);color:var(--text-dim);">
@@ -14467,6 +14482,7 @@ function showResult(st) {
         return `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid rgba(128,128,128,0.15);">${esc(names[0])} vs ${esc(names[1])} — ${esc(res)}（${r.moveCount || 0}手）</div>`;
       }).join('') : '<div style="color:var(--text-dim);font-size:12px;">暂无对局</div>'}
     `;
+        fillUserGrantSelect(); // 发放下拉（详情内直接发道具/货币，2026-10-12）
         const detailModal = $('userDetailModal');
         if (!detailModal) return;
         detailModal.style.display = 'flex';
@@ -14576,6 +14592,55 @@ function showResult(st) {
           if (global.A11y) global.A11y.onDialogClose(dmClose);
         }
         loadUsers();
+      } catch (e) { if (alive()) toast(e.message); }
+    };
+
+    // ⚠️ 2026-10-12（道具发放 P0-③）：用户详情内**直接发放**，不再让管理员跨 tab 手抄 24 hex id。
+    async function fillUserGrantSelect() {
+      const sel = $('userGrantItem');
+      if (!sel) return;
+      try {
+        const d = await global.ApiUtils.get(`/api/admin/items/catalog?token=${encodeURIComponent(getToken())}`);
+        const cat = (d && d.catalog) || [];
+        const keep = sel.value;
+        sel.innerHTML = '<option value="">（选择道具）</option>'
+          + cat.map((it) => `<option value="${esc(it.id)}">${esc(it.name || it.id)}（${esc(it.type)}）</option>`).join('');
+        if (keep) sel.value = keep;
+      } catch (_) { /* 目录拉取失败不阻断详情展示 */ }
+    }
+
+    hub.adminCopyId = async (id) => {
+      try {
+        await navigator.clipboard.writeText(String(id));
+        toast('已复制 id（发放道具时可直接粘贴）');
+      } catch (_) {
+        // 无 Clipboard API（非安全上下文）时的退化路径
+        prompt('复制该 id（Ctrl/Cmd+C）：', String(id));
+      }
+    };
+
+    hub.adminGrantItem = async (id, name) => {
+      const sel = $('userGrantItem');
+      const itemId = sel && sel.value;
+      if (!itemId) return toast('请先选择要发放的道具');
+      const itName = (sel.selectedOptions && sel.selectedOptions[0] && sel.selectedOptions[0].textContent) || itemId;
+      if (!confirm(`确认给「${name}」发放「${itName}」？`)) return;
+      try {
+        const r = await adminPost(`/api/admin/items/account/${encodeURIComponent(id)}/grant`, { itemId });
+        toast(`已发放给「${r.toName || name}」（现拥有 ${(r.owned || []).length} 件）`);
+        loadUsers(); hub.viewUser(id);
+      } catch (e) { if (alive()) toast(e.message); }
+    };
+
+    hub.adminGrantCoin = async (id, name) => {
+      const rawVal = (($('userGrantCoin') && $('userGrantCoin').value) || '').trim();
+      const amount = Number(rawVal);
+      if (!rawVal || !Number.isFinite(amount) || amount === 0) return toast('货币需为非零整数');
+      if (!confirm(`确认给「${name}」${amount > 0 ? '增加' : '扣减'} ${Math.abs(amount)} 货币？`)) return;
+      try {
+        const r = await adminPost(`/api/admin/items/account/${encodeURIComponent(id)}/coin`, { amount });
+        toast(`已${amount > 0 ? '加币' : '扣币'}给「${r.toName || name}」，货币现为 ${(r.wallet || {}).coin}`);
+        loadUsers(); hub.viewUser(id);
       } catch (e) { if (alive()) toast(e.message); }
     };
 
@@ -15805,6 +15870,9 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
       if (price !== null && !Number.isFinite(price)) return toast('价格必须是数字或留空（免费）');
       const kind = type === 'bgm' ? 'audio' : (assetVal.charAt(0) === '/' ? 'image' : 'glyph');
       const roleVal = type === 'bgm' && $('itemEditBgmRole') ? (($('itemEditBgmRole').value) || '').trim() : '';
+      // ⚠️ 2026-10-12（P1-④）：BGM 商品**必须选场景**——缺 role 的 BGM 用户买了/收到也装不上
+      //（装备请求槽位退化成 'bgm' → BAD_SLOT）。服务端另有归一兜底，这里给到明确提示。
+      if (type === 'bgm' && !roleVal) return toast('BGM 商品请选择使用场景（菜单 / 开局 / 终盘）');
       try {
         const body = {
           id, type: type === 'bgm' ? 'bgm' : type, name: name || id, desc, rarity, price,
@@ -15950,7 +16018,8 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
     async function lookupAccount() {
       const raw = (($('itemAccountId') && $('itemAccountId').value) || '').trim();
       const box = $('itemAccountResult');
-      if (!raw) { if (box) box.innerHTML = empty('请填写账号 id'); return null; }
+      // ⚠️ 2026-10-12：支持「账号 id / 令牌 / 用户名」三种输入（服务端 resolveItemTarget 终检存在性）
+      if (!raw) { if (box) box.innerHTML = empty('请填写账号 id / 令牌 / 用户名'); return null; }
       if (box) box.innerHTML = loading('正在查询…');
       try {
         const data = await apiGet(`/api/admin/items/account/${encodeURIComponent(raw)}`);
@@ -15978,7 +16047,7 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
         }).join('、') || '（无）';
       box.innerHTML = `
         <div style="font-size:13px;line-height:1.9;">
-          <div>账号：<b>${esc(data.accountId)}</b></div>
+          <div>账号：<b>${esc(data.toName || data.accountId)}</b><span style="color:var(--text-dim);font-size:11px;margin-left:8px;">${esc(data.accountId)}</span></div>
           <div>💰 货币：<b style="color:var(--gold-light);">${esc(String(data.wallet && data.wallet.coin || 0))}</b></div>
           <div>拥有（${(data.owned || []).length} 件）：${owned}</div>
           <div style="color:var(--text-dim);font-size:12px;">已装备：${eq}</div>
@@ -15995,7 +16064,7 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
       try {
         const r = await apiPost(`/api/admin/items/account/${encodeURIComponent(raw)}/grant`, { itemId });
         if (!alive()) return;
-        toast(`已发放（该账号现拥有 ${r.owned.length} 件）`);
+        toast(`已发放给「${r.toName || raw}」（现拥有 ${r.owned.length} 件）`);
         lookupAccount();
       } catch (e) { onErr(e); }
     }
@@ -16008,7 +16077,7 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
       try {
         const r = await apiPost(`/api/admin/items/account/${encodeURIComponent(raw)}/coin`, { amount });
         if (!alive()) return;
-        toast(`已处理，该账号货币现为 ${r.wallet.coin}`);
+        toast(`已${amount > 0 ? '加币' : '扣币'}给「${r.toName || raw}」，货币现为 ${r.wallet.coin}`);
         lookupAccount();
       } catch (e) { onErr(e); }
     }
@@ -16324,7 +16393,7 @@ r.detail ? `<br>说明：${esc(r.detail)}` : ''}</div>
 
         <!-- ① 查账号 -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-          <input class="input" id="itemAccountId" placeholder="账号 id" style="min-width:260px;">
+          <input class="input" id="itemAccountId" placeholder="账号 id / 令牌 / 用户名" style="min-width:260px;">
           <button class="btn btn-ghost btn-sm" id="btnItemLookup">查询该账号</button>
         </div>
         <div id="itemAccountResult" style="margin-bottom:14px;"></div>
