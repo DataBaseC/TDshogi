@@ -3478,12 +3478,20 @@
 
   const ATTRS = ['placeholder', 'title', 'aria-label'];
 
+  // ⚠️ 2026-10-12 P1（第二轮审查 §2.4）：属性翻译同样要记**原文**。
+  // 此前只有文本节点有 srcOf，属性被翻成英文后就成为新的「原文」——切回中文不还原
+  //（apply 对 zh-CN 直接 return）、en→ja 时查不到译文永远停在英文。
+  const attrSrcOf = new WeakMap(); // el → { attr: 原文 }
+
   function translateEl(el) {
     for (const a of ATTRS) {
       if (!el.hasAttribute || !el.hasAttribute(a)) continue;
       const raw = el.getAttribute(a);
       if (!raw || !raw.trim()) continue;
-      const out = t(raw.trim());
+      if (!attrSrcOf.has(el)) attrSrcOf.set(el, {});
+      const src = attrSrcOf.get(el);
+      if (!(a in src)) src[a] = raw;          // 只记一次原文（之后 raw 可能已是译文）
+      const out = t(src[a].trim());           // 永远从原文翻译（en→ja 才不会把英文当源）
       if (out !== raw) el.setAttribute(a, out);
     }
   }
@@ -3525,6 +3533,12 @@
           el.childNodes.forEach((n) => {
             if (n.nodeType === 3 && srcOf.has(n)) n.textContent = srcOf.get(n);
           });
+        }
+        // ⚠️ 2026-10-12 P1（第二轮审查 §2.4）：属性（placeholder/title/aria-label）同样还原，
+        // 否则切回中文时它们停留在英文，en→ja 也永远不翻。
+        if (attrSrcOf.has(el)) {
+          const src = attrSrcOf.get(el);
+          for (const a of Object.keys(src)) el.setAttribute(a, src[a]);
         }
       });
     }
@@ -5082,7 +5096,9 @@
     }
 
     _rCToSq(r, c, viewpoint = 'b') {
-      // 显示 (r,c) 来自服务端 display[r][colFrom(c)]
+      // ⚠️ 参数是**混合坐标**（2026-10-12 注释修正）：r = 服务端行（0=一段），c = 显示列。
+      //（不是「显示 (r,c)」——旧注释误导过一次坐标审查。）内部先把显示列反解回服务端列，
+      // 再按服务端约定（row=段-1，col=筋-1）拼 USI，与 piece.sq（xyToUsiSquare(筋,段)）同口径。
       const col = viewpoint === 'b' ? (8 - c) : c;
       const y = r + 1;
       const x = col + 1;
@@ -9505,7 +9521,9 @@
           renderAvatars(); // 头像（2026-09-20）：统一走这一处，别再直接写 textContent
           $('pRoleLabel').innerHTML = '正式账号 · ID: <span id="pId"></span>';
           $('pId').textContent = guest.id.split('.')[0];
-          loadMyProfile();
+          // ⚠️ 2026-10-12 P1（第二轮审查 §2.3）：只看自己的资料——此前无 isSelf 守卫，
+          // 看别人个人页时会把**我的**棋风/注册日期插到对方身份卡上（#profileMeta 写进可见区域）。
+          if (isSelf) loadMyProfile();
         }
       }
 
@@ -9933,7 +9951,9 @@
        */
       function setupViewMode() {
         if (isSelf) return;
-        for (const id of ['accountCard', 'myProfileCard', 'renameRow', 'btnRename', 'renameInput', 'accountNameNote']) {
+        // ⚠️ 2026-10-12 P1（第二轮审查 §2.2）：清单补 changeNickRow / editProfileRow——
+        // 漏了它们时，看别人个人页仍显示「改昵称/修改资料」入口，点进去改的是**自己**的资料。
+        for (const id of ['accountCard', 'myProfileCard', 'renameRow', 'btnRename', 'renameInput', 'accountNameNote', 'changeNickRow', 'editProfileRow']) {
           const el = $(id);
           if (el) el.style.display = 'none';
         }
@@ -10890,16 +10910,13 @@
             my: $('myHandPieces'), myColor: 'b',
             opp: $('oppHandPieces'), oppColor: 'w',
           },
-          // ⚠️ 2026-10-02 体验修复：点击棋盘落点跳到该手（此前 onSqClick 从未接线 → 点棋盘毫无反应）
-          onSqClick: (sq) => {
-            if (freeMode || !review || !sq) return;
-            let target = -1;
-            (review.moves || []).forEach((usi, i) => {
-              const to = /^[PLNSGBR]\*/.test(usi) ? usi.slice(2, 4) : usi.slice(2, 4);
-              if (to === sq) target = i + 1;
-            });
-            if (target > 0) { navFromList = true; navigate(target); }
-          },
+          // ⚠️ 2026-10-12 bug 修复：刻意**不接** onSqClick（点击棋盘跳手数）。
+          // 原实现（2026-10-02 接线）把「点击任意格子」映射成「跳到最后一手落在该格的手」，
+          // 但一局几十手、落点散布大半盘（含已被吃掉现在空着的格），随机点击就命中 →
+          // 棋谱突然大幅跳手，用户感知为「乱跳棋谱」（误触型 bug）。
+          // 复盘导航统一走：棋谱列表条目 / 首末翻页按钮 / 键盘 ←→。若将来要
+          // 「点棋子溯源跳到那手」，须显式设计（可见提示 + 仅棋子可点），不要恢复
+          // 「整盘任意点击隐式导航」。
         });
         fb.attach();
         // 绑定一次驹台拖拽（interactive=false 时不会触发，自由摆放开启后生效）

@@ -167,13 +167,19 @@ function defineCode(code, def) {
   const key = String(code);
   if (!isSafeCodeKey(key)) return { ok: false, error: '兑换码格式无效', code: 'BAD_CODE' };
   return withRollback((c) => {
+    // ⚠️ 2026-10-12 修复（第二轮审查 P2-17）：覆盖已有码时**保留使用状态**（used / redeemedBy）。
+    // 此前整条覆盖写，管理员只是想改 maxUses / 补 itemId 重新定义一次，就会把使用计数清零、
+    // 兑换名单清空 → 所有已兑换过的账号可以再兑换一次（重复得币 / 得道具）。
+    const prev = codeEntry(c, key);
     const entry = {
       itemId: (def && def.itemId) || null,
       coin: (def && def.coin) || 0,
       maxUses: (def && def.maxUses) || 1,
-      used: (def && def.used) || 0,
+      used: prev && Number.isFinite(prev.used) ? prev.used : ((def && def.used) || 0),
       // ⚠️ 2026-10-05 修复：每账号一次 —— 记录已兑换过的账号 id（随定义一并落盘/覆盖）
-      redeemedBy: Array.isArray(def && def.redeemedBy) ? def.redeemedBy.slice() : [],
+      redeemedBy: prev && Array.isArray(prev.redeemedBy)
+        ? prev.redeemedBy.slice()
+        : (Array.isArray(def && def.redeemedBy) ? def.redeemedBy.slice() : []),
     };
     c.codes[key] = entry;
     return { ...entry };

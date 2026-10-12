@@ -403,7 +403,9 @@
     }
 
     _rCToSq(r, c, viewpoint = 'b') {
-      // 显示 (r,c) 来自服务端 display[r][colFrom(c)]
+      // ⚠️ 参数是**混合坐标**（2026-10-12 注释修正）：r = 服务端行（0=一段），c = 显示列。
+      //（不是「显示 (r,c)」——旧注释误导过一次坐标审查。）内部先把显示列反解回服务端列，
+      // 再按服务端约定（row=段-1，col=筋-1）拼 USI，与 piece.sq（xyToUsiSquare(筋,段)）同口径。
       const col = viewpoint === 'b' ? (8 - c) : c;
       const y = r + 1;
       const x = col + 1;

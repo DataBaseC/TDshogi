@@ -1592,12 +1592,20 @@
 
   const ATTRS = ['placeholder', 'title', 'aria-label'];
 
+  // ⚠️ 2026-10-12 P1（第二轮审查 §2.4）：属性翻译同样要记**原文**。
+  // 此前只有文本节点有 srcOf，属性被翻成英文后就成为新的「原文」——切回中文不还原
+  //（apply 对 zh-CN 直接 return）、en→ja 时查不到译文永远停在英文。
+  const attrSrcOf = new WeakMap(); // el → { attr: 原文 }
+
   function translateEl(el) {
     for (const a of ATTRS) {
       if (!el.hasAttribute || !el.hasAttribute(a)) continue;
       const raw = el.getAttribute(a);
       if (!raw || !raw.trim()) continue;
-      const out = t(raw.trim());
+      if (!attrSrcOf.has(el)) attrSrcOf.set(el, {});
+      const src = attrSrcOf.get(el);
+      if (!(a in src)) src[a] = raw;          // 只记一次原文（之后 raw 可能已是译文）
+      const out = t(src[a].trim());           // 永远从原文翻译（en→ja 才不会把英文当源）
       if (out !== raw) el.setAttribute(a, out);
     }
   }
@@ -1639,6 +1647,12 @@
           el.childNodes.forEach((n) => {
             if (n.nodeType === 3 && srcOf.has(n)) n.textContent = srcOf.get(n);
           });
+        }
+        // ⚠️ 2026-10-12 P1（第二轮审查 §2.4）：属性（placeholder/title/aria-label）同样还原，
+        // 否则切回中文时它们停留在英文，en→ja 也永远不翻。
+        if (attrSrcOf.has(el)) {
+          const src = attrSrcOf.get(el);
+          for (const a of Object.keys(src)) el.setAttribute(a, src[a]);
         }
       });
     }

@@ -323,16 +323,13 @@
             my: $('myHandPieces'), myColor: 'b',
             opp: $('oppHandPieces'), oppColor: 'w',
           },
-          // ⚠️ 2026-10-02 体验修复：点击棋盘落点跳到该手（此前 onSqClick 从未接线 → 点棋盘毫无反应）
-          onSqClick: (sq) => {
-            if (freeMode || !review || !sq) return;
-            let target = -1;
-            (review.moves || []).forEach((usi, i) => {
-              const to = /^[PLNSGBR]\*/.test(usi) ? usi.slice(2, 4) : usi.slice(2, 4);
-              if (to === sq) target = i + 1;
-            });
-            if (target > 0) { navFromList = true; navigate(target); }
-          },
+          // ⚠️ 2026-10-12 bug 修复：刻意**不接** onSqClick（点击棋盘跳手数）。
+          // 原实现（2026-10-02 接线）把「点击任意格子」映射成「跳到最后一手落在该格的手」，
+          // 但一局几十手、落点散布大半盘（含已被吃掉现在空着的格），随机点击就命中 →
+          // 棋谱突然大幅跳手，用户感知为「乱跳棋谱」（误触型 bug）。
+          // 复盘导航统一走：棋谱列表条目 / 首末翻页按钮 / 键盘 ←→。若将来要
+          // 「点棋子溯源跳到那手」，须显式设计（可见提示 + 仅棋子可点），不要恢复
+          // 「整盘任意点击隐式导航」。
         });
         fb.attach();
         // 绑定一次驹台拖拽（interactive=false 时不会触发，自由摆放开启后生效）

@@ -361,7 +361,9 @@
           renderAvatars(); // 头像（2026-09-20）：统一走这一处，别再直接写 textContent
           $('pRoleLabel').innerHTML = '正式账号 · ID: <span id="pId"></span>';
           $('pId').textContent = guest.id.split('.')[0];
-          loadMyProfile();
+          // ⚠️ 2026-10-12 P1（第二轮审查 §2.3）：只看自己的资料——此前无 isSelf 守卫，
+          // 看别人个人页时会把**我的**棋风/注册日期插到对方身份卡上（#profileMeta 写进可见区域）。
+          if (isSelf) loadMyProfile();
         }
       }
 
@@ -789,7 +791,9 @@
        */
       function setupViewMode() {
         if (isSelf) return;
-        for (const id of ['accountCard', 'myProfileCard', 'renameRow', 'btnRename', 'renameInput', 'accountNameNote']) {
+        // ⚠️ 2026-10-12 P1（第二轮审查 §2.2）：清单补 changeNickRow / editProfileRow——
+        // 漏了它们时，看别人个人页仍显示「改昵称/修改资料」入口，点进去改的是**自己**的资料。
+        for (const id of ['accountCard', 'myProfileCard', 'renameRow', 'btnRename', 'renameInput', 'accountNameNote', 'changeNickRow', 'editProfileRow']) {
           const el = $(id);
           if (el) el.style.display = 'none';
         }

@@ -398,6 +398,28 @@ function setNickname(accountId, nickname) {
 }
 
 /**
+ * 管理员改昵称（**不扣积分**）。2026-10-12 第二轮审查 P1-2.1：
+ * `auth.adminRename` 只写 `session.name`，而公开卡读 `account.nickname`、`login()` 又会用
+ * nickname 覆盖会话名 → 管理改名对账号用户无效且下次登录被静默还原。此函数只写**账号侧**
+ * 真相源（宽松校验：trim + ≤16，与 adminRename 同口径，不引入 USERNAME_RE 新约束），
+ * 会话名由调用方（adminRename）统一同步。
+ *
+ * @param {string} accountId
+ * @param {string} nickname 已通过 adminRename 校验的显示名
+ * @returns {{ok:true, nickname:string}|{ok:false, error:string}}
+ */
+function setNicknameAdmin(accountId, nickname) {
+  const a = getCache()[accountId];
+  if (!a) return { ok: false, error: '账号不存在' };
+  const n = String(nickname || '').trim().slice(0, 16);
+  if (!n) return { ok: false, error: '名字不能为空' };
+  a.nickname = n;
+  a.updatedAt = Date.now();
+  persist();
+  return { ok: true, nickname: n };
+}
+
+/**
  * 游客数据迁移到账号（**幂等**，可**安全重跑**）。
  *
  * 重写的三类数据：
@@ -587,6 +609,7 @@ module.exports = {
   updateProfile,
   getPublicCard,
   setNickname, // 改昵称（花积分，见上）
+  setNicknameAdmin, // 管理员改昵称（不扣积分；adminRename 同步账号侧真相源用）
   adminUpdateProfile,
   adminResetPassword,
   deleteAccount,

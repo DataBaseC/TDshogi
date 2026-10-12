@@ -340,6 +340,11 @@ function saveSession(session) {
 
 /**
  * 管理员改名（显示名，上限 16；不改账号登录用户名）。
+ *
+ * ⚠️ 2026-10-12 P1（第二轮审查 §2.1）：账号用户有**两个显示名真相源**——
+ * `session.name` 与 `account.nickname`。此前只写会话：公开卡/悬停卡读 nickname 依旧显示旧名，
+ * 而 `accounts.login()` 每次登录都会用 nickname 覆盖会话名 → 管理改名（如处理违规昵称）
+ * 静默失效。这里对账号用户**同步写账号侧**（admin 通道不扣积分，别走 setNickname）。
  */
 function adminRename(playerId, name) {
   const session = getSessionRaw(playerId);
@@ -347,6 +352,14 @@ function adminRename(playerId, name) {
   const n = String(name || '').trim();
   if (!n) return { ok: false, error: '名字不能为空' };
   if (n.length > 16) return { ok: false, error: '名字最多 16 个字符' };
+  // 账号侧同步：函数内 require 防模块环（accounts 顶部依赖本模块）
+  try {
+    const accounts = require('./accounts');
+    if (accounts.getAccount && accounts.getAccount(playerId)) {
+      const r = accounts.setNicknameAdmin(playerId, n);
+      if (!r.ok) return r;
+    }
+  } catch (_) { /* accounts 未就绪（纯游客场景/单测）时只写会话，与旧行为一致 */ }
   session.name = n;
   saveSession(session);
   return { ok: true, name: n };
