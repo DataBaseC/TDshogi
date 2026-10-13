@@ -117,6 +117,15 @@ function deriveAvatar(id) {
  */
 function identify(guestId, meta = {}) {
   let id = guestId && /^[0-9a-f]{24}$/.test(guestId) ? guestId : genId();
+  // ⚠️ 2026-10-13 P0 修正（第二轮审查 §1.1）：**墓碑 id 不可复活**。
+  // 会话被删除（30 天清理 / 游客升级迁移 / 删账号）时 removeSession 会写墓碑；
+  // 谁再拿这个公开 id 来连，一律按新游客处理，绝不让它认领死者的棋谱/身份。
+  // ⚠️ 与「新游客首连」的区分：客户端自选的 id 若**从未有过会话**（无墓碑），
+  // 维持「游客 id 即凭证」的既有取舍照常认领——上一版误杀新游客，e2e 身份全线崩。
+  if (/^[0-9a-f]{24}$/.test(id) && isTombstoned(id)) {
+    log.warn('auth', '拒绝复活已撤销的游客 id，按新游客处理', { id });
+    id = genId();
+  }
   const relPath = `sessions/${id}.json`;
   let session;
   try {
@@ -420,8 +429,24 @@ function adminSetTitle(playerId, title) {
  */
 function removeSession(playerId) {
   if (!playerId) return { ok: false, error: '缺少会话 id' };
-  deleteJson(`sessions/${String(playerId)}.json`);
+  const id = String(playerId);
+  // ⚠️ 2026-10-13：删除即**撤销凭证**——写墓碑，此后该 id 不可再被认领（identify 会拦截）。
+  // 墓碑永久保留（量 = 删除量，极小）；不清理是因为清掉即等于把死者的身份重新开放认领。
+  try {
+    writeJson(`session-tombstones/${id}.json`, { id, at: Date.now() });
+  } catch (_) { /* 墓碑写失败不阻塞删除；此时退化为旧行为（可被认领），比卡住删除好 */ }
+  deleteJson(`sessions/${id}.json`);
   return { ok: true };
+}
+
+/** 该 id 的游客凭证是否已被撤销（会话删除时写墓碑；见 removeSession） */
+function isTombstoned(playerId) {
+  if (!playerId || !/^[0-9a-f]{24}$/.test(String(playerId))) return false;
+  try {
+    return !!readJson(`session-tombstones/${String(playerId)}.json`, null);
+  } catch (_) {
+    return false;
+  }
 }
 
 /** 删除会话（删账号时用；评级/棋谱由调用方处理）——语义同 removeSession */
@@ -433,5 +458,6 @@ module.exports = {
   identify, load, rename, publicInfo, genId, genKey, verifyKey, listSessions,
   AVATARS, setAvatar, // 头像（2026-09-20）：白名单只此一份，前端直接渲染字形
   upsertSession, markAccountSession, getSessionRaw, saveSession, removeSession, // §M4：会话的唯一来源是 kv，迁移也走这几个
+  isTombstoned, // 墓碑（游客凭证撤销）：删会话即撤销，该 id 永不可复活认领
   adminRename, banPlayer, unbanPlayer, adminSetTitle, adminDeleteSession,
 };

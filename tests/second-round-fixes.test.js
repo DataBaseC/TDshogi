@@ -95,8 +95,8 @@ test('adminRename 对账号用户同步 account.nickname（不再被下次 login
   assert.equal(mem['accounts.json'][ACC].nickname, '新名字', '账号侧变更已落盘');
 });
 
-// ---- ③ 悬空 id 不可认领（P0-1.1，resolveOwner 口径）----
-test('resolveOwner：会话不存在的悬空游客 id 不可归属（防认领死者棋谱）', () => {
+// ---- ③ 墓碑 id 不可认领（P0-1.1 修正版：严格区分「已撤销」与「从未存在」）----
+test('墓碑 id（凭证已撤销）不可认领/归属；新游客 id 不受影响', () => {
   load({
     'accounts.json': {
       aaaaaaaaaaaaaaaaaaaa0002: {
@@ -107,14 +107,20 @@ test('resolveOwner：会话不存在的悬空游客 id 不可归属（防认领�
   const ctx = require(path.join(SRC_DIR, 'http', 'context'));
   const auth = require(path.join(SRC_DIR, 'auth'));
 
-  // 悬空 id（24 hex，会话不存在）→ 不可归属
-  const deadId = 'deaddeaddeaddeaddeaddead';
-  assert.strictEqual(auth.getSessionRaw(deadId), null);
-  assert.strictEqual(ctx.resolveOwner(deadId), null, '悬空 id 不可认领（否则谁先来谁是死者棋谱的谱主）');
+  // ① 建会话 → 删会话（removeSession 写墓碑）→ 该 id 永不可复活认领
+  const victim = 'deaddeaddeaddeaddeaddead';
+  assert.strictEqual(auth.identify(victim).id, victim);
+  auth.removeSession(victim);
+  assert.strictEqual(auth.isTombstoned(victim), true, '删除会话应写墓碑');
+  assert.strictEqual(ctx.resolveOwner(victim), null, '墓碑 id 不可归属（否则谁先来谁是死者棋谱的谱主）');
+  assert.notStrictEqual(auth.identify(victim).id, victim, '墓碑 id 不可复活（应换新身份）');
 
-  // 现存游客会话仍维持「id 即凭证」（已知取舍不变）
-  const liveId = auth.identify('cafecafecafecafecafecafe').id;
-  assert.strictEqual(ctx.resolveOwner(liveId), liveId);
+  // ② 从未存在的 id = 客户端自选的新游客 id：维持「id 即凭证」旧取舍
+  //（上一版用「无会话即拒」误杀新游客，e2e 身份全线崩——此断言防止回退）
+  const fresh = 'cafecafecafecafecafecafe';
+  assert.strictEqual(auth.isTombstoned(fresh), false);
+  assert.strictEqual(ctx.resolveOwner(fresh), fresh, '新游客 id 维持旧取舍（放行）');
+  assert.strictEqual(auth.identify(fresh).id, fresh, '新游客首连照常认领');
 
   // 账号 id 依旧不可冒充（一律走令牌）
   assert.strictEqual(ctx.resolveOwner('aaaaaaaaaaaaaaaaaaaa0002'), null);

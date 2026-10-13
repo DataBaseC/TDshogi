@@ -59,12 +59,13 @@ function resolveOwner(raw) {
   if (s.includes('.')) return accounts.verifyToken(s) || null; // 账号：必须凭令牌
   // 裸 24 hex：若是**已注册账号**的 id → 不可信（账号一律走令牌）
   if (/^[0-9a-f]{24}$/.test(s) && accounts.getAccount(s)) return null;
-  // ⚠️ 2026-10-12 P0（第二轮审查 §1.1）：会话已不存在（30 天清理 / 账号删除）的**悬空 id**
-  // 同样不可信——否则谁先拿这个公开 id 来冒认，谁就成了死者棋谱的「谱主」（isOwner 命中 →
+  // ⚠️ 2026-10-13 P0 修正（第二轮审查 §1.1）：**墓碑 id（凭证已撤销）不可信**——
+  // 会话被删除后若仍放行，谁先来冒认谁就是死者棋谱的「谱主」（isOwner 命中 →
   // 越权读/导出对手私有棋谱 + 冒名评论）。与 WS 握手（protocol.handleConnection）同口径：
-  // 只有**现存会话**的游客 id 才维持「id 即凭证」的已知取舍。
-  if (!auth.getSessionRaw(s)) return null;
-  return s; // 游客 id（现存会话；「id 即凭证」的现状保持不变）
+  // 只拦「曾存在、已被撤销」的 id；从未有过会话的裸 id 维持「id 即凭证」的已知取舍
+  //（那是客户端自选的新游客 id，误杀过一次，e2e 身份全线崩）。
+  if (auth.isTombstoned(s)) return null;
+  return s; // 游客 id（现存会话或新游客 id；「id 即凭证」的现状保持不变）
 }
 
 /**

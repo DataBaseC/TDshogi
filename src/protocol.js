@@ -110,16 +110,18 @@ class Protocol {
     // 说明：未绑定 secret 的游客仍沿用「游客 id 即凭证」的既有设计（现状保留）。
     else if (guestId && /^[0-9a-f]{24}$/.test(guestId)) {
       const existing = auth.getSessionRaw(guestId);
-      // ⚠️ 2026-10-12 P0（第二轮审查 §1.1）：会话已不存在（30 天清理 / 账号删除）的**悬空 id**
-      // 一律不认领——否则谁先拿这个公开 id 连上来，谁就成了死者棋谱的「谱主」
-      //（越权读取/导出对手私有棋谱 + 冒名评论）。正常游客会话仍在宽限期内，不受影响。
-      if (!existing) {
-        log.warn('auth', 'WS 拒绝认领已不存在的游客 id，按新游客处理', { id: guestId });
+      // ⚠️ 2026-10-13 P0 修正（第二轮审查 §1.1）：**墓碑 id（凭证已撤销）不可认领**——
+      // 会话被删除（30 天清理/迁移/删账号）后，谁先拿这个公开 id 连上来，谁就成了死者
+      // 棋谱的「谱主」（越权读写 + 冒名）。注意与「新游客首连」区分：无会话且**无墓碑**
+      // 的裸 id 是客户端自选的新游客 id，维持「id 即凭证」的既有取舍照常认领
+      //（上一版用「无会话即拒」误杀新游客，身份全线崩——e2e 实测）。
+      if (auth.isTombstoned(guestId)) {
+        log.warn('auth', 'WS 拒绝认领已撤销的游客 id，按新游客处理', { id: guestId });
         effectiveId = null;
-      } else if (existing.isAccount) {
+      } else if (existing && existing.isAccount) {
         log.warn('auth', 'WS 拒绝以裸账号 id 建立身份，按新游客处理', { id: guestId });
         effectiveId = null;
-      } else if (existing.secret) {
+      } else if (existing && existing.secret) {
         const vk = auth.verifyKey(guestId, meta && meta.key);
         if (!vk.ok) {
           log.warn('auth', 'WS 持有证明缺失或不匹配，按新游客处理', { id: guestId });
